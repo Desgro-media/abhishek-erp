@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in — DesGro Media ERP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F6F4F3; --surface:#FFFFFF; --ink:#1B1515; --ink-soft:#6B5F5D; --ink-faint:#9C908E;
+    --line:#E3DDDC; --brand:#EB2027; --brand-strong:#A8141A; --neg:#C31A20; --neg-soft:#FBE6E6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --paper:#141010; --surface:#1D1717; --ink:#EDE7E6; --ink-soft:#AB9F9D; --ink-faint:#786C6A; --line:#332B2A; --neg-soft:rgba(240,120,124,.14); }
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--paper);font-family:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);padding:16px;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 20px 60px -10px rgba(10,6,6,.2);width:380px;max-width:100%;padding:32px;}
+  .brand{display:flex;flex-direction:column;gap:6px;margin-bottom:26px;}
+  .brand-bar{width:34px;height:6px;border-radius:2px;background:linear-gradient(90deg,var(--brand) 0%,#8C0F14 100%);}
+  .brand-word{font-weight:800;font-size:22px;letter-spacing:-.01em;}
+  .brand-sub{font-size:11px;font-weight:700;letter-spacing:.2em;color:var(--ink-faint);text-transform:uppercase;}
+  h1{font-size:15.5px;margin:0 0 20px;font-weight:800;}
+  label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700;display:block;margin-bottom:6px;}
+  input{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit;font-size:14px;margin-bottom:16px;background:var(--paper);color:var(--ink);}
+  input:focus-visible{outline:2px solid var(--brand);outline-offset:1px;}
+  button{width:100%;border:none;border-radius:8px;padding:11px;background:var(--brand);color:#fff;font-weight:700;font-size:14px;cursor:pointer;}
+  button:hover{background:var(--brand-strong);}
+  button:disabled{opacity:.6;cursor:default;}
+  .error{background:var(--neg-soft);color:var(--neg);border-radius:8px;padding:10px 12px;font-size:12.5px;margin-bottom:16px;display:none;line-height:1.5;}
+  .error.show{display:block;}
+</style>
+</head>
+<body>
+  <form class="card" id="login-form" novalidate>
+    <div class="brand"><div class="brand-bar"></div><div class="brand-word">DESGRO</div><div class="brand-sub">Media · ERP</div></div>
+    <h1>Sign in to your account</h1>
+    <div class="error" id="login-error" role="alert"></div>
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="username" required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit" id="login-submit">Sign in</button>
+  </form>
+  <script src="/js/auth.js"></script>
+  <script src="/js/login.js"></script>
+</body>
+</html>

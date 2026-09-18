@@ -1,0 +1,7 @@
+node_modules/
+server/node_modules/
+server/dist/
+.env
+*.log
+.kilo/
+*.tsbuildinfo
