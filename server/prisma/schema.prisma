@@ -113,6 +113,17 @@ enum EmploymentType {
   PROBATION
 }
 
+// NOTICE_PERIOD keeps full ERP access — it's purely informational until HR
+// confirms the departure. LEFT is a soft-archive: never deleted, but their
+// linked User (if any) gets active=false and every refresh token revoked
+// the moment departure is confirmed — see confirmDeparture() in
+// employees.controller.ts.
+enum EmploymentStatus {
+  ACTIVE
+  NOTICE_PERIOD
+  LEFT
+}
+
 enum AttendanceStatus {
   PRESENT
   LATE
@@ -184,7 +195,13 @@ model Employee {
   // including the employee's own "my record" view. See ACCESS MODEL.
   salary       Decimal        @db.Decimal(12, 2)
   empType      EmploymentType @map("emp_type")
-  active       Boolean        @default(true)
+
+  employmentStatus EmploymentStatus @default(ACTIVE) @map("employment_status")
+  // Last working day — set when notice period starts (still tentative,
+  // reversible) and again (final) when departure is confirmed.
+  leavingDate      DateTime?        @db.Date @map("leaving_date")
+  noticeGivenDate  DateTime?        @db.Date @map("notice_given_date")
+  noticeNote       String?          @map("notice_note")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

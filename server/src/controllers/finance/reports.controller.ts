@@ -35,7 +35,7 @@ export const deptProfitability: RequestHandler = asyncHandler(async (req, res) =
   if (!month) return res.status(400).json({ error: "month (YYYY-MM) is required" });
   const { start, end } = monthBounds(month);
 
-  const employees = await prisma.employee.findMany({ where: { active: true } });
+  const employees = await prisma.employee.findMany({ where: { employmentStatus: { not: "LEFT" } } });
   const costs = await Promise.all(employees.map(async (e) => ({ dept: e.dept, cost: await employeeMonthlyCost(e.id, Number(e.salary), month) })));
 
   const expenses = await prisma.expense.findMany({ where: { date: { gte: start, lte: end } } });
@@ -88,7 +88,7 @@ export const profitAndLoss: RequestHandler = asyncHandler(async (req, res) => {
   );
   const journalIncome = journalIncomeByAccount.reduce((s, a) => s + a.amount, 0);
 
-  const nonSalesEmployees = await prisma.employee.findMany({ where: { dept: { not: "Sales" }, active: true } });
+  const nonSalesEmployees = await prisma.employee.findMany({ where: { dept: { not: "Sales" }, employmentStatus: { not: "LEFT" } } });
   const payrollCost = (await Promise.all(nonSalesEmployees.map((e) => employeeMonthlyCost(e.id, Number(e.salary), month)))).reduce((a, b) => a + b, 0);
 
   const payables = await prisma.payable.findMany({ where: { dueAt: { gte: start, lte: end }, category: { not: "SALARY" } } });
@@ -155,7 +155,7 @@ export const balanceSheet: RequestHandler = asyncHandler(async (req, res) => {
   const otherAssetAdj = (await Promise.all(assetAccounts.map((a) => journalAccountBalance(a.id, asOf, "ASSET")))).reduce((a, b) => a + b, 0);
   const totalAssets = cashAndBankTotal + receivable + otherAssetAdj;
 
-  const nonSalesEmployees = await prisma.employee.findMany({ where: { dept: { not: "Sales" }, active: true } });
+  const nonSalesEmployees = await prisma.employee.findMany({ where: { dept: { not: "Sales" }, employmentStatus: { not: "LEFT" } } });
   const payrollPayableDetail: { name: string; balance: number }[] = [];
   for (const e of nonSalesEmployees) {
     const entry = await prisma.payrollEntry.findUnique({ where: { employeeId_month: { employeeId: e.id, month } }, include: { payments: true } });

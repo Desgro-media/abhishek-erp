@@ -49,7 +49,7 @@ const SERVICE_DEPARTMENTS = DEPARTMENTS.filter(d=>d!=='Administrative' && d!=='S
 let employees = [];
 let employeeDbIdByCode = {}; // "EMP-101" -> real Employee uuid
 let employeeCodeByDbId = {}; // real Employee uuid -> "EMP-101"
-const byId = id => employees.find(e=>e.id===id);
+const byId = id => employees.find(e=>e.id===id) || archivedEmployees.find(e=>e.id===id);
 function personCell(emp){
   return `<div class="person"><div class="mini-avatar">${initials(emp.name)}</div>
     <div><div class="person-name">${esc(emp.name)}</div><div class="person-role">${esc(emp.role)}</div></div></div>`;
@@ -72,10 +72,12 @@ const isoDate = s => s ? String(s).slice(0,10) : s;
 
 function mapEmployee(e){
   return {
-    id: e.employeeCode, name: e.name, dept: e.dept, role: e.role,
+    id: e.employeeCode, _dbId: e.id, name: e.name, dept: e.dept, role: e.role,
     dob: isoDate(e.dob), joined: isoDate(e.joinedAt), email: e.email,
     phone: e.phone || "", salary: Number(e.salary),
-    empType: TITLECASE_FROM_API(e.empType), active: e.active,
+    empType: TITLECASE_FROM_API(e.empType),
+    employmentStatus: TITLECASE_FROM_API(e.employmentStatus),
+    leavingDate: isoDate(e.leavingDate), noticeGivenDate: isoDate(e.noticeGivenDate), noticeNote: e.noticeNote || "",
   };
 }
 function mapLeaveRequest(l){
@@ -157,6 +159,12 @@ async function loadEmployees(){
   list.forEach(e=>{ employeeDbIdByCode[e.employeeCode]=e.id; employeeCodeByDbId[e.id]=e.employeeCode; });
   employees = list.map(mapEmployee);
 }
+let archivedEmployees = [];
+async function loadArchivedEmployees(){
+  const { employees: list } = await apiJson("/api/hr/employees?employmentStatus=LEFT");
+  list.forEach(e=>{ employeeDbIdByCode[e.employeeCode]=e.id; employeeCodeByDbId[e.id]=e.employeeCode; });
+  archivedEmployees = list.map(mapEmployee);
+}
 async function loadLeaveRequests(){
   const { leaveRequests: list } = await apiJson("/api/hr/leave-requests");
   leaveRequests = list.map(mapLeaveRequest);
@@ -217,6 +225,7 @@ async function loadHrModule(){
     await Promise.all([
       loadPolicy(), loadLeaveRequests(), loadAdvances(), loadComplaints(),
       loadHiring(), loadNotices(), loadLeaveBalances(), loadAttendanceToday(),
+      loadArchivedEmployees(),
     ]);
     const prevMonth = (()=>{ const [y,m]=TODAY.slice(0,7).split('-').map(Number); const d=new Date(y,m-2,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
     await Promise.all([loadPayrollMonth(TODAY.slice(0,7)), loadPayrollMonth(prevMonth)]);
@@ -1599,16 +1608,28 @@ function hrDirectory(){
     <div class="filter-group"><span class="filter-label">Department</span>${chips}</div>
     <div class="filter-group">
       <div class="search" style="width:200px;"><svg class="icon" style="width:14px;height:14px"><use href="#i-search"/></svg><input placeholder="Search name, role, ID" value="${esc(employeeSearch)}" oninput="setEmployeeSearch(this.value)"></div>
+      ${archivedEmployees.length?`<button class="btn ghost" onclick="openEmployeeArchive()"><svg class="icon" style="width:13px;height:13px"><use href="#i-archive"/></svg>Archived (${archivedEmployees.length})</button>`:''}
       <button class="btn primary" onclick="openAddEmployee()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add employee</button>
     </div>
   </div>
   <div class="panel">
     <div class="panel-head"><h3>Team directory</h3><div class="sub">${list.length} shown</div></div>
     <div class="table-wrap"><table class="data">
-      <thead><tr><th>Employee</th><th>ID</th><th>Department</th><th>Status</th><th>Joined</th><th class="num">Monthly gross</th></tr></thead>
-      <tbody>${list.length ? list.map(e=>`<tr class="row-click" onclick="openEmployeeDetail('${e.id}')"><td>${personCell(e)}</td><td class="muted mono">${e.id}</td><td>${esc(e.dept)}</td><td>${pill(e.empType, statusKind(e.empType))}</td><td class="muted">${fmtDate(e.joined)}</td><td class="num mono">${inr(e.salary)}</td></tr>`).join("") : `<tr><td colspan="6"><div class="empty">No one matches your search.</div></td></tr>`}</tbody>
+      <thead><tr><th>Employee</th><th>ID</th><th>Department</th><th>Status</th><th>Employment</th><th>Joined</th><th class="num">Monthly gross</th></tr></thead>
+      <tbody>${list.length ? list.map(e=>`<tr class="row-click" onclick="openEmployeeDetail('${e.id}')"><td>${personCell(e)}</td><td class="muted mono">${e.id}</td><td>${esc(e.dept)}</td><td>${pill(e.empType, statusKind(e.empType))}</td><td>${e.employmentStatus==="Notice Period" ? pill("Notice · "+fmtDate(e.leavingDate), "warn") : `<span class="faint">Active</span>`}</td><td class="muted">${fmtDate(e.joined)}</td><td class="num mono">${inr(e.salary)}</td></tr>`).join("") : `<tr><td colspan="7"><div class="empty">No one matches your search.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
+}
+function openEmployeeArchive(){
+  const list = archivedEmployees.slice().sort((a,b)=>(b.leavingDate||'').localeCompare(a.leavingDate||''));
+  showModal(`
+    <div class="modal-head"><h3>Archived employees</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>ID</th><th>Department</th><th>Joined</th><th>Left</th><th></th></tr></thead>
+        <tbody>${list.map(e=>`<tr><td>${personCell(e)}</td><td class="muted mono">${e.id}</td><td class="muted">${esc(e.dept)}</td><td class="muted">${fmtDate(e.joined)}</td><td class="muted">${fmtDate(e.leavingDate||e.joined)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEmployeeDetail('${e.id}')">View</button><button class="btn btn-sm ghost" onclick="reinstateEmployee('${e.id}')">Reinstate</button></div></td></tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty">No one archived yet — confirming an employee's departure moves them here.</div>`}
+    </div>
+    <div class="modal-foot"><div></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
 }
 
 let selectedAttendanceEmp = null;
@@ -2213,6 +2234,8 @@ async function openEmployeeDetail(id){
       <button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button>
     </div>
     <div class="modal-body">
+      ${e.employmentStatus==="Notice Period" ? `<div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-bell"/></svg><div><b>On notice period.</b> Last working day ${fmtDate(e.leavingDate)}${e.noticeNote?" — "+esc(e.noticeNote):""}.</div></div>` : ""}
+      ${e.employmentStatus==="Left" ? `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div><b>Archived.</b> Left on ${fmtDate(e.leavingDate)}. They no longer have ERP access.</div></div>` : ""}
       <div class="field-row">
         <div><label class="field-label">Employee ID</label><div class="mono">${e.id}</div></div>
         <div><label class="field-label">Joined</label><div>${fmtDate(e.joined)}</div></div>
@@ -2240,7 +2263,71 @@ async function openEmployeeDetail(id){
       </table></div>
       ${empAdvances.length ? `<div class="section-label">Advance history</div>${empAdvances.map(a=>`<div class="calc-line"><span>${esc(a.reason)} · ${fmtDateShort(a.requested)}</span><span class="mono">${inr(a.amount)} · ${a.status}</span></div>`).join("")}` : ""}
     </div>
-    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn primary" onclick="openEditEmployee('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-edit"/></svg>Edit details</button></div>`);
+    <div class="modal-foot">
+      <div style="display:flex;gap:8px;">
+        ${e.employmentStatus==="Active" ? `<button class="btn btn-sm ghost" onclick="openMarkNoticePeriod('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-bell"/></svg>Mark notice period</button>` : ""}
+        ${e.employmentStatus==="Notice Period" ? `<button class="btn btn-sm ghost" onclick="cancelNoticePeriod('${e.id}')">Cancel notice period</button><button class="btn btn-sm danger" onclick="openConfirmDeparture('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Confirm departure</button>` : ""}
+        ${e.employmentStatus==="Left" ? `<button class="btn btn-sm ghost" onclick="reinstateEmployee('${e.id}')">Reinstate</button>` : ""}
+      </div>
+      <div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn primary" onclick="openEditEmployee('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-edit"/></svg>Edit details</button></div>
+    </div>`);
+}
+function openMarkNoticePeriod(id){
+  const e = byId(id);
+  showModal(`
+    <div class="modal-head"><h3>Mark notice period</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-notice-period"><div class="modal-body">
+      <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
+      <div><label class="field-label">Last working day</label><input class="field-input" type="date" name="leavingDate" value="${e.leavingDate||TODAY}" required></div>
+      <div><label class="field-label">Note (optional)</label><input class="field-input" name="note" value="${esc(e.noticeNote||"")}" placeholder="e.g. Resigned, relocating"></div>
+      <div class="subtext" style="margin-top:8px;">They stay active and keep full access until you confirm their departure — this is reversible any time before then.</div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><button type="submit" class="btn primary">Mark notice period</button></div>
+    </form>`);
+  document.getElementById("f-notice-period").addEventListener("submit", async ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    try{
+      await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/notice-period`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ leavingDate: f.get("leavingDate"), note: f.get("note")||undefined }) });
+      await loadEmployees();
+      toast(e.name+" marked on notice period"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't mark notice period"); }
+  });
+}
+async function cancelNoticePeriod(id){
+  try{
+    await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/cancel-notice-period`, { method:"POST" });
+    await loadEmployees();
+    toast("Notice period cancelled"); await openEmployeeDetail(id); render();
+  }catch(err){ toast(err.message || "Couldn't cancel notice period"); }
+}
+function openConfirmDeparture(id){
+  const e = byId(id);
+  showModal(`
+    <div class="modal-head"><h3>Confirm departure</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div>This moves them out of the active directory into the archive and blocks their sign-in immediately. You can reinstate them from the archive later if needed.</div></div>
+      <div><label class="field-label">Last working day</label><input class="field-input" type="date" id="departure-date" value="${e.leavingDate||TODAY}"></div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><button type="button" class="btn danger" onclick="confirmDeparture('${e.id}')">Confirm &amp; archive</button></div>`);
+}
+async function confirmDeparture(id){
+  const e = byId(id);
+  const dateInput = document.getElementById('departure-date');
+  try{
+    await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/confirm-departure`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ leavingDate: (dateInput && dateInput.value) || undefined }) });
+    await Promise.all([loadEmployees(), loadArchivedEmployees()]);
+    toast(e.name+" archived"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't confirm departure"); }
+}
+async function reinstateEmployee(id){
+  const e = byId(id);
+  try{
+    await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/reinstate`, { method:"POST" });
+    await Promise.all([loadEmployees(), loadArchivedEmployees()]);
+    toast(e.name+" reinstated"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't reinstate"); }
 }
 function openSalaryRevision(id){
   const e = byId(id);

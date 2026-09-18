@@ -27,6 +27,12 @@ router.patch("/employees/:id", requireHRAdmin, employees.updateEmployee);
 router.get("/employees/:id/salary-revisions", employees.listSalaryRevisions); // self-or-HR
 router.post("/employees/:id/salary-revisions", requireHRAdmin, employees.addSalaryRevision);
 
+// Offboarding lifecycle — HR/Admin only.
+router.post("/employees/:id/notice-period", requireHRAdmin, employees.markNoticePeriod);
+router.post("/employees/:id/cancel-notice-period", requireHRAdmin, employees.cancelNoticePeriod);
+router.post("/employees/:id/confirm-departure", requireHRAdmin, employees.confirmDeparture);
+router.post("/employees/:id/reinstate", requireHRAdmin, employees.reinstateEmployee);
+
 // Attendance
 router.get("/attendance", requireHRAdmin, attendance.listAttendanceForDate);
 router.post("/attendance", requireHRAdmin, attendance.markAttendance);

@@ -32,7 +32,15 @@ export const employeeUpdateSchema = z.object({
   phone: z.string().optional(),
   salary: z.number().positive().optional(),
   empType: z.enum(["PERMANENT", "PROBATION"]).optional(),
-  active: z.boolean().optional(),
+});
+
+export const noticePeriodSchema = z.object({
+  leavingDate: dateStr,
+  note: z.string().optional(),
+});
+
+export const confirmDepartureSchema = z.object({
+  leavingDate: dateStr.optional(),
 });
 
 export const salaryRevisionSchema = z.object({
