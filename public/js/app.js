@@ -388,7 +388,6 @@ const PLATFORMS = [
   {key:'Instagram', icon:'i-instagram'}, {key:'LinkedIn', icon:'i-linkedin'},
   {key:'YouTube', icon:'i-youtube'}, {key:'Facebook', icon:'i-facebook'}, {key:'Blog', icon:'i-globe'},
 ];
-const CONTENT_TEAM = ['Lahza Sufad','Safa Ansari','Jithin Das','Risvan','Ameena Farook'];
 
 let contentItems = [];
 let contentPlatformFilter = 'All';
@@ -2664,7 +2663,7 @@ function initContentBoard(){
   const all = ['All', ...PLATFORMS.map(p=>p.key)];
   chipWrap.innerHTML = all.map(k=>`<button class="chip ${k===contentPlatformFilter?'active':''}" onclick="setPlatformFilter('${k}')">${k}</button>`).join(' ');
   const sel = document.getElementById('assignee-filter');
-  sel.innerHTML = '<option value="All">All assignees</option>' + CONTENT_TEAM.map(t=>`<option>${t}</option>`).join('') + '<option value="Unassigned">Unassigned</option>';
+  sel.innerHTML = '<option value="All">All assignees</option>' + employees.map(e=>`<option>${esc(e.name)}</option>`).join('') + '<option value="Unassigned">Unassigned</option>';
   renderBoard();
 }
 function setPlatformFilter(k){ contentPlatformFilter = k; initContentBoard(); }
@@ -2748,7 +2747,7 @@ function openContentModal(id, presetStage){
       </div>
       <div><label class="field-label">Platforms</label><div class="check-row" id="f-platforms">${PLATFORMS.map(p=>`<label class="check-chip" id="chip-${p.key}"><input type="checkbox" value="${p.key}" onchange="onPlatformCheck('${p.key}')"><svg class="icon" style="width:12px;height:12px"><use href="#${p.icon}"/></svg>${p.key}</label>`).join('')}</div></div>
       <div class="field-row">
-        <div><label class="field-label">Assignee</label><select class="field-input" id="f-assignee"><option value="">Unassigned</option>${CONTENT_TEAM.map(t=>`<option>${t}</option>`).join('')}</select></div>
+        <div><label class="field-label">Assignee</label><select class="field-input" id="f-assignee"><option value="">Unassigned</option>${employees.map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Due date</label><input class="field-input" type="date" id="f-due" value="${item?item.due:''}"></div>
       </div>
       <div><label class="field-label">Brief / notes</label><textarea class="field-input" id="f-notes" placeholder="Angle, references, key points…">${item?esc(item.notes):''}</textarea></div>
