@@ -1090,6 +1090,10 @@ const SALES_WORKSPACE_SUB = [
   {id:"leaderboard", label:"Leaderboard", icon:"i-target"},
 ];
 function visibleModules(){
+  // Leadership/Admin must win ties — someone can legitimately hold both HR
+  // and ADMIN (or any other combination), and Admin always means full,
+  // unrestricted access regardless of what else is checked.
+  if(currentUser && isLeadershipRole(currentUser)) return MODULES;
   if(currentUser && isHRRole(currentUser)) return MODULES.filter(m=>m.id==='hr');
   if(currentUser && isSalesRole(currentUser)){
     const order = ['workspace','clients','marketing'];
@@ -4486,7 +4490,7 @@ Auth.init().then(async (authUser) => {
   if(emp.isAdmin || roles.includes('SALES')) crmContentJobs.push(loadCrmModule());
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   await Promise.all([loadHrModule(), loadFinanceModule(), ...crmContentJobs]);
-  nav.module = isHRRole(emp) ? 'hr' : ((isStaffRole(emp) || isSalesRole(emp)) ? 'workspace' : 'dashboard');
+  nav.module = isLeadershipRole(emp) ? 'dashboard' : (isHRRole(emp) ? 'hr' : ((isStaffRole(emp) || isSalesRole(emp)) ? 'workspace' : 'dashboard'));
   const landingMod = visibleModules().find(m=>m.id===nav.module);
   nav.sub[nav.module] = (landingMod && landingMod.sub && landingMod.sub.length) ? landingMod.sub[0].id : (nav.sub[nav.module] || 'overview');
   document.getElementById('app-shell').hidden = false;
