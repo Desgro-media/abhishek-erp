@@ -38,6 +38,7 @@ services:
       LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@desgromedia.com}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-ChangeMe!2026}
+      SEED_SAMPLE_DATA: ${SEED_SAMPLE_DATA:-true}
     ports:
       - "${API_PORT:-4000}:4000"
 
