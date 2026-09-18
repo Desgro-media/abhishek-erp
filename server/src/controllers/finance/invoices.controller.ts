@@ -22,9 +22,15 @@ function withComputed(inv: { items: { amount: unknown }[]; payments: { amount: u
 
 const INCLUDE = { items: true, payments: true, pendingPayments: true } as const;
 
+// Sales sees only invoices for clients where they're the salesPerson — the
+// "narrow self-service slice" this route's comment (finance.routes.ts)
+// promises; Finance/Admin see everything, same as before.
 export const listInvoices: RequestHandler = asyncHandler(async (req, res) => {
   const invoices = await prisma.invoice.findMany({
-    where: { clientId: (req.query.clientId as string) || undefined },
+    where: {
+      clientId: (req.query.clientId as string) || undefined,
+      client: isFinanceAdmin(req.user?.roles) ? undefined : { salesPerson: req.user!.name },
+    },
     include: INCLUDE,
     orderBy: { issuedAt: "desc" },
   });
@@ -32,8 +38,11 @@ export const listInvoices: RequestHandler = asyncHandler(async (req, res) => {
 });
 
 export const getInvoice: RequestHandler = asyncHandler(async (req, res) => {
-  const invoice = await prisma.invoice.findUnique({ where: { id: req.params.id }, include: INCLUDE });
+  const invoice = await prisma.invoice.findUnique({ where: { id: req.params.id }, include: { ...INCLUDE, client: true } });
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
+  if (!isFinanceAdmin(req.user?.roles) && invoice.client.salesPerson !== req.user!.name) {
+    return res.status(403).json({ error: "Forbidden — not your client" });
+  }
   res.json({ invoice: withComputed(invoice) });
 });
 

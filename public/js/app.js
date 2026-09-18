@@ -1054,13 +1054,18 @@ let nav = {module:"dashboard", sub:{workspace:"overview", hr:"overview", marketi
 // advances, complaints, policies — so their sidebar shows nothing else. Their payroll work already
 // flows into Accounts (payroll cost/payable in P&L & Balance Sheet, sales excluded per commission
 // model) without them needing the Accounts module itself — see computePL()/computeBalanceSheet().
-function isHRRole(emp){ return !!(emp && /HR/i.test(emp.role||"")); }
+// Prefers the real backend roles array (authoritative — and immune to a free-text job title like
+// "Chief HR Officer" colliding with the leadership check below); the /HR/i title regex is only a
+// fallback for the rare case .roles isn't set yet.
+function isHRRole(emp){ return !!(emp && (emp.roles ? emp.roles.includes('HR') : /HR/i.test(emp.role||""))); }
 // Leadership (founders/CXOs) keep full, unrestricted access — same as the pre-login default.
 function isLeadershipRole(emp){ return !!(emp && (emp.isAdmin || /\b(CEO|COO|CMO|CTO|CFO|Chief|Founder)\b/i.test(emp.role||""))); }
 // Sales gets its own restricted view: My Workspace (attendance, commission, leaderboard — see
 // SALES_WORKSPACE_SUB) + Clients + Marketing and Sales, with full quotes/invoices/payment visibility
 // there (unlike Staff) since that's their day-to-day. No Dashboard, HR or Accounts.
-function isSalesRole(emp){ return !!(emp && emp.dept==='Sales'); }
+// Same real-roles preference as isHRRole above — an Employee's display dept and their User.roles
+// grant are independently editable and can otherwise drift out of sync.
+function isSalesRole(emp){ return !!(emp && (emp.roles ? emp.roles.includes('SALES') : emp.dept==='Sales')); }
 // Everyone else (marketing/production/design/dev/account-management — the people who work on DesGro's
 // own client delivery) gets the restricted "Staff" view: My Workspace + Clients + Marketing and Sales,
 // with no payment/financial detail and no Accounts/HR.
@@ -2850,7 +2855,7 @@ function openEditClient(id){
       <div><label class="field-label">Services</label><div class="check-row">${SERVICE_DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="services" value="${esc(d)}" ${c.services.includes(d)?'checked':''}>${esc(d)}</label>`).join('')}</div></div>
       <div class="field-row">
         <div><label class="field-label">Account Manager</label><select class="field-input" name="accountManager">${employees.map(e=>`<option ${e.name===c.accountManager?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
-        <div><label class="field-label">Sales Person</label><select class="field-input" name="salesPerson">${employees.filter(e=>e.dept==='Sales').map(e=>`<option ${e.name===c.salesPerson?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Sales Person</label><select class="field-input" name="salesPerson">${(()=>{ const s=employees.filter(e=>e.dept==='Sales'); return (s.length?s:employees).map(e=>`<option ${e.name===c.salesPerson?'selected':''}>${esc(e.name)}</option>`).join(''); })()}</select></div>
       </div>
       <div class="field-row">
         <div><label class="field-label">Status</label><select class="field-input" name="status">${["Active","Paused","Churned"].map(s=>`<option ${s===c.status?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -2865,7 +2870,7 @@ function openEditClient(id){
     try{
       await apiJson(`/api/crm/clients/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
         name:f.get("name"), industry:f.get("industry"), city:f.get("city"), services:f.getAll("services"),
-        accountManager:f.get("accountManager"), salesPerson:f.get("salesPerson"),
+        accountManager:f.get("accountManager")||undefined, salesPerson:f.get("salesPerson")||undefined,
         status:TITLECASE_TO_API(f.get("status")), billingType:TITLECASE_TO_API(f.get("billingType")),
       })});
       await loadClients();
@@ -3283,6 +3288,7 @@ async function moveTask(taskId, stage){
   t.status = stage; t.doneDate = stage==='Done' ? TODAY : null; // optimistic
   if(document.getElementById('my-task-board')) renderMyTaskBoard();
   else renderClientTaskBoard(t.clientId);
+  renderNav(); // the "My Tasks" sidebar badge counts by status — refresh it alongside the board
   try{
     await apiJson(`/api/crm/tasks/${taskId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ status: TASK_STATUS_TO_API[stage] }) });
   }catch(err){
@@ -3290,6 +3296,7 @@ async function moveTask(taskId, stage){
     toast(err.message || "Couldn't move task");
     if(document.getElementById('my-task-board')) renderMyTaskBoard();
     else renderClientTaskBoard(t.clientId);
+    renderNav();
   }
 }
 function openAddTask(clientId){
