@@ -43,6 +43,15 @@ export const confirmDepartureSchema = z.object({
   leavingDate: dateStr.optional(),
 });
 
+// Grants ERP access to an employee who doesn't have it yet, or resets the
+// password of one who already does — same shape either way. Roles are only
+// applied when creating the login for the first time; resetting an existing
+// login's password never silently changes their roles.
+export const grantAccessSchema = z.object({
+  password: z.string().min(8),
+  roles: z.array(z.enum(["ADMIN", "HR", "FINANCE", "SALES", "CONTENT", "EMPLOYEE"])).default(["EMPLOYEE"]),
+});
+
 export const salaryRevisionSchema = z.object({
   amount: z.number().positive(),
   effectiveDate: dateStr,

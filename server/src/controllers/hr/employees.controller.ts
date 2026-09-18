@@ -11,12 +11,21 @@ import {
   salaryRevisionSchema,
   noticePeriodSchema,
   confirmDepartureSchema,
+  grantAccessSchema,
 } from "../../validation/hr.schemas";
 
 async function nextEmployeeCode(): Promise<string> {
   const last = await prisma.employee.findFirst({ orderBy: { employeeCode: "desc" } });
   const lastNum = last ? Number(last.employeeCode.replace("EMP-", "")) : 100;
   return `EMP-${lastNum + 1}`;
+}
+
+// Never send the linked User row itself (it carries passwordHash) — just
+// whether one exists, so Edit Employee can offer "grant access" vs "reset
+// password" without a second round trip.
+function withAccessFlag<T extends { user: unknown }>(e: T) {
+  const { user, ...rest } = e;
+  return { ...rest, hasErpAccess: !!user };
 }
 
 // Directory/headcount/attendance-roster views all want the active + notice-
@@ -31,9 +40,10 @@ export const listEmployees: RequestHandler = asyncHandler(async (req, res) => {
       employmentStatus: employmentStatus ? (employmentStatus as any) : { not: "LEFT" },
       ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
     },
+    include: { user: { select: { id: true } } },
     orderBy: { name: "asc" },
   });
-  res.json({ employees });
+  res.json({ employees: employees.map(withAccessFlag) });
 });
 
 export const getEmployee: RequestHandler = asyncHandler(async (req, res) => {
@@ -42,9 +52,9 @@ export const getEmployee: RequestHandler = asyncHandler(async (req, res) => {
   if (!scoped || scoped !== targetId) {
     return res.status(403).json({ error: "Forbidden — you can only view your own HR record" });
   }
-  const employee = await prisma.employee.findUnique({ where: { id: targetId } });
+  const employee = await prisma.employee.findUnique({ where: { id: targetId }, include: { user: { select: { id: true } } } });
   if (!employee) return res.status(404).json({ error: "Employee not found" });
-  res.json({ employee });
+  res.json({ employee: withAccessFlag(employee) });
 });
 
 // Self-service shortcut: resolves to the caller's own record without them
@@ -186,6 +196,42 @@ export const addSalaryRevision: RequestHandler = asyncHandler(async (req, res) =
   });
 
   res.status(201).json({ revision });
+});
+
+// Grants ERP access to an employee who doesn't have it yet (creates their
+// User row), or resets the password of one who already does (updates the
+// existing row in place — never creates a duplicate). HR/Admin only.
+export const grantAccess: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = grantAccessSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const d = parsed.data;
+  const employeeId = req.params.id;
+
+  const employee = await prisma.employee.findUnique({ where: { id: employeeId }, include: { user: true } });
+  if (!employee) return res.status(404).json({ error: "Employee not found" });
+
+  const passwordHash = await bcrypt.hash(d.password, env.BCRYPT_SALT_ROUNDS);
+  const wasExisting = !!employee.user;
+
+  if (wasExisting) {
+    await prisma.user.update({ where: { id: employee.user!.id }, data: { passwordHash } });
+  } else {
+    await prisma.user.create({
+      data: { name: employee.name, email: employee.email, passwordHash, roles: d.roles, employeeId: employee.id },
+    });
+  }
+
+  await recordAudit({
+    userId: req.user!.sub,
+    action: wasExisting ? "HR_EMPLOYEE_PASSWORD_RESET" : "HR_EMPLOYEE_GRANT_ACCESS",
+    entityType: "Employee",
+    entityId: employeeId,
+    afterData: wasExisting ? {} : { roles: d.roles },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"] ?? null,
+  });
+
+  res.json({ hasErpAccess: true });
 });
 
 // ---- Offboarding lifecycle: ACTIVE <-> NOTICE_PERIOD -> LEFT -> ACTIVE ----

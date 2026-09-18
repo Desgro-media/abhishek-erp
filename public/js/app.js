@@ -78,6 +78,7 @@ function mapEmployee(e){
     empType: TITLECASE_FROM_API(e.empType),
     employmentStatus: TITLECASE_FROM_API(e.employmentStatus),
     leavingDate: isoDate(e.leavingDate), noticeGivenDate: isoDate(e.noticeGivenDate), noticeNote: e.noticeNote || "",
+    hasErpAccess: !!e.hasErpAccess,
   };
 }
 function mapLeaveRequest(l){
@@ -1784,7 +1785,9 @@ function hrHiring(){
 function hrPayroll(){
   const month = payroll.selectedMonth;
   const includedIds = Object.keys(payroll.history[month].entries);
-  const includedEmployees = employees.filter(e=>includedIds.includes(e.id)).sort((a,b)=>a.name.localeCompare(b.name));
+  // A departed employee's already-recorded entry (e.g. a final settlement) should stay visible here
+  // even after they're archived and drop out of `employees` — so look them up in both pools.
+  const includedEmployees = [...employees, ...archivedEmployees].filter(e=>includedIds.includes(e.id)).sort((a,b)=>a.name.localeCompare(b.name));
   const pendingEmployees = employees.filter(e=>!includedIds.includes(e.id));
   const rows = includedEmployees.map(e=>({emp:e, calc:computePayrollRow(e,month)}));
   const totals = rows.reduce((s,r)=>({gross:s.gross+r.calc.gross, ded:s.ded+r.calc.totalDeductions, net:s.net+r.calc.net, paid:s.paid+r.calc.paid, balance:s.balance+r.calc.balance}),{gross:0,ded:0,net:0,paid:0,balance:0});
@@ -2186,9 +2189,10 @@ function openAddEmployee(){
       </div>
       <div class="field-row">
         <div><label class="field-label">Joining date</label><input class="field-input" type="date" name="joined" value="${TODAY}" required></div>
-        <div><label class="field-label">Monthly gross (₹)</label><input class="field-input" type="number" name="salary" min="1000" step="500" required placeholder="26000"></div>
+        <div><label class="field-label">Date of birth</label><input class="field-input" type="date" name="dob" max="${TODAY}"></div>
       </div>
       <div class="field-row">
+        <div><label class="field-label">Monthly gross (₹)</label><input class="field-input" type="number" name="salary" min="1000" step="500" required placeholder="26000"></div>
         <div><label class="field-label">Employment status</label><select class="field-input" name="empType"><option value="Probation">Probation</option><option value="Permanent">Permanent</option></select></div>
       </div>
       <div><label class="field-label">Email</label><input class="field-input" type="email" name="email" required placeholder="name@desgromedia.com"></div>
@@ -2213,7 +2217,7 @@ function openAddEmployee(){
     if(grantAccess && (!grantAccess.password || grantAccess.password.length<8)){ toast("Password must be at least 8 characters"); return; }
     try{
       await apiJson("/api/hr/employees", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
-        name: f.get("name"), dept: f.get("dept"), role: f.get("role"), joinedAt: f.get("joined"),
+        name: f.get("name"), dept: f.get("dept"), role: f.get("role"), joinedAt: f.get("joined"), dob: f.get("dob")||undefined,
         email: f.get("email"), phone: f.get("phone"), salary: Number(f.get("salary")), empType: TITLECASE_TO_API(f.get("empType")),
         grantAccess,
       })});
@@ -2230,7 +2234,7 @@ async function openEmployeeDetail(id){
   e.salaryHistory = revisions.map(r=>({amount:Number(r.amount), effectiveDate:isoDate(r.effectiveDate), note:r.note||undefined}));
   showModal(`
     <div class="modal-head">
-      <div class="person"><div class="mini-avatar" style="width:38px;height:38px;font-size:13px;">${initials(e.name)}</div><div><div style="font-weight:800;font-size:15px;display:flex;align-items:center;gap:8px;">${esc(e.name)} ${pill(e.empType, statusKind(e.empType))}</div><div class="person-role">${esc(e.role)} · ${esc(e.dept)}</div></div></div>
+      <div class="person"><div class="mini-avatar" style="width:38px;height:38px;font-size:13px;">${initials(e.name)}</div><div><div style="font-weight:800;font-size:15px;display:flex;align-items:center;gap:8px;">${esc(e.name)} ${pill(e.empType, statusKind(e.empType))} ${e.employmentStatus!=="Active"?pill(e.employmentStatus==="Notice Period"?"Notice · leaving "+fmtDate(e.leavingDate):e.employmentStatus, e.employmentStatus==="Notice Period"?"warn":"neg"):""}</div><div class="person-role">${esc(e.role)} · ${esc(e.dept)}</div></div></div>
       <button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button>
     </div>
     <div class="modal-body">
@@ -2239,11 +2243,14 @@ async function openEmployeeDetail(id){
       <div class="field-row">
         <div><label class="field-label">Employee ID</label><div class="mono">${e.id}</div></div>
         <div><label class="field-label">Joined</label><div>${fmtDate(e.joined)}</div></div>
+        <div><label class="field-label">Date of birth</label><div>${e.dob?fmtDate(e.dob):'<span class="faint">Not on file</span>'}</div></div>
         <div><label class="field-label">Email</label><div style="font-size:13px;">${esc(e.email)}</div></div>
         <div><label class="field-label">Phone</label><div class="mono">${esc(e.phone)}</div></div>
         <div><label class="field-label">Monthly gross</label><div class="mono">${inr(e.salary)}</div></div>
-        <div><label class="field-label">Today</label><div>${pill(attendanceLabel(a.status),statusKind(attendanceLabel(a.status)))}</div></div>
+        <div><label class="field-label">Today</label><div>${a?pill(attendanceLabel(a.status),statusKind(attendanceLabel(a.status))):'<span class="faint">—</span>'}</div></div>
       </div>
+      <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;">ERP access<button class="btn btn-sm ghost" onclick="openGrantAccess('${e.id}')">${e.hasErpAccess?"Reset password":"Grant access"}</button></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${e.hasErpAccess ? "They already have an ERP login." : "No ERP login yet — they can't sign in until you grant access."}</div></div>
       <div class="section-label">Leave balance</div>
       <div class="field-row">
         <div><label class="field-label">Casual</label><div class="mono">${b.casual.total-b.casual.used} / ${b.casual.total}</div></div>
@@ -2271,6 +2278,29 @@ async function openEmployeeDetail(id){
       </div>
       <div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn primary" onclick="openEditEmployee('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-edit"/></svg>Edit details</button></div>
     </div>`);
+}
+function openGrantAccess(id){
+  const e = byId(id);
+  showModal(`
+    <div class="modal-head"><h3>${e.hasErpAccess?"Reset password":"Grant ERP access"}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-grant-access"><div class="modal-body">
+      <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${e.hasErpAccess ? "Their login is "+esc(e.email)+" — this sets a new password, it doesn't change their existing module roles." : "Their login will be "+esc(e.email)+" — set a password and pick which module roles they need. The base Employee role (their own attendance/leave/payslips) is always included."}</div></div>
+      <div><label class="field-label">${e.hasErpAccess?"New password":"Set password"}</label><input class="field-input" type="password" name="password" required minlength="8" placeholder="At least 8 characters"></div>
+      ${e.hasErpAccess ? "" : `<div><label class="field-label">Module roles (base Employee always included)</label><div class="check-row">${["ADMIN","HR","FINANCE","SALES","CONTENT"].map(r=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${r}">${r.charAt(0)+r.slice(1).toLowerCase()}</label>`).join("")}</div></div>`}
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><button type="submit" class="btn primary">${e.hasErpAccess?"Reset password":"Grant access"}</button></div>
+    </form>`);
+  document.getElementById("f-grant-access").addEventListener("submit", async ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    try{
+      await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/grant-access`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: f.get("password"), roles: [...new Set(["EMPLOYEE", ...f.getAll("grantRole")])] }) });
+      await loadEmployees();
+      toast(e.hasErpAccess ? "Password reset" : "ERP access granted");
+      await openEmployeeDetail(id); render();
+    }catch(err){ toast(err.message || "Couldn't update ERP access"); }
+  });
 }
 function openMarkNoticePeriod(id){
   const e = byId(id);
@@ -2373,6 +2403,9 @@ function openEditEmployee(id){
       </div>
       <div class="field-row">
         <div><label class="field-label">Joining date</label><input class="field-input" type="date" name="joined" value="${e.joined}" required></div>
+        <div><label class="field-label">Date of birth</label><input class="field-input" type="date" name="dob" value="${e.dob||''}" max="${TODAY}"></div>
+      </div>
+      <div class="field-row">
         <div><label class="field-label">Employment status</label><select class="field-input" name="empType"><option value="Probation" ${e.empType==="Probation"?"selected":""}>Probation</option><option value="Permanent" ${e.empType==="Permanent"?"selected":""}>Permanent</option></select></div>
       </div>
       <div class="field-row">
@@ -2389,7 +2422,7 @@ function openEditEmployee(id){
     const f = new FormData(ev.target);
     try{
       await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
-        name: f.get("name"), dept: f.get("dept"), role: f.get("role"), joinedAt: f.get("joined"),
+        name: f.get("name"), dept: f.get("dept"), role: f.get("role"), joinedAt: f.get("joined"), dob: f.get("dob")||undefined,
         email: f.get("email"), phone: f.get("phone"), empType: TITLECASE_TO_API(f.get("empType")),
       })});
       await loadEmployees();
