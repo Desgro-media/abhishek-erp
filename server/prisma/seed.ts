@@ -5,6 +5,10 @@
 // invoices need real client UUIDs) and the rest of CRM runs after it (one
 // historical quote settles against a real bank account) — see seed-crm.ts.
 // Safe to re-run: each step no-ops if its data already exists.
+//
+// The sample HR/Finance/CRM data is for local dev/demo only. Set
+// SEED_SAMPLE_DATA=false (e.g. in production) to create just the admin
+// login and skip it.
 import { PrismaClient, Role } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { seedHr } from "./seed-hr";
@@ -34,6 +38,11 @@ async function main() {
 
     console.log(`Seed admin created: ${email} / ${password}`);
     console.log("Log in and change this password immediately — it's only meant to get you into the app once.");
+  }
+
+  if ((process.env.SEED_SAMPLE_DATA || "true").toLowerCase() === "false") {
+    console.log("SEED_SAMPLE_DATA=false — skipping sample HR/Finance/CRM data.");
+    return;
   }
 
   await seedHr();
