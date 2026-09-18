@@ -3,13 +3,16 @@
 // documented in the old public/js/app.js prototype (not a byte-identical
 // replica of every seeded row there, which would need another research pass;
 // this is enough to make the module demonstrable end to end). Safe to
-// re-run: no-ops if bank accounts already exist.
+// re-run: no-ops if bank accounts already exist. Its sample invoices need
+// real client UUIDs, so it takes the clientIdByCode map produced by
+// seedCrmClients() — see seed.ts for run order.
 import { PrismaClient } from "@prisma/client";
 import { recordBankTxn } from "../src/services/finance/bankLedger";
+import { seedCrmClients } from "./seed-crm";
 
 const prisma = new PrismaClient();
 
-export async function seedFinance() {
+export async function seedFinance(clientIdByCode: Map<string, string>) {
   const already = await prisma.bankAccount.count();
   if (already > 0) {
     console.log("Finance seed skipped — bank accounts already present.");
@@ -53,7 +56,7 @@ export async function seedFinance() {
 
   const invoice1 = await prisma.invoice.create({
     data: {
-      invoiceNo: "DG-2026-1041", clientId: "CLI-01", issuedAt: new Date("2026-09-01"), dueAt: new Date("2026-09-15"),
+      invoiceNo: "DG-2026-1041", clientId: clientIdByCode.get("CLI-01")!, issuedAt: new Date("2026-09-01"), dueAt: new Date("2026-09-15"),
       items: { create: [{ dept: "Marketing Consultation", amount: 45000 }] },
     },
   });
@@ -62,13 +65,13 @@ export async function seedFinance() {
   });
   await prisma.invoice.create({
     data: {
-      invoiceNo: "DG-2026-1042", clientId: "CLI-02", issuedAt: new Date("2026-09-05"), dueAt: new Date("2026-09-10"),
+      invoiceNo: "DG-2026-1042", clientId: clientIdByCode.get("CLI-02")!, issuedAt: new Date("2026-09-05"), dueAt: new Date("2026-09-10"),
       items: { create: [{ dept: "Performance Marketing", amount: 33000 }] },
     },
   });
   await prisma.invoice.create({
     data: {
-      invoiceNo: "DG-2026-1044", clientId: "CLI-03", issuedAt: new Date("2026-08-20"), dueAt: new Date("2026-09-04"),
+      invoiceNo: "DG-2026-1044", clientId: clientIdByCode.get("CLI-03")!, issuedAt: new Date("2026-08-20"), dueAt: new Date("2026-09-04"),
       items: { create: [{ dept: "Web Development", amount: 28000 }] },
     },
   });
@@ -113,7 +116,8 @@ export async function seedFinance() {
 }
 
 if (require.main === module) {
-  seedFinance()
+  seedCrmClients()
+    .then(({ clientIdByCode }) => seedFinance(clientIdByCode))
     .catch((err) => {
       console.error(err);
       process.exit(1);

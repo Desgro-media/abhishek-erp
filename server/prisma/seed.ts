@@ -1,14 +1,15 @@
 // Creates the first Admin login so there's a way into the app at all, then
 // loads Phase 2's sample HR data (see seed-hr.ts), Phase 3's sample Finance
 // data (see seed-finance.ts), and Phase 4's sample CRM/Content data (see
-// seed-crm.ts — must run after seedFinance() since one historical quote
-// settles against a real bank account). Safe to re-run: each step no-ops
-// if its data already exists.
+// seed-crm.ts). Client/lead creation runs before seedFinance() (Finance's
+// invoices need real client UUIDs) and the rest of CRM runs after it (one
+// historical quote settles against a real bank account) — see seed-crm.ts.
+// Safe to re-run: each step no-ops if its data already exists.
 import { PrismaClient, Role } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { seedHr } from "./seed-hr";
 import { seedFinance } from "./seed-finance";
-import { seedCrm } from "./seed-crm";
+import { seedCrmClients, seedCrmRest } from "./seed-crm";
 
 const prisma = new PrismaClient();
 
@@ -36,8 +37,9 @@ async function main() {
   }
 
   await seedHr();
-  await seedFinance();
-  await seedCrm();
+  const { clientIdByCode, leadIdByCode, created } = await seedCrmClients();
+  await seedFinance(clientIdByCode);
+  await seedCrmRest(clientIdByCode, leadIdByCode, created);
 }
 
 main()

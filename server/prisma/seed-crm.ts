@@ -1,8 +1,13 @@
 // Loads sample CRM (clients/leads/quotes/tasks) and Content Pipeline
 // (content items/meta ad campaigns) data matching the shapes in the old
 // public/js/app.js prototype. Safe to re-run: no-ops if clients already
-// exist. Depends on Finance's bank accounts already being seeded (for
-// QUO-04's historical settled payment) — run after seedFinance().
+// exist.
+//
+// Split into two steps because of a circular ordering need: seedFinance()'s
+// invoices need real client UUIDs (so clients must be seeded first), but the
+// rest of this file's QUO-04 needs a bank account (so it must run after
+// seedFinance()). seedCrmClients() runs first, seedFinance() next, then
+// seedCrmRest() with the maps seedCrmClients() produced.
 import { PrismaClient, ClientStatus, LeadStatus, QuoteStatus, ClientTaskStatus, ContentStage, MetaAdsCampaignStatus } from "@prisma/client";
 import { recordBankTxn } from "../src/services/finance/bankLedger";
 import { createCommissionPayable } from "../src/services/finance/commission";
@@ -67,11 +72,19 @@ const META_CAMPAIGNS = [
   { name: "Logo Branding — Retargeting", objective: "Retargeting", platform: "Instagram", status: "PAUSED", spend: 4200, impressions: 41000, clicks: 610, leads: 6, startAt: "2026-08-10" },
 ] as const;
 
-export async function seedCrm() {
+export async function seedCrmClients(): Promise<{ clientIdByCode: Map<string, string>; leadIdByCode: Map<string, string>; created: boolean }> {
   const already = await prisma.client.count();
   if (already > 0) {
-    console.log("CRM seed skipped — clients already present.");
-    return;
+    console.log("CRM client/lead seed skipped — clients already present.");
+    const [clients, leads] = await Promise.all([
+      prisma.client.findMany({ select: { id: true, clientCode: true } }),
+      prisma.lead.findMany({ select: { id: true, leadCode: true } }),
+    ]);
+    return {
+      clientIdByCode: new Map(clients.map((c) => [c.clientCode, c.id])),
+      leadIdByCode: new Map(leads.map((l) => [l.leadCode, l.id])),
+      created: false,
+    };
   }
 
   const clientIdByCode = new Map<string, string>();
@@ -89,6 +102,15 @@ export async function seedCrm() {
     leadIdByCode.set(l.code, lead.id);
   }
   console.log(`Seeded ${LEADS.length} leads.`);
+
+  return { clientIdByCode, leadIdByCode, created: true };
+}
+
+export async function seedCrmRest(clientIdByCode: Map<string, string>, leadIdByCode: Map<string, string>, created: boolean) {
+  if (!created) {
+    console.log("CRM seed skipped — already seeded.");
+    return;
+  }
 
   // Quotes — QUO-01 Draft, QUO-02 Sent, QUO-03 Submitted (pending, unapproved),
   // QUO-04 already fully Invoiced historically (real invoice + payment +
@@ -149,7 +171,8 @@ export async function seedCrm() {
 }
 
 if (require.main === module) {
-  seedCrm()
+  seedCrmClients()
+    .then(({ clientIdByCode, leadIdByCode, created }) => seedCrmRest(clientIdByCode, leadIdByCode, created))
     .catch((err) => {
       console.error(err);
       process.exit(1);
