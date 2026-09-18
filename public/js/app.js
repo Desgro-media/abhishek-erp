@@ -2766,7 +2766,7 @@ async function saveContentCard(){
   const title = document.getElementById('f-title').value.trim();
   if(!title){ document.getElementById('f-title').focus(); return; }
   const platforms = Array.from(document.querySelectorAll('#f-platforms input:checked')).map(cb=>cb.value);
-  const payload = { title, type: document.getElementById('f-type').value, stage: TITLECASE_TO_API(document.getElementById('f-stage').value), assignee: document.getElementById('f-assignee').value||undefined, due: document.getElementById('f-due').value, notes: document.getElementById('f-notes').value||undefined, platforms };
+  const payload = { title, type: document.getElementById('f-type').value, stage: TITLECASE_TO_API(document.getElementById('f-stage').value), assignee: document.getElementById('f-assignee').value||undefined, dueAt: document.getElementById('f-due').value, notes: document.getElementById('f-notes').value||undefined, platforms };
   try{
     if(editingContentId) await apiJson(`/api/content/items/${editingContentId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
     else await apiJson("/api/content/items", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
