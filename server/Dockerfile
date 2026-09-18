@@ -3,6 +3,11 @@
 FROM node:20-alpine AS base
 WORKDIR /app/server
 
+# Alpine (musl libc) doesn't ship OpenSSL by default — Prisma's engine
+# binary needs it at runtime, not just at generate-time, or it crashes with
+# an unparseable error on migrate/seed. Must come before `prisma generate`.
+RUN apk add --no-cache openssl
+
 COPY server/package.json server/package-lock.json* ./
 RUN npm install
 

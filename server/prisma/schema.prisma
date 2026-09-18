@@ -10,7 +10,12 @@ datasource db {
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // "native" covers local dev; the musl target is needed for the
+  // node:20-alpine Docker image (musl libc, not glibc) — without it the
+  // engine binary can't find a matching OpenSSL at runtime and crashes
+  // with an unparseable error on `prisma migrate deploy`/`db seed`.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 // One enum value per department module in the ACCESS MODEL. ADMIN is a
