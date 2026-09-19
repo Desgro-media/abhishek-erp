@@ -10,7 +10,9 @@ export const employeeCreateSchema = z.object({
   joinedAt: dateStr,
   email: z.string().email(),
   phone: z.string().optional(),
-  salary: z.number().positive(),
+  // Sales draws no salary — commission-only, see SALES_COMMISSION_RATE —
+  // so 0 is valid, not just positive amounts.
+  salary: z.number().nonnegative(),
   empType: z.enum(["PERMANENT", "PROBATION"]),
   // Optional: HR can grant ERP login access at creation time instead of the
   // old plaintext-password-on-the-employee-row approach.
@@ -30,7 +32,7 @@ export const employeeUpdateSchema = z.object({
   joinedAt: dateStr.optional(),
   email: z.string().email().optional(),
   phone: z.string().optional(),
-  salary: z.number().positive().optional(),
+  salary: z.number().nonnegative().optional(),
   empType: z.enum(["PERMANENT", "PROBATION"]).optional(),
 });
 

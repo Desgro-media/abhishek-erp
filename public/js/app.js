@@ -209,8 +209,9 @@ function computePayrollRow(emp, month){
 }
 function payrollMonthStatus(month){
   const ids = Object.keys(payroll.history[month].entries);
+  const payrollEligible = employees.filter(e=>e.dept!=='Sales').length;
   if(!ids.length) return "Adding entries";
-  if(ids.length < employees.length) return "Adding entries";
+  if(ids.length < payrollEligible) return "Adding entries";
   const allSettled = ids.every(id=>computePayrollRow(byId(id),month).balance===0);
   return allSettled ? "Paid" : "Payments pending";
 }
@@ -1815,7 +1816,10 @@ function hrPayroll(){
   // A departed employee's already-recorded entry (e.g. a final settlement) should stay visible here
   // even after they're archived and drop out of `employees` — so look them up in both pools.
   const includedEmployees = [...employees, ...archivedEmployees].filter(e=>includedIds.includes(e.id)).sort((a,b)=>a.name.localeCompare(b.name));
-  const pendingEmployees = employees.filter(e=>!includedIds.includes(e.id));
+  // Sales draws no salary (commission-only, see SALES_COMMISSION_RATE) — never
+  // nag to "add them to payroll"; if one already has an entry (e.g. left over
+  // from before this was fixed), it still shows above via includedEmployees.
+  const pendingEmployees = employees.filter(e=>!includedIds.includes(e.id) && e.dept!=='Sales');
   const rows = includedEmployees.map(e=>({emp:e, calc:computePayrollRow(e,month)}));
   const totals = rows.reduce((s,r)=>({gross:s.gross+r.calc.gross, ded:s.ded+r.calc.totalDeductions, net:s.net+r.calc.net, paid:s.paid+r.calc.paid, balance:s.balance+r.calc.balance}),{gross:0,ded:0,net:0,paid:0,balance:0});
   const status = payrollMonthStatus(month);
@@ -1823,7 +1827,7 @@ function hrPayroll(){
   <div class="toolbar">
     <select class="select-sm" onchange="setPayrollMonth(this.value)">${Object.keys(payroll.history).sort().reverse().map(m=>`<option value="${m}" ${m===month?'selected':''}>${MONTH_LABEL[m]}</option>`).join("")}</select>
     <div style="display:flex;align-items:center;gap:10px;">
-      <span class="faint" style="font-size:12px;">${includedEmployees.length} of ${employees.length} added</span>
+      <span class="faint" style="font-size:12px;">${includedEmployees.length} of ${employees.filter(e=>e.dept!=='Sales').length} added</span>
       ${pill(status,statusKind(status))}
     </div>
   </div>
@@ -2205,13 +2209,25 @@ async function saveGeneralPolicyNotes(){
 }
 
 /* ---- HR modals & actions ---- */
+// Sales is commission-only (see SALES_COMMISSION_RATE) — no fixed salary,
+// so the salary field is hidden and defaults to 0 rather than being forced
+// to a minimum ₹1000 like every other department. Shared by Add and Edit.
+function toggleSalaryField(dept){
+  const field = document.getElementById('salary-field');
+  const input = field.querySelector('input[name="salary"]');
+  const note = document.getElementById('salary-note');
+  const isSales = dept==='Sales';
+  input.hidden = isSales; note.hidden = !isSales;
+  input.required = !isSales;
+  if(isSales) input.value = '0';
+}
 function openAddEmployee(){
   showModal(`
     <div class="modal-head"><h3>Add employee</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-add-employee"><div class="modal-body">
       <div><label class="field-label">Full name</label><input class="field-input" name="name" required placeholder="e.g. Farhan Kutty"></div>
       <div class="field-row">
-        <div><label class="field-label">Department</label><select class="field-input" name="dept">${DEPARTMENTS.map(d=>`<option>${esc(d)}</option>`).join("")}</select></div>
+        <div><label class="field-label">Department</label><select class="field-input" name="dept" onchange="toggleSalaryField(this.value)">${DEPARTMENTS.map(d=>`<option>${esc(d)}</option>`).join("")}</select></div>
         <div><label class="field-label">Role</label><input class="field-input" name="role" required placeholder="e.g. SMM Executive"></div>
       </div>
       <div class="field-row">
@@ -2219,7 +2235,11 @@ function openAddEmployee(){
         <div><label class="field-label">Date of birth</label><input class="field-input" type="date" name="dob" max="${TODAY}"></div>
       </div>
       <div class="field-row">
-        <div><label class="field-label">Monthly gross (₹)</label><input class="field-input" type="number" name="salary" min="1000" step="500" required placeholder="26000"></div>
+        <div id="salary-field">
+          <label class="field-label">Monthly gross (₹)</label>
+          <input class="field-input" type="number" name="salary" min="1000" step="500" required placeholder="26000">
+          <div class="subtext" id="salary-note" hidden>Sales is commission-only — no fixed salary. See Accounts &gt; Commissions for their target and bonus rate.</div>
+        </div>
         <div><label class="field-label">Employment status</label><select class="field-input" name="empType"><option value="Probation">Probation</option><option value="Permanent">Permanent</option></select></div>
       </div>
       <div><label class="field-label">Email</label><input class="field-input" type="email" name="email" required placeholder="name@desgromedia.com"></div>
