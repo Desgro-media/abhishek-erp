@@ -513,7 +513,7 @@ function invoiceStatus(inv){
 }
 const invStatusKind = s => ({Paid:"pos","Partially Paid":"warn",Pending:"warn",Overdue:"neg"}[s]||"neutral");
 
-const CLEAR_ORDER = ["Salary","Rent","Commission","Internal Loan","Vendor"];
+const CLEAR_ORDER = ["Salary","Rent","Commission","Sales Bonus","Internal Loan","Vendor"];
 function payablePaid(p, asOf){ return (p.payments||[]).filter(pm=>!asOf||pm.date<=asOf).reduce((s,pm)=>s+pm.amount,0); }
 function payableBalance(p, asOf){ return Math.max(0, p.amount - payablePaid(p, asOf)); }
 function payableStatus(p){
@@ -571,6 +571,13 @@ async function loadCommissionWithdrawals(){
   const url = admin ? "/api/finance/commission-withdrawals" : `/api/finance/commission-withdrawals?employeeId=${currentUser._dbId||''}`;
   commissionWithdrawals = (await apiJson(url)).withdrawals.map(mapCommissionWithdrawal);
 }
+// Monthly sales target + bonus commission — see server/src/services/finance/salesTarget.ts.
+// salesPolicy is the two editable settings; salesTargets is this-month standing per
+// salesperson (server scopes it to "just me" for a Sales caller, everyone for Finance/Admin).
+let salesPolicy = {monthlyTarget:500000, bonusRate:0.10};
+let salesTargets = [];
+async function loadSalesPolicy(){ salesPolicy = await apiJson("/api/finance/sales-policy"); }
+async function loadSalesTargets(){ salesTargets = (await apiJson("/api/finance/sales-targets")).rows; }
 
 /* ---- Commission Withdrawals — self-service (Sales requests, Finance approves) ---- */
 function openRequestCommissionWithdrawal(){
@@ -997,13 +1004,16 @@ async function loadFinanceModule(){
   const roles = (currentUser && currentUser.roles) || [];
   if(admin){
     await Promise.all([loadBankAccounts(), loadChartOfAccounts()]);
-    await Promise.all([loadInvoices(), loadPayables(), loadExpenses(), loadJournalEntries(), loadCommissionWithdrawals()]);
+    await Promise.all([loadInvoices(), loadPayables(), loadExpenses(), loadJournalEntries(), loadCommissionWithdrawals(), loadSalesPolicy(), loadSalesTargets()]);
     await loadFinanceReports(payroll.selectedMonth);
   } else if(roles.includes('SALES')){
-    // Sales' narrow slice: their own invoices (server already scopes reads)
-    // and their own commission withdrawals — no payables/expenses/banks/COA.
-    await loadInvoices();
-    await loadCommissionWithdrawals();
+    // Sales' narrow slice: their own invoices, their own Commission/Sales
+    // Bonus payables (server now scopes listPayables to just those two
+    // categories + their own name for a non-admin caller — previously this
+    // never loaded at all, which silently zeroed out commissionRowsByPerson()
+    // everywhere it's used on this workspace), and their own withdrawals.
+    // No expenses/banks/COA/other payable categories.
+    await Promise.all([loadInvoices(), loadPayables(), loadCommissionWithdrawals(), loadSalesTargets()]);
   }
   // Every other role (HR-only, Content-only, base Employee...) has no
   // Finance module access at all — visibleModules() already hides the nav,
@@ -1396,6 +1406,7 @@ function workspaceOverviewSales(){
 function workspaceCommission(){
   if(!currentUser) return '';
   const mine = commissionRowsByPerson().find(r=>r.name===currentUser.name) || {name:currentUser.name, mine:[], earned:0, paid:0, balance:0};
+  const myTarget = salesTargets.find(r=>r.salesPerson===currentUser.name);
   const myWithdrawals = commissionWithdrawals.filter(w=>w.empId===currentUser.id).slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.requested.localeCompare(a.requested); });
   return `
   <div class="toolbar"><div class="banner muted" style="margin:0;flex:1;min-width:260px;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>You earn ${Math.round(SALES_COMMISSION_RATE*100)}% on every payment Finance approves against your quotes or invoices. Need it paid out sooner? Request a withdrawal below and Finance will approve and pay it against your outstanding entries.</div></div>${mine.balance>0?`<button class="btn primary" onclick="openRequestCommissionWithdrawal()"><svg class="icon" style="width:13px;height:13px"><use href="#i-coins"/></svg>Request withdrawal</button>`:''}</div>
@@ -1404,6 +1415,18 @@ function workspaceCommission(){
     <div class="kpi-card"><div class="kpi-label">Paid Out</div><div class="kpi-value mono pos">${inr(mine.paid)}</div></div>
     <div class="kpi-card"><div class="kpi-label">Total Earned</div><div class="kpi-value mono">${inr(mine.earned)}</div><div class="kpi-sub">${mine.mine.length} entr${mine.mine.length===1?'y':'ies'}, all time</div></div>
   </div>
+  ${myTarget?(()=>{
+    const pct = myTarget.target>0 ? Math.min(100, Math.round(myTarget.monthlySales/myTarget.target*100)) : 0;
+    const over = myTarget.monthlySales>=myTarget.target;
+    return `<div class="panel">
+      <div class="panel-head"><h3>This month's sales target</h3><div class="sub">${Math.round(myTarget.bonusRate*100)}% bonus commission on every rupee past target, separate from your flat ${Math.round(SALES_COMMISSION_RATE*100)}% above</div></div>
+      <div class="panel-body">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;"><span style="font-weight:700;font-size:15px;">${inr(myTarget.monthlySales)}</span><span class="faint">of ${inr(myTarget.target)} target</span></div>
+        <div class="bar-track" style="height:10px;"><div class="bar-fill" style="width:${pct}%;${over?'background:var(--pos);':''}"></div></div>
+        ${over ? `<div class="banner" style="margin-top:14px;"><svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg><div><b>Target crossed.</b> Bonus commission earned this month: <b>${inr(myTarget.bonusEarnedThisMonth)}</b> — logged as its own Sales Bonus entry, separate from your regular commission above.</div></div>` : `<div class="subtext" style="margin-top:10px;">${inr(myTarget.target-myTarget.monthlySales)} more to start earning bonus commission this month.</div>`}
+      </div>
+    </div>`;
+  })():''}
   ${myWithdrawals.length?`<div class="panel">
     <div class="panel-head"><h3>Your withdrawal requests</h3></div>
     <div class="table-wrap"><table class="data"><thead><tr><th class="num">Amount</th><th>Requested</th><th>Note</th><th>Status</th></tr></thead>
@@ -3686,6 +3709,25 @@ function acctCommissions(){
     <div class="kpi-card"><div class="kpi-label">Paid Out</div><div class="kpi-value mono pos">${inr(totalPaid)}</div></div>
     <div class="kpi-card"><div class="kpi-label">Total Earned</div><div class="kpi-value mono">${inr(totalEarned)}</div><div class="kpi-sub">${commissionPayables.length} commission entr${commissionPayables.length===1?'y':'ies'}, all time</div></div>
   </div>
+  <div class="panel">
+    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;">
+      <div><h3>Monthly sales target &amp; bonus</h3><div class="sub">Target ${inr(salesPolicy.monthlyTarget)} · ${Math.round(salesPolicy.bonusRate*100)}% bonus on sales past target, on top of the ${Math.round(SALES_COMMISSION_RATE*100)}% flat commission above</div></div>
+      <button class="btn btn-sm ghost" onclick="openEditSalesPolicy()"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>
+    </div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">This month</th><th class="num">Target</th><th></th><th class="num">Bonus earned</th></tr></thead>
+      <tbody>${salesTargets.length ? salesTargets.map(r=>{
+        const pct = r.target>0 ? Math.min(100, Math.round(r.monthlySales/r.target*100)) : 0;
+        const over = r.monthlySales>=r.target;
+        return `<tr>
+          <td>${esc(r.salesPerson)}</td>
+          <td class="num mono">${inr(r.monthlySales)}</td>
+          <td class="num mono muted">${inr(r.target)}</td>
+          <td style="min-width:120px;"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;${over?'background:var(--pos);':''}"></div></div></td>
+          <td class="num mono ${r.bonusEarnedThisMonth>0?'pos':''}">${r.bonusEarnedThisMonth>0?inr(r.bonusEarnedThisMonth):'—'}</td>
+        </tr>`;
+      }).join('') : `<tr><td colspan="5"><div class="empty">No Sales-dept employees yet.</div></td></tr>`}</tbody>
+    </table></div>
+  </div>
   ${pendingWithdrawals.length || decidedWithdrawals.length ? `<div class="panel">
     <div class="panel-head"><h3>Withdrawal requests</h3><div class="sub">${pendingWithdrawals.length} pending</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">Amount</th><th>Requested</th><th>Note</th><th>Status</th><th></th></tr></thead>
@@ -3717,6 +3759,30 @@ function acctCommissions(){
       </td></tr>`; }).join(""):`<tr><td colspan="5"><div class="empty">No commission earned yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
+}
+function openEditSalesPolicy(){
+  showModal(`
+    <div class="modal-head"><h3>Sales target &amp; bonus settings</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-sales-policy"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Applies to the current and future months immediately — past months' bonus payables already generated aren't recalculated.</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Monthly sales target (₹)</label><input class="field-input" type="number" name="monthlyTarget" min="1" step="1000" required value="${salesPolicy.monthlyTarget}"></div>
+        <div><label class="field-label">Bonus commission on excess (%)</label><input class="field-input" type="number" name="bonusRate" min="0" max="100" step="0.5" required value="${salesPolicy.bonusRate*100}"></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-sales-policy").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try{
+      await apiJson("/api/finance/sales-policy", { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
+        monthlyTarget: Number(f.get("monthlyTarget")), bonusRate: Number(f.get("bonusRate"))/100,
+      })});
+      await Promise.all([loadSalesPolicy(), loadSalesTargets()]);
+      toast("Sales target settings saved"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save settings"); }
+  });
 }
 function acctExpenses(){
   const total = expenses.reduce((s,e)=>s+e.amount,0);

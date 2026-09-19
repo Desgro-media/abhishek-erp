@@ -68,7 +68,7 @@ export const approveCommissionWithdrawal: RequestHandler = asyncHandler(async (r
   const date = d.date ? new Date(d.date) : new Date();
   const paidAmount = await prisma.$transaction(async (tx) => {
     const outstanding = await tx.payable.findMany({
-      where: { category: "COMMISSION", salesPerson: withdrawal.employee.name },
+      where: { category: { in: ["COMMISSION", "SALES_BONUS"] }, salesPerson: withdrawal.employee.name },
       include: { payments: true },
       orderBy: { dueAt: "asc" },
     });

@@ -8,6 +8,7 @@ import * as expenses from "../controllers/finance/expenses.controller";
 import * as coa from "../controllers/finance/coa.controller";
 import * as journal from "../controllers/finance/journal.controller";
 import * as commissions from "../controllers/finance/commissions.controller";
+import * as salesTargets from "../controllers/finance/salesTargets.controller";
 import * as reports from "../controllers/finance/reports.controller";
 
 const router = Router();
@@ -30,8 +31,11 @@ router.post("/invoices/:id/payments", requireFinanceAdmin, invoices.recordInvoic
 router.post("/invoices/:id/pending-payments", requireFinanceAdminOrSales, invoices.submitPendingPayment);
 router.post("/invoices/:id/pending-payments/:pendingId/approve", requireFinanceAdmin, invoices.approvePendingPayment);
 
-// Payables, expenses, chart of accounts, journal — Finance/Admin only.
-router.get("/payables", requireFinanceAdmin, payables.listPayables);
+// Payables — writes are Finance/Admin only; reads also let Sales through
+// (the controller itself scopes a Sales caller to just their own
+// Commission/Sales Bonus rows — see listPayables).
+// Expenses, chart of accounts, journal remain Finance/Admin only.
+router.get("/payables", requireFinanceAdminOrSales, payables.listPayables);
 router.post("/payables", requireFinanceAdmin, payables.createPayable);
 router.patch("/payables/:id", requireFinanceAdmin, payables.updatePayable);
 router.post("/payables/:id/payments", requireFinanceAdmin, payables.recordPayablePayment);
@@ -54,6 +58,14 @@ router.get("/commission-withdrawals", requireFinanceAdminOrSales, commissions.li
 router.post("/commission-withdrawals", requireFinanceAdminOrSales, commissions.requestCommissionWithdrawal);
 router.post("/commission-withdrawals/:id/approve", requireFinanceAdmin, commissions.approveCommissionWithdrawal);
 router.post("/commission-withdrawals/:id/reject", requireFinanceAdmin, commissions.rejectCommissionWithdrawal);
+
+// Monthly sales target + bonus — the target/rate are readable by Sales (to
+// show progress on their own workspace) but only writable by Finance/Admin;
+// the team-wide view is scoped to "just me" for a Sales caller inside the
+// controller itself, same pattern as commission-withdrawals above.
+router.get("/sales-policy", requireFinanceAdminOrSales, salesTargets.getSalesPolicyHandler);
+router.patch("/sales-policy", requireFinanceAdmin, salesTargets.updateSalesPolicy);
+router.get("/sales-targets", requireFinanceAdminOrSales, salesTargets.listSalesTargets);
 
 // Reports — Finance/Admin only.
 router.get("/reports/dept-profitability", requireFinanceAdmin, reports.deptProfitability);

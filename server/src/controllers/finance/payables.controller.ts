@@ -3,6 +3,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
+import { isFinanceAdmin } from "../../middleware/financeAccess";
 import { sumAmounts, payableStatus } from "../../services/finance/calc";
 import { payableCreateSchema, payableUpdateSchema, payablePaymentSchema } from "../../validation/finance.schemas";
 
@@ -12,9 +13,16 @@ function withComputed(p: { amount: unknown; payments: { amount: unknown }[] }) {
   return { ...p, amount, paid, balance: amount - paid, status: payableStatus(amount, paid) };
 }
 
+// Finance/Admin sees every payable; Sales only ever sees their own
+// Commission/Sales Bonus entries — never Salary/Rent/Vendor/Internal Loan,
+// and never another salesperson's — same "narrow self-service slice"
+// pattern as invoices.listInvoices.
 export const listPayables: RequestHandler = asyncHandler(async (req, res) => {
+  const admin = isFinanceAdmin(req.user?.roles);
   const payables = await prisma.payable.findMany({
-    where: { category: req.query.category as any },
+    where: admin
+      ? { category: req.query.category as any }
+      : { category: { in: ["COMMISSION", "SALES_BONUS"] }, salesPerson: req.user!.name },
     include: { payments: true },
     orderBy: { dueAt: "desc" },
   });

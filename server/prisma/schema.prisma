@@ -387,6 +387,19 @@ model HrPolicy {
   @@map("hr_policy")
 }
 
+// Singleton settings row (id=1, same pattern as HrPolicy above). Lives on
+// the Finance side, not HrPolicy — this is a commission-plan setting Finance
+// manages, not an HR policy. Drives the monthly-target bonus computed in
+// services/finance/salesTarget.ts.
+model SalesPolicy {
+  id            Int      @id @default(1)
+  monthlyTarget Decimal  @default(500000) @db.Decimal(12, 2) @map("monthly_target")
+  bonusRate     Decimal  @default(0.10) @db.Decimal(5, 4) @map("bonus_rate")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("sales_policy")
+}
+
 model Holiday {
   id   String   @id @default(uuid())
   date DateTime @unique @db.Date
@@ -442,6 +455,7 @@ enum PayableCategory {
   SALARY
   RENT
   COMMISSION
+  SALES_BONUS
   INTERNAL_LOAN
   VENDOR
 }

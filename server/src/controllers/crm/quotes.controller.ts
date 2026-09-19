@@ -4,6 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
 import { createCommissionPayable } from "../../services/finance/commission";
+import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
 import {
   quoteCreateSchema,
@@ -120,6 +121,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
   if (pending.approved) return res.status(409).json({ error: "Already approved" });
 
   const date = d.date ? new Date(d.date) : pending.paymentDate;
+  const approvedAt = new Date();
 
   const result = await prisma.$transaction(async (tx) => {
     let clientId = quote.clientId;
@@ -166,18 +168,22 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
       data: { invoiceId, amount: pending.amount, paidDate: date, accountId: d.accountId, note: `Quote ${quote.quoteCode} — payment confirmed by Finance`, recordedBy: req.user!.sub },
     });
     await recordBankTxn(tx, { accountId: d.accountId, date, type: "CREDIT", amount: Number(pending.amount), note: `Invoice from quote ${quote.quoteCode}`, refType: "INVOICE_PAYMENT", refId: payment.id });
-    await tx.quotePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt: new Date(), invoicePayment: payment.id } });
 
     let commission = null;
+    let salesBonus = null;
     if (quote.createdBy) {
       commission = await createCommissionPayable(tx, { salesPerson: quote.createdBy, sourceLabel: quote.quoteCode, paymentAmount: Number(pending.amount), dueAt: date });
+      // Must run BEFORE this row is marked approved below — same reasoning as
+      // the invoice pending-payment approval path, see salesTarget.ts.
+      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: quote.createdBy, paymentAmount: Number(pending.amount), date: approvedAt });
     }
+    await tx.quotePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
 
     const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { items: true, payments: true } });
     const balance = invoiceTotal(invoice.items) - sumAmounts(invoice.payments);
     if (balance <= 0.01) await tx.quote.update({ where: { id: quoteId }, data: { status: "INVOICED" } });
 
-    return { payment, commission, invoiceId, clientId, balance };
+    return { payment, commission, salesBonus, invoiceId, clientId, balance };
   });
 
   await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_PAYMENT_APPROVED", entityType: "Quote", entityId: quoteId, afterData: { pendingId, amount: pending.amount }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });

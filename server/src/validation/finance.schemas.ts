@@ -41,7 +41,7 @@ export const invoicePendingApprovalSchema = z.object({
 });
 
 export const payableCreateSchema = z.object({
-  category: z.enum(["SALARY", "RENT", "COMMISSION", "INTERNAL_LOAN", "VENDOR"]),
+  category: z.enum(["SALARY", "RENT", "COMMISSION", "SALES_BONUS", "INTERNAL_LOAN", "VENDOR"]),
   payee: z.string().min(1),
   salesPerson: z.string().optional(),
   amount: z.number().positive(),
@@ -128,6 +128,11 @@ export const commissionWithdrawalCreateSchema = z.object({
 export const commissionWithdrawalApproveSchema = z.object({
   accountId: z.string().uuid(),
   date: dateStr.optional(),
+});
+
+export const salesPolicyUpdateSchema = z.object({
+  monthlyTarget: z.number().positive().optional(),
+  bonusRate: z.number().min(0).max(1).optional(),
 });
 
 export { monthStr };

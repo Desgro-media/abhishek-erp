@@ -6,6 +6,7 @@ import { recordBankTxn } from "../../services/finance/bankLedger";
 import { isFinanceAdmin } from "../../middleware/financeAccess";
 import { sumAmounts, invoiceTotal, invoicePaidAsOf, invoiceStatus } from "../../services/finance/calc";
 import { createCommissionPayable } from "../../services/finance/commission";
+import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
 import {
   invoiceCreateSchema,
   invoiceUpdateSchema,
@@ -155,17 +156,25 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
   if (pending.approved) return res.status(409).json({ error: "Already approved" });
 
   const date = d.date ? new Date(d.date) : pending.paymentDate;
+  const approvedAt = new Date();
   const result = await prisma.$transaction(async (tx) => {
     const payment = await tx.invoicePayment.create({
       data: { invoiceId, amount: pending.amount, paidDate: date, accountId: d.accountId, note: pending.note ?? undefined, recordedBy: req.user!.sub },
     });
     await recordBankTxn(tx, { accountId: d.accountId, date, type: "CREDIT", amount: Number(pending.amount), note: `Invoice ${invoice.invoiceNo}`, refType: "INVOICE_PAYMENT", refId: payment.id });
-    await tx.invoicePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt: new Date(), invoicePayment: payment.id } });
     let commission = null;
+    let salesBonus = null;
     if (pending.salesPerson) {
       commission = await createCommissionPayable(tx, { salesPerson: pending.salesPerson, sourceLabel: invoice.invoiceNo, paymentAmount: Number(pending.amount), dueAt: date });
+      // Must run BEFORE this row is marked approved below — monthlyApprovedSales()
+      // sums approved=true rows, so flipping this one first would make it count
+      // itself as "prior" sales and double it into the new total. Month bucket
+      // must match approvedAt (what that query filters by), not the possibly-
+      // backdated ledger `date`.
+      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: pending.salesPerson, paymentAmount: Number(pending.amount), date: approvedAt });
     }
-    return { payment, commission };
+    await tx.invoicePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
+    return { payment, commission, salesBonus };
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_APPROVED", entityType: "Invoice", entityId: invoiceId, afterData: { pendingId, amount: pending.amount }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
