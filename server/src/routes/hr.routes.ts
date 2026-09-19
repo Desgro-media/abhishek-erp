@@ -78,6 +78,7 @@ router.delete("/policy/holidays/:date", requireHRAdmin, policy.removeHoliday);
 
 // Payroll
 router.get("/payroll", requireHRAdmin, payroll.listPayrollForMonth);
+router.get("/payroll/mine", payroll.listMyPayroll); // own history only — pinned to the caller's employeeId
 router.get("/payroll/:employeeId/:month", payroll.getPayrollEntry); // self-or-HR
 router.post("/payroll/entries", requireHRAdmin, payroll.upsertPayrollEntry);
 router.post("/payroll/:employeeId/:month/payments", requireHRAdmin, payroll.recordPayrollPayment);

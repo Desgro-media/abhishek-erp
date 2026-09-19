@@ -637,6 +637,289 @@ async function decideCommissionWithdrawalReject(id){
   }catch(err){ toast(err.message || "Couldn't reject withdrawal"); }
 }
 
+/* ===================== PAYMENT REQUESTS ===================== */
+// Money OUT to an employee for anything other than salary (reimbursement, travel,
+// a purchase they fronted). Any employee raises one; it skips HR and lands in
+// Accounts > Payment Requests for Finance/Admin to approve-and-pay or reject.
+// The server scopes the list itself — Finance/Admin get everyone's, everyone
+// else only their own — so this one loader is right for every role.
+const PAYMENT_REQUEST_CATEGORIES = [
+  {api:"REIMBURSEMENT", label:"Reimbursement"}, {api:"TRAVEL", label:"Travel"},
+  {api:"PURCHASE_VENDOR", label:"Purchase / Vendor"}, {api:"OTHER", label:"Other"},
+];
+const paymentRequestCategoryLabel = api => (PAYMENT_REQUEST_CATEGORIES.find(c=>c.api===api)||{label:api}).label;
+let paymentRequests = [];
+function mapPaymentRequest(r){
+  return {
+    id:r.id, empId:r.employee.employeeCode, empName:r.employee.name,
+    category:paymentRequestCategoryLabel(r.category), amount:Number(r.amount), reason:r.reason,
+    requested:isoDate(r.requestedAt), status:TITLECASE_FROM_API(r.status),
+    decidedDate: r.decidedAt?isoDate(r.decidedAt):undefined, paidDate: r.paidDate?isoDate(r.paidDate):undefined,
+    accountId: r.accountId||undefined,
+  };
+}
+async function loadPaymentRequests(){ paymentRequests = (await apiJson("/api/finance/payment-requests")).requests.map(mapPaymentRequest); }
+function pendingPaymentRequests(){ return paymentRequests.filter(r=>r.status==="Pending").slice().sort((a,b)=>a.requested.localeCompare(b.requested)); }
+
+// Personal area for every role — My Workspace for Leadership/Staff/Sales/Content, and the HR
+// module's own tab for HR sign-ins (who only see that module). Only ever looks at currentUser.
+function workspacePaymentRequests(){
+  if(!currentUser) return '';
+  const order = {Pending:0,Approved:1,Rejected:2};
+  const mine = paymentRequests.filter(r=>r.empId===currentUser.id).slice().sort((a,b)=> order[a.status]!==order[b.status] ? order[a.status]-order[b.status] : b.requested.localeCompare(a.requested));
+  return `
+  ${hasEmployeeRecord() ? `<div class="toolbar"><div></div><button class="btn primary" onclick="openRequestPayment()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Request payment</button></div>` : noEmployeeRecordBanner("payment requests")}
+  <div class="panel">
+    <div class="panel-head"><h3>Your requests</h3><div class="sub">Goes straight to Accounts — no HR approval needed. For salary advances, use Advance Salary instead.</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Category</th><th class="num">Amount</th><th>Reason</th><th>Requested</th><th>Status</th></tr></thead>
+      <tbody>${mine.length ? mine.map(r=>`<tr><td><span class="tag type">${esc(r.category)}</span></td><td class="num mono">${inr(r.amount)}</td><td class="muted">${esc(r.reason)}</td><td class="muted">${fmtDate(r.requested)}</td><td>${pill(r.status==='Approved'?'Paid':r.status, r.status==='Approved'?'pos':statusKind(r.status))}${r.status==='Approved'&&r.paidDate?`<div class="subtext">${fmtDateShort(r.paidDate)}</div>`:''}</td></tr>`).join("") : `<tr><td colspan="5"><div class="empty">No payment requests yet.</div></td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+}
+function openRequestPayment(){
+  showModal(`
+    <div class="modal-head"><h3>Request a payment</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-request-payment"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>For anything other than a salary advance — a reimbursement, a purchase you fronted, travel, etc. This goes straight to Accounts, not HR.</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Category</label><select class="field-input" name="category">${PAYMENT_REQUEST_CATEGORIES.map(c=>`<option value="${c.api}">${esc(c.label)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="0.01" step="0.01" required placeholder="2500"></div>
+      </div>
+      <div><label class="field-label">Reason</label><textarea class="field-input" name="reason" required maxlength="500" placeholder="What's this for?"></textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Submit request</button></div></div>
+    </form>`);
+  document.getElementById("f-request-payment").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const submit = e.target.querySelector('button[type="submit"]');
+    submit.disabled = true; // a double-click would otherwise file the request twice
+    const f = new FormData(e.target);
+    try{
+      await apiJson("/api/finance/payment-requests", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ category:f.get("category"), amount:Number(f.get("amount")), reason:f.get("reason").trim() }) });
+      await loadPaymentRequests();
+      toast("Payment request submitted"); closeModal(); render();
+    }catch(err){ submit.disabled = false; toast(err.message || "Couldn't submit payment request"); }
+  });
+}
+
+// Finance/Admin queue — oldest first, plus the most recent decisions so a paid or
+// rejected request doesn't just vanish from view.
+function acctPaymentRequests(){
+  const rows = pendingPaymentRequests();
+  const decided = paymentRequests.filter(r=>r.status!=="Pending").slice().sort((a,b)=>(b.decidedDate||b.requested).localeCompare(a.decidedDate||a.requested)).slice(0,8);
+  return `
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Payment requests anyone in the company raised for something other than salary — they skip HR and land here directly. Approving pays it in full from the account you choose and records the debit against that account; rejecting just declines it. Every decision is logged with who made it and when.</div></div>
+  <div class="panel">
+    <div class="panel-head"><h3>Payment Requests</h3><div class="sub">${rows.length} awaiting Finance</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Type</th><th>Raised by</th><th class="num">Amount</th><th>Reason</th><th>Requested</th><th></th></tr></thead>
+      <tbody>${rows.length?rows.map(r=>`<tr><td><span class="tag type">${esc(r.category)}</span></td><td class="muted">${esc(r.empName)}</td><td class="num mono">${inr(r.amount)}</td><td class="muted">${esc(r.reason)}</td><td class="muted">${fmtDateShort(r.requested)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openApprovePaymentRequest('${r.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve &amp; pay</button><button class="btn btn-sm danger" onclick="rejectPaymentRequest('${r.id}')">Reject</button></div></td></tr>`).join(""):'<tr><td colspan="6"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
+    </table></div>
+  </div>
+  ${decided.length?`<div class="panel">
+    <div class="panel-head"><h3>Recently decided</h3><div class="sub">Last ${decided.length}</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Type</th><th>Raised by</th><th class="num">Amount</th><th>Reason</th><th>Decided</th><th>Status</th></tr></thead>
+      <tbody>${decided.map(r=>`<tr><td><span class="tag type">${esc(r.category)}</span></td><td class="muted">${esc(r.empName)}</td><td class="num mono">${inr(r.amount)}</td><td class="muted">${esc(r.reason)}</td><td class="muted">${r.decidedDate?fmtDateShort(r.decidedDate):'—'}</td><td>${pill(r.status==='Approved'?'Paid':r.status, r.status==='Approved'?'pos':statusKind(r.status))}${r.status==='Approved'&&bankById(r.accountId)?`<div class="subtext">${esc(bankById(r.accountId).name)}</div>`:''}</td></tr>`).join("")}</tbody>
+    </table></div>
+  </div>`:''}`;
+}
+function openApprovePaymentRequest(id){
+  const r = paymentRequests.find(x=>x.id===id);
+  if(!r) return;
+  showModal(`
+    <div class="modal-head"><h3>Approve &amp; pay — ${esc(r.category)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-approve-payment-request"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(r.empName)} · ${esc(r.reason)} · <b>${inr(r.amount)}</b> requested ${fmtDateShort(r.requested)}. Paid in full from the account below.</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Paid from account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)} — ${inr(b.balance)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Approve &amp; pay</button></div></div>
+    </form>`);
+  document.getElementById("f-approve-payment-request").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const submit = e.target.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    const f = new FormData(e.target);
+    try{
+      await apiJson(`/api/finance/payment-requests/${id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId:f.get("accountId"), date:f.get("date") }) });
+      await Promise.all([loadPaymentRequests(), loadBankAccounts()]);
+      toast("Payment request approved and paid"); closeModal(); render();
+    }catch(err){
+      submit.disabled = false; toast(err.message || "Couldn't approve payment request");
+      // "Already decided" means someone else got there first — show the current state.
+      if(/already decided/i.test(err.message||"")){ await loadPaymentRequests().catch(()=>{}); closeModal(); render(); }
+    }
+  });
+}
+async function rejectPaymentRequest(id){
+  try{
+    await apiJson(`/api/finance/payment-requests/${id}/reject`, { method:"POST" });
+    await loadPaymentRequests();
+    toast("Payment request rejected"); render();
+  }catch(err){
+    toast(err.message || "Couldn't reject payment request");
+    if(/already decided/i.test(err.message||"")){ await loadPaymentRequests().catch(()=>{}); render(); }
+  }
+}
+
+/* ===================== WITHDRAWAL REQUESTS + MY PAYROLL ===================== */
+// Two different things, kept apart on purpose:
+//  - Advance Salary: money against THIS, still-open month, before it's fully earned. HR approves.
+//  - Withdrawal Request: salary already EARNED in a CLOSED month but not yet paid out on the
+//    scheduled run, paid early. Nothing to recover. Finance/Admin approve it.
+// The month and the ceiling on the amount are decided by the server (it derives the closed month
+// and checks the earned-but-unpaid balance) — the client only ever names an amount.
+let withdrawalRequests = [];
+let myPayroll = [];           // the signed-in employee's own months, newest first
+let withdrawalEligibility = null; // last fetch of "what can I withdraw right now"
+function mapWithdrawalRequest(r){
+  return {
+    id:r.id, empId:r.employee.employeeCode, empName:r.employee.name, month:r.month, amount:Number(r.amount),
+    requested:isoDate(r.requestedAt), status:TITLECASE_FROM_API(r.status), decidedDate: r.decidedAt?isoDate(r.decidedAt):undefined,
+  };
+}
+async function loadWithdrawalRequests(){ withdrawalRequests = (await apiJson("/api/finance/withdrawal-requests")).requests.map(mapWithdrawalRequest); }
+async function loadMyPayroll(){ myPayroll = (await apiJson("/api/hr/payroll/mine")).rows; }
+async function loadWithdrawalEligibility(){ withdrawalEligibility = await apiJson("/api/finance/withdrawal-requests/eligibility"); return withdrawalEligibility; }
+// A bare Admin login (or any login HR hasn't linked to an employee) has no payroll or requests of
+// its own — the server refuses to file anything for it, so the UI shouldn't offer to.
+const hasEmployeeRecord = () => !!(currentUser && currentUser._dbId);
+const noEmployeeRecordBanner = what => `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>This login isn't linked to an employee record, so it has no ${what} of its own. Sign in as a linked employee to raise one, or ask HR to link this account.</div></div>`;
+
+// Employee-facing read view of their own payroll — deliberately three numbers (salary, pay cuts, final
+// salary) rather than the internal Basic/HRA/PF/PT breakdown HR/Accounts work with.
+function workspacePayroll(){
+  if(!currentUser) return '';
+  const e = currentUser;
+  const latest = myPayroll[0] || null;
+  const payCuts = latest ? latest.lopDeduction : 0;
+
+  const myAdvances = advances.filter(a=>a.empId===e.id).map(a=>({type:"Advance", date:a.requested, amount:a.amount, paid:0, balance: a.status==="Recovering"?a.balance:0, status:a.status}));
+  const myWithdrawals = withdrawalRequests.filter(w=>w.empId===e.id).map(w=>({type:"Withdrawal", date:w.requested, amount:w.amount, paid: w.status==="Approved"?w.amount:0, balance: w.status==="Pending"?w.amount:0, status: w.status==="Approved"?"Paid":w.status}));
+  const order = {Pending:0, Recovering:1, Paid:2, Recovered:2, Rejected:3};
+  const myRequests = [...myAdvances, ...myWithdrawals].sort((a,b)=>{
+    const oa = order[a.status] ?? 1, ob = order[b.status] ?? 1;
+    return oa!==ob ? oa-ob : b.date.localeCompare(a.date);
+  });
+
+  return `
+  ${hasEmployeeRecord() ? `<div class="toolbar"><div></div><button class="btn primary" onclick="openChooseWithdrawalType()"><svg class="icon" style="width:13px;height:13px"><use href="#i-wallet"/></svg>Withdrawal</button></div>` : noEmployeeRecordBanner("payroll")}
+  ${latest ? `
+  <div class="panel">
+    <div class="panel-head"><h3>${esc(MONTH_LABEL[latest.month]||latest.month)}</h3><div class="sub">Your latest salary</div></div>
+    <div class="panel-body">
+      <div class="calc-line"><span>Salary</span><span class="mono">${inr(latest.gross)}</span></div>
+      <div class="calc-line"><span>Pay cuts</span><span class="mono ${payCuts>0?'':'faint'}" style="${payCuts>0?'color:var(--neg);':''}">${payCuts>0?'−'+inr(payCuts):'none'}</span></div>
+      ${latest.lopDeduction>0?`<div class="calc-line" style="padding-left:14px;"><span class="faint" style="font-size:12.5px;">Loss of Pay — ${latest.lopDays} day${latest.lopDays===1?"":"s"} beyond your leave balance</span><span class="mono faint" style="font-size:12.5px;">−${inr(latest.lopDeduction)}</span></div>`:""}
+      <div class="calc-line total"><span>Final salary</span><span class="mono">${inr(latest.net)}</span></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+        <span class="sub">Payment status</span>
+        <div style="display:flex;align-items:center;gap:8px;">${pill(latest.payStatus,statusKind(latest.payStatus))}${latest.balance>0?`<span class="mono faint" style="font-size:12px;">${inr(latest.balance)} pending</span>`:''}</div>
+      </div>
+    </div>
+  </div>` : `<div class="panel"><div class="panel-body"><div class="empty">You haven't been added to a payroll cycle yet — check back once HR sets up your salary for the month.</div></div></div>`}
+  ${myPayroll.length ? `
+  <div class="panel">
+    <div class="panel-head"><h3>History</h3><div class="sub">Every cycle you've been part of</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th></tr></thead>
+      <tbody>${myPayroll.map(r=>`<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${r.lopDeduction>0?'warn':'faint'}">${r.lopDeduction>0?'−'+inr(r.lopDeduction):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td></tr>`).join("")}</tbody>
+    </table></div>
+  </div>` : ``}
+  <div class="panel">
+    <div class="panel-head"><h3>Your requests</h3><div class="sub">Advance Salary and Withdrawal Request, together</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Type</th><th class="num">Amount</th><th>Requested</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th></tr></thead>
+      <tbody>${myRequests.length ? myRequests.map(r=>`<tr><td><span class="tag type">${esc(r.type)}</span></td><td class="num mono">${inr(r.amount)}</td><td class="muted">${fmtDate(r.date)}</td><td class="num mono">${r.paid>0?inr(r.paid):'—'}</td><td class="num mono">${r.balance>0?inr(r.balance):'—'}</td><td>${pill(r.status,statusKind(r.status))}</td></tr>`).join("") : `<tr><td colspan="6"><div class="empty">No advance or withdrawal requests yet.</div></td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+}
+// Entry point for the merged "Withdrawal" button — the employee picks Advance Salary (against this
+// month, before it's fully earned) or Withdrawal Request (already-earned salary from a closed month,
+// only available when there's actually an unpaid balance to draw against). Eligibility comes fresh
+// from the server each time the chooser opens.
+async function openChooseWithdrawalType(){
+  let eu;
+  try{ eu = await loadWithdrawalEligibility(); }catch(err){ toast(err.message || "Couldn't check your withdrawal options"); return; }
+  const canWithdraw = eu.requestable > 0;
+  showModal(`
+    <div class="modal-head"><h3>Withdrawal</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Two different things: Advance Salary is money against this month before it's fully earned — HR-approved, then recovered from your payroll. Withdrawal Request is salary you've already earned in a closed month, just paid out ahead of the scheduled run — nothing to recover.</div></div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <button type="button" class="btn ghost" style="height:auto;padding:14px 16px;justify-content:flex-start;text-align:left;" onclick="closeModal();openRequestAdvance();">
+          <div><div style="font-weight:700;">Advance Salary</div><div class="sub" style="margin-top:2px;">Against this month, before it's fully earned</div></div>
+        </button>
+        <button type="button" class="btn ghost" style="height:auto;padding:14px 16px;justify-content:flex-start;text-align:left;${canWithdraw?'':'opacity:0.5;cursor:not-allowed;'}" ${canWithdraw?`onclick="closeModal();openRequestWithdrawal();"`:'disabled'}>
+          <div><div style="font-weight:700;">Withdrawal Request</div><div class="sub" style="margin-top:2px;">${canWithdraw?`${inr(eu.requestable)} earned and unpaid from ${esc(MONTH_LABEL[eu.month]||eu.month)}, available now`:'Only available once you have earned salary from a closed month still unpaid'}</div></div>
+        </button>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button></div>`);
+}
+// Request form — reached from the chooser above, which has just refreshed withdrawalEligibility.
+function openRequestWithdrawal(){
+  const eu = withdrawalEligibility;
+  if(!eu || eu.requestable<=0) return;
+  showModal(`
+    <div class="modal-head"><h3>Request withdrawal — ${esc(MONTH_LABEL[eu.month]||eu.month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-request-withdrawal-salary"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${inr(eu.requestable)} of your ${esc(MONTH_LABEL[eu.month]||eu.month)} salary is earned and still unpaid. This isn't Advance Salary — nothing is recovered later, it's simply paid out early. Finance approves it.</div></div>
+      <div><label class="field-label">Amount to withdraw (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${eu.requestable}" step="0.01" required value="${eu.requestable}"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Submit request</button></div></div>
+    </form>`);
+  document.getElementById("f-request-withdrawal-salary").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const submit = e.target.querySelector('button[type="submit"]');
+    submit.disabled = true; // a double-click would otherwise file it twice
+    const f = new FormData(e.target);
+    try{
+      await apiJson("/api/finance/withdrawal-requests", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount:Number(f.get("amount")) }) });
+      await loadWithdrawalRequests();
+      toast("Withdrawal request submitted"); closeModal(); render();
+    }catch(err){ submit.disabled = false; toast(err.message || "Couldn't submit withdrawal request"); }
+  });
+}
+
+// HR/Finance view — parallel to hrAdvances(). HR (who run payroll) can see every request; only
+// Finance/Admin can approve or reject, since approving moves real money out.
+let withdrawalsMonthFilter = "All";
+function setWithdrawalsMonthFilter(v){ withdrawalsMonthFilter = v; render(); }
+function hrWithdrawals(){
+  const canDecide = isFinanceAdminUser(currentUser);
+  const months = [...new Set(withdrawalRequests.map(w=>w.month))].sort().reverse();
+  const filtered = withdrawalsMonthFilter==='All' ? withdrawalRequests : withdrawalRequests.filter(w=>w.month===withdrawalsMonthFilter);
+  const order = {Pending:0,Approved:1,Rejected:2};
+  const sorted = filtered.slice().sort((a,b)=> order[a.status]!==order[b.status] ? order[a.status]-order[b.status] : b.requested.localeCompare(a.requested));
+  return `
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Requests against a month that's already closed and fully earned — not a loan like Advance Salary. Approving records an early payment against that month's payroll entry; the scheduled run then only owes whatever's left.${canDecide?'':' Approving or rejecting is Finance/Admin only — you can see everything here but not decide.'}</div></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Month</span><select class="select-sm" onchange="setWithdrawalsMonthFilter(this.value)"><option value="All" ${withdrawalsMonthFilter==='All'?'selected':''}>All time</option>${months.map(m=>`<option value="${m}" ${m===withdrawalsMonthFilter?'selected':''}>${esc(MONTH_LABEL[m]||m)}</option>`).join("")}</select></div><div></div></div>
+  <div class="panel">
+    <div class="panel-head"><h3>Requests</h3><div class="sub">Approving pays out immediately, against that month's payroll</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>Month</th><th class="num">Amount</th><th>Requested</th><th>Status</th><th></th></tr></thead>
+      <tbody>${sorted.length ? sorted.map(w=>{
+        const actions = (w.status==="Pending" && canDecide) ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="decideWithdrawal('${w.id}','Approved')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve &amp; pay</button><button class="btn btn-sm danger" onclick="decideWithdrawal('${w.id}','Rejected')">Reject</button></div>` : "";
+        return `<tr><td>${esc(w.empName)}<div class="subtext mono">${esc(w.empId)}</div></td><td class="muted">${esc(MONTH_LABEL[w.month]||w.month)}</td><td class="num mono">${inr(w.amount)}</td><td class="muted">${fmtDate(w.requested)}</td><td>${pill(w.status==='Approved'?'Paid':w.status, w.status==='Approved'?'pos':statusKind(w.status))}</td><td>${actions}</td></tr>`;
+      }).join("") : `<tr><td colspan="6"><div class="empty">No withdrawal requests${withdrawalsMonthFilter==='All'?'':' for this month'}.</div></td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+}
+async function decideWithdrawal(id, decision){
+  const w = withdrawalRequests.find(x=>x.id===id);
+  try{
+    await apiJson(`/api/finance/withdrawal-requests/${id}/${decision==='Approved'?'approve':'reject'}`, { method:"POST" });
+    await loadWithdrawalRequests();
+    // An approval writes a payroll payment, so refresh that month's payroll view too (HR/Admin only —
+    // a Finance-only login has no access to it and doesn't need it).
+    if(decision==='Approved' && w && (isHRRole(currentUser) || (currentUser && currentUser.isAdmin))) await loadPayrollMonth(w.month).catch(()=>{});
+    toast(decision==="Approved"?"Withdrawal paid out":"Withdrawal request rejected"); render();
+  }catch(err){
+    toast(err.message || "Couldn't update withdrawal request");
+    // "Already decided" means someone else got there first — show the current state.
+    if(/already decided/i.test(err.message||"")){ await loadWithdrawalRequests().catch(()=>{}); render(); }
+  }
+}
+
 /* ===================== BRANDED DOCUMENTS (Quote / Invoice / Payment Receipt) ===================== */
 // Dependency-free "download": we open a standalone print-styled page in a new tab and let the browser's
 // own Print / Save-as-PDF handle the export — no PDF library, so the output is vector text that matches
@@ -1029,7 +1312,8 @@ const MODULES = [
     {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length:0},
     {id:"attendance", label:"My Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
-    {id:"advances", label:"Advance Salary", icon:"i-coins", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length:0},
+    {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
+    {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
   ]},
   {id:"hr", label:"HR", icon:"i-users", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
@@ -1039,6 +1323,7 @@ const MODULES = [
     {id:"hiring", label:"Hiring", icon:"i-target", count:()=>openPositions.filter(p=>p.status==="Open").length},
     {id:"payroll", label:"Payroll", icon:"i-wallet"},
     {id:"advances", label:"Advance Salary", icon:"i-coins", count:()=>advances.filter(a=>a.status==="Pending").length},
+    {id:"withdrawals", label:"Withdrawal Requests", icon:"i-wallet", count:()=>withdrawalRequests.filter(w=>w.status==="Pending").length},
     {id:"complaints", label:"Complaints", icon:"i-megaphone", count:()=>complaints.filter(c=>c.status==="New").length},
     {id:"notices", label:"Notices", icon:"i-bell"},
     {id:"policies", label:"HR Settings", icon:"i-sliders"},
@@ -1058,6 +1343,8 @@ const MODULES = [
   {id:"accounts", label:"Accounts", icon:"i-wallet", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"invoices", label:"Invoices", icon:"i-receipt", count:()=>invoices.filter(i=>invoiceStatus(i)==="Overdue").length},
+    {id:"requests", label:"Payment Requests", icon:"i-coins", count:()=>pendingPaymentRequests().length},
+    {id:"payroll", label:"Payroll", icon:"i-wallet", count:()=>{ const m = payroll.history[payroll.selectedMonth]; return m ? employees.filter(e=>e.dept!=='Sales' && !(e.id in m.entries)).length : 0; }},
     {id:"payables", label:"Payables", icon:"i-coins", count:()=>payables.filter(p=>payableStatus(p)!=="Paid").length},
     {id:"expenses", label:"Expenses", icon:"i-file"},
     {id:"banks", label:"Banks", icon:"i-building"},
@@ -1097,6 +1384,7 @@ const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
   {id:"attendance", label:"My Attendance", icon:"i-attendance"},
   {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
+  {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
   {id:"commission", label:"My Commission", icon:"i-percent", count:()=>currentUser?payables.filter(p=>p.category==="Commission" && p.salesPerson===currentUser.name && payableBalance(p)>0).length:0},
   {id:"leaderboard", label:"Leaderboard", icon:"i-target"},
 ];
@@ -1105,7 +1393,12 @@ function visibleModules(){
   // and ADMIN (or any other combination), and Admin always means full,
   // unrestricted access regardless of what else is checked.
   if(currentUser && isLeadershipRole(currentUser)) return MODULES;
-  if(currentUser && isHRRole(currentUser)) return MODULES.filter(m=>m.id==='hr');
+  if(currentUser && isHRRole(currentUser)){
+    // HR-only sign-ins never see My Workspace, so the personal Payment Requests tab
+    // (any employee can raise one) lives here for them.
+    const paymentsSub = {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0};
+    return MODULES.filter(m=>m.id==='hr').map(m=>({...m, sub:[...m.sub, paymentsSub]}));
+  }
   if(currentUser && isSalesRole(currentUser)){
     const order = ['workspace','clients','marketing'];
     return order.map(id=>MODULES.find(m=>m.id===id)).filter(Boolean).map(m=>
@@ -1133,8 +1426,19 @@ function visibleModules(){
   }
   return MODULES;
 }
-function setModule(id){ if(!visibleModules().some(m=>m.id===id)) return; nav.module=id; nav.detail=null; render(); }
-function setSub(mid, sid){ const mods=visibleModules(); const mod=mods.find(m=>m.id===mid); if(!mod) return; if(mod.sub && !mod.sub.some(s=>s.id===sid)) return; nav.module=mid; nav.sub[mid]=sid; nav.detail=null; render(); }
+// Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
+// until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
+const TAB_REFRESH = {
+  "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests],
+  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "hr/withdrawals":[loadWithdrawalRequests],
+};
+function refreshTab(mid, sid){
+  const jobs = TAB_REFRESH[mid+"/"+sid];
+  if(!jobs) return;
+  Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
+}
+function setModule(id){ if(!visibleModules().some(m=>m.id===id)) return; nav.module=id; nav.detail=null; render(); refreshTab(id, nav.sub[id]); }
+function setSub(mid, sid){ const mods=visibleModules(); const mod=mods.find(m=>m.id===mid); if(!mod) return; if(mod.sub && !mod.sub.some(s=>s.id===sid)) return; nav.module=mid; nav.sub[mid]=sid; nav.detail=null; render(); refreshTab(mid, sid); }
 function closeDetail(){ nav.detail=null; render(); }
 
 function renderNav(){
@@ -1174,7 +1478,8 @@ const TOPBAR_TITLES = {
     tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+" open across your clients":""],
     attendance:["My Attendance","Your check-in status and this month's record"],
     leave:["Leave", ()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id).length+" request(s) on record":""],
-    advances:["Advance Salary", ()=>currentUser?advances.filter(a=>a.empId===currentUser.id).length+" request(s) on record":""],
+    payroll:["My Payroll", ()=>{ const m=myPayroll[0]; return m ? MONTH_LABEL[m.month]+" · "+m.payStatus : "Your salary and requests"; }],
+    payments:["Payment Requests", ()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id).length+" request(s) on record":""],
     commission:["My Commission", ()=>{ if(!currentUser) return ""; const mine=commissionRowsByPerson().find(r=>r.name===currentUser.name); return mine&&mine.balance>0 ? inr(mine.balance)+" outstanding" : "All settled"; }],
     leaderboard:["Leaderboard", ()=>salesLeaderboardRows().length+" sales team member(s)"],
   },
@@ -1186,9 +1491,11 @@ const TOPBAR_TITLES = {
     hiring:["Hiring", ()=>openPositions.filter(p=>p.status==="Open").length+" open positions"],
     payroll:["Payroll", ()=>MONTH_LABEL[payroll.selectedMonth]+" · "+payrollMonthStatus(payroll.selectedMonth)],
     advances:["Advance Salary", ()=>inr(advances.filter(a=>a.status==="Recovering").reduce((s,a)=>s+a.balance,0))+" outstanding"],
+    withdrawals:["Withdrawal Requests", ()=>withdrawalRequests.filter(w=>w.status==="Pending").length+" pending"],
     complaints:["Complaints", ()=>complaints.filter(c=>c.status==="New").length+" new"],
     notices:["Notices", ()=>notices.length+" posted"],
     policies:["HR Settings","Holidays, leave entitlements and general policy"],
+    payments:["Payment Requests", ()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id).length+" request(s) on record":""],
   },
   marketing: {
     overview:["Marketing and Sales Overview","Content, campaigns and pipeline · DesGro Media"],
@@ -1205,6 +1512,8 @@ const TOPBAR_TITLES = {
   accounts: {
     overview:["Accounts Overview","Revenue, receivables and payables"],
     invoices:["Invoices", ()=>invoices.filter(i=>invoiceStatus(i)!=="Paid").length+" awaiting payment"],
+    requests:["Payment Requests", ()=>pendingPaymentRequests().length+" awaiting Finance"],
+    payroll:["Payroll", ()=>payroll.history[payroll.selectedMonth] ? MONTH_LABEL[payroll.selectedMonth]+" · "+payrollMonthStatus(payroll.selectedMonth) : MONTH_LABEL[payroll.selectedMonth]],
     payables:["Payables", ()=>inr(payables.reduce((s,p)=>s+payableBalance(p),0))+" outstanding"],
     expenses:["Expenses", ()=>expenses.length+" logged this month"],
     banks:["Banks", ()=>inr(bankAccounts.reduce((s,b)=>s+bankAccountBalance(b.id),0))+" across "+bankAccounts.length+" accounts"],
@@ -1243,11 +1552,11 @@ function render(){
   }
   renderTopbar();
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,advances:workspaceAdvances,commission:workspaceCommission,leaderboard:workspaceLeaderboard})[nav.sub.workspace]();
-  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard})[nav.sub.workspace]();
+  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
-  else if(nav.module==="accounts") root.innerHTML = ({overview:acctOverview,invoices:acctInvoices,payables:acctPayables,expenses:acctExpenses,profitability:acctProfitability,banks:acctBanks,quotes:acctQuotes,commissions:acctCommissions,coa:acctChartOfAccounts,journal:acctJournal,reports:acctReports})[nav.sub.accounts]();
+  else if(nav.module==="accounts") root.innerHTML = ({overview:acctOverview,invoices:acctInvoices,requests:acctPaymentRequests,payroll:acctPayroll,payables:acctPayables,expenses:acctExpenses,profitability:acctProfitability,banks:acctBanks,quotes:acctQuotes,commissions:acctCommissions,coa:acctChartOfAccounts,journal:acctJournal,reports:acctReports})[nav.sub.accounts]();
   if(nav.module==="marketing" && nav.sub.marketing==="content") initContentBoard();
   if(nav.module==="workspace" && nav.sub.workspace==="tasks") renderMyTaskBoard();
 }
@@ -1535,18 +1844,6 @@ function workspaceAttendance(){
     <div class="panel-body"><div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Attendance</div><div class="kpi-value mono">${present}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${mtdWorkingDays} working days</span></div><div class="kpi-sub">${present>=mtdWorkingDays?'full attendance this month':(mtdWorkingDays-present)+' day(s) missed'}</div></div></div>
   </div>`;
 }
-function workspaceAdvances(){
-  if(!currentUser) return '';
-  const mine = advances.filter(a=>a.empId===currentUser.id).slice().sort((a,b)=>{ const order={Pending:0,Recovering:1,Recovered:2,Rejected:3}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.requested.localeCompare(a.requested); });
-  return `
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openRequestAdvance()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Request advance</button></div>
-  <div class="panel">
-    <div class="panel-head"><h3>Your requests</h3><div class="sub">Approved advances recover automatically from payroll</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th class="num">Amount</th><th>Reason</th><th>Requested</th><th class="num">Balance</th><th>Status</th></tr></thead>
-      <tbody>${mine.length ? mine.map(a=>`<tr><td class="num mono">${inr(a.amount)}</td><td class="muted">${esc(a.reason)}</td><td class="muted">${fmtDate(a.requested)}</td><td class="num mono">${a.status==='Rejected'?'—':inr(a.balance)}</td><td>${pill(a.status,statusKind(a.status))}</td></tr>`).join("") : `<tr><td colspan="5"><div class="empty">No advance requests yet.</div></td></tr>`}</tbody>
-    </table></div>
-  </div>`;
-}
 function openRequestAdvance(){
   showModal(`
     <div class="modal-head"><h3>Request advance salary</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
@@ -1810,7 +2107,9 @@ function hrHiring(){
   </div>`;
 }
 
-function hrPayroll(){
+// The payroll table itself — shared by HR > Payroll and Accounts > Payroll (same data, same
+// actions: add to payroll, pay, payslip, edit). Only HR's copy also carries the leave-pay policy notes.
+function payrollView(){
   const month = payroll.selectedMonth;
   const includedIds = Object.keys(payroll.history[month].entries);
   // A departed employee's already-recorded entry (e.g. a final settlement) should stay visible here
@@ -1849,7 +2148,10 @@ function hrPayroll(){
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${r.calc.balance>0?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}')">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="8"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
     </table></div>
-  </div>
+  </div>`;
+}
+function hrPayroll(){
+  return payrollView() + `
   <div class="panel">
     <div class="panel-head">
       <div><h3>Leave &amp; WFH pay policy</h3><div class="sub">Loss of Pay for leave beyond balance is already applied above · WFH's effect is still open</div></div>
@@ -1865,6 +2167,7 @@ function hrPayroll(){
     </div>
   </div>`;
 }
+function acctPayroll(){ return payrollView(); }
 async function saveLeavePayPolicyNotes(){
   try{
     await apiJson("/api/hr/policy", { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ leavePayNotes: document.getElementById("policy-notes-textarea").value }) });
@@ -4578,7 +4881,9 @@ Auth.init().then(async (authUser) => {
   const roles = emp.roles || [];
   if(emp.isAdmin || roles.includes('SALES')) crmContentJobs.push(loadCrmModule());
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
-  await Promise.all([loadHrModule(), loadFinanceModule(), ...crmContentJobs]);
+  // Payment requests are a side feature for boot purposes: if their load fails
+  // (e.g. migration not applied yet) every other module should still come up.
+  await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
   nav.module = isLeadershipRole(emp) ? 'dashboard' : (isHRRole(emp) ? 'hr' : ((isStaffRole(emp) || isSalesRole(emp)) ? 'workspace' : 'dashboard'));
   const landingMod = visibleModules().find(m=>m.id===nav.module);
   nav.sub[nav.module] = (landingMod && landingMod.sub && landingMod.sub.length) ? landingMod.sub[0].id : (nav.sub[nav.module] || 'overview');

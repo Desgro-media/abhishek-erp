@@ -214,6 +214,8 @@ model Employee {
   advances                Advance[]
   payrollEntries          PayrollEntry[]
   commissionWithdrawals   CommissionWithdrawal[]
+  paymentRequests         PaymentRequest[]
+  withdrawalRequests      WithdrawalRequest[]
 
   @@index([dept])
   @@map("employees")
@@ -436,6 +438,10 @@ model PayrollPayment {
   recordedBy     String?      @map("recorded_by")
   createdAt      DateTime     @default(now()) @map("created_at")
 
+  // Set only when this payment is the early payout of an approved salary
+  // withdrawal request — see WithdrawalRequest.
+  withdrawalRequest WithdrawalRequest?
+
   @@index([payrollEntryId])
   @@map("payroll_payments")
 }
@@ -478,6 +484,7 @@ enum BankTxnType {
 enum BankTxnRefType {
   INVOICE_PAYMENT
   PAYABLE_PAYMENT
+  PAYMENT_REQUEST
   EXPENSE
   TRANSFER
   JOURNAL
@@ -638,6 +645,7 @@ model BankAccount {
   transactions    BankTransaction[]
   invoicePayments InvoicePayment[]
   payablePayments PayablePayment[]
+  paymentRequests PaymentRequest[]
   expenses        Expense[]
   transfersFrom   Transfer[]        @relation("TransferFrom")
   transfersTo     Transfer[]        @relation("TransferTo")
@@ -755,6 +763,88 @@ model CommissionWithdrawal {
 
   @@index([employeeId])
   @@map("commission_withdrawals")
+}
+
+enum PaymentRequestCategory {
+  REIMBURSEMENT
+  TRAVEL
+  PURCHASE_VENDOR
+  OTHER
+}
+
+enum PaymentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Money OUT to an employee for anything that isn't salary — a reimbursement,
+// travel, a purchase they fronted. Any employee with a linked login can raise
+// one; it skips HR and goes straight to Finance/Admin, who approve-and-pay in
+// one step (choose the account + date) or reject. The debit is a single
+// BankTransaction (refType PAYMENT_REQUEST, refId = this row's id), written in
+// the same DB transaction that flips status to APPROVED, so the request and
+// the ledger can never disagree. Distinct from Advance (salary, HR-approved).
+model PaymentRequest {
+  id          String                 @id @default(uuid())
+  employeeId  String                 @map("employee_id")
+  employee    Employee               @relation(fields: [employeeId], references: [id])
+  category    PaymentRequestCategory
+  amount      Decimal                @db.Decimal(12, 2)
+  reason      String
+  requestedAt DateTime               @default(now()) @map("requested_at")
+  status      PaymentRequestStatus   @default(PENDING)
+  // Who decided and when — a User id (plain string, same convention as
+  // Advance.decidedBy / PayrollPayment.recordedBy). Also in the audit log.
+  decidedBy   String?                @map("decided_by")
+  decidedAt   DateTime?              @map("decided_at")
+  // Set only when APPROVED (paid).
+  paidDate    DateTime?              @map("paid_date") @db.Date
+  accountId   String?                @map("account_id")
+  account     BankAccount?           @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId])
+  @@index([status])
+  @@map("payment_requests")
+}
+
+enum WithdrawalRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Salary ALREADY EARNED in a CLOSED payroll month but not yet paid out on the
+// scheduled run, asked for early. Deliberately not an Advance: an Advance is
+// against the current, still-open month (HR-approved, recovered from payroll);
+// this is a plain early payment with nothing to recover. Not to be confused
+// with CommissionWithdrawal above, which draws down sales commission.
+//
+// The employee supplies only an amount. The month is derived server-side (the
+// most recently closed one) and the amount is checked against that month's
+// earned-but-unpaid balance both when the request is raised and again when it's
+// approved — a client-supplied figure is never trusted. Approving writes the
+// early PayrollPayment (linked back here) so the scheduled run only owes the
+// remainder. Finance/Admin decide; every decision is audit-logged.
+model WithdrawalRequest {
+  id               String                  @id @default(uuid())
+  employeeId       String                  @map("employee_id")
+  employee         Employee                @relation(fields: [employeeId], references: [id])
+  // "YYYY-MM" of the closed payroll month being drawn against.
+  month            String
+  amount           Decimal                 @db.Decimal(12, 2)
+  requestedAt      DateTime                @default(now()) @map("requested_at")
+  status           WithdrawalRequestStatus @default(PENDING)
+  // A User id, same convention as PaymentRequest.decidedBy. Also in the audit log.
+  decidedBy        String?                 @map("decided_by")
+  decidedAt        DateTime?               @map("decided_at")
+  // The early payment recorded on approval.
+  payrollPaymentId String?                 @unique @map("payroll_payment_id")
+  payrollPayment   PayrollPayment?         @relation(fields: [payrollPaymentId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId, month, status])
+  @@index([status])
+  @@map("withdrawal_requests")
 }
 
 // =============================================================================

@@ -4,61 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { resolveScopedEmployeeId } from "../../middleware/hrAccess";
 import { payrollEntrySchema, payrollPaymentSchema } from "../../validation/hr.schemas";
-import { computeLopDays } from "../../services/hr/leaveBalance";
-import { workingDaysInMonth } from "../../services/hr/workingDays";
-
-// Same formula as the old computePayrollRow() in app.js: 60/20/20 basic/HRA/
-// special split, 12% PF on basic, flat ₹200 PT, LOP priced at gross/working
-// days, advance deduction capped at each Recovering advance's balance.
-async function computeRow(employeeId: string, month: string) {
-  const entry = await prisma.payrollEntry.findUnique({
-    where: { employeeId_month: { employeeId, month } },
-    include: { payments: { orderBy: { paidDate: "asc" } } },
-  });
-  if (!entry) return null;
-
-  const gross = Number(entry.gross);
-  const basic = Math.round(gross * 0.6);
-  const hra = Math.round(gross * 0.2);
-  const special = gross - basic - hra;
-  const pf = Math.round(basic * 0.12);
-  const pt = 200;
-
-  const recoveringAdvances = await prisma.advance.findMany({ where: { employeeId, status: "RECOVERING" } });
-  const advDeduction = recoveringAdvances.reduce((sum, a) => sum + Math.min(Number(a.monthlyDeduction), Number(a.balance)), 0);
-
-  const monthWorkingDays = await workingDaysInMonth(month);
-  const lopDays = await computeLopDays(employeeId);
-  const perDayRate = monthWorkingDays ? gross / monthWorkingDays : 0;
-  const lopDeduction = Math.round(perDayRate * lopDays);
-
-  const totalDeductions = pf + pt + advDeduction + lopDeduction;
-  const net = gross - totalDeductions;
-  const paid = entry.payments.reduce((sum, p) => sum + Number(p.amount), 0);
-  const balance = Math.max(0, net - paid);
-  const payStatus = paid <= 0 ? "Unpaid" : balance > 0 ? "Partially Paid" : "Paid";
-
-  return {
-    employeeId,
-    month,
-    gross,
-    basic,
-    hra,
-    special,
-    pf,
-    pt,
-    advDeduction,
-    lopDays,
-    lopDeduction,
-    monthWorkingDays,
-    totalDeductions,
-    net,
-    paid,
-    balance,
-    payStatus,
-    payments: entry.payments,
-  };
-}
+import { computePayrollRow as computeRow, applyAdvanceRecovery } from "../../services/hr/payrollCalc";
 
 // HR/Admin only (mounted behind requireHRAdmin) — only employees HR has
 // actually added an entry for show up, same as the old prototype.
@@ -73,6 +19,22 @@ export const listPayrollForMonth: RequestHandler = asyncHandler(async (req, res)
 
   const rows = await Promise.all(entries.map((e) => computeRow(e.employeeId, month)));
   res.json({ month, rows });
+});
+
+// Any signed-in employee's OWN payroll history (pinned to their token's employeeId —
+// no id in the URL to tamper with). Deliberately just the headline figures the
+// employee-facing screen shows (salary, pay cuts, final salary, what's paid) rather
+// than the internal Basic/HRA/PF/PT breakdown HR works with.
+export const listMyPayroll: RequestHandler = asyncHandler(async (req, res) => {
+  const employeeId = req.user?.employeeId;
+  if (!employeeId) return res.json({ rows: [] });
+  const entries = await prisma.payrollEntry.findMany({ where: { employeeId }, select: { month: true }, orderBy: { month: "desc" } });
+  const computed = await Promise.all(entries.map((e) => computeRow(employeeId, e.month)));
+  const rows = computed.filter((r): r is NonNullable<typeof r> => r !== null).map((r) => ({
+    month: r.month, gross: r.gross, lopDays: r.lopDays, lopDeduction: r.lopDeduction,
+    net: r.net, paid: r.paid, balance: r.balance, payStatus: r.payStatus,
+  }));
+  res.json({ rows });
 });
 
 export const getPayrollEntry: RequestHandler = asyncHandler(async (req, res) => {
@@ -140,16 +102,7 @@ export const recordPayrollPayment: RequestHandler = asyncHandler(async (req, res
     },
   });
 
-  if (isFull) {
-    const recovering = await prisma.advance.findMany({ where: { employeeId, status: "RECOVERING" } });
-    for (const a of recovering) {
-      const newBalance = Math.max(0, Number(a.balance) - Number(a.monthlyDeduction));
-      await prisma.advance.update({
-        where: { id: a.id },
-        data: { balance: newBalance, status: newBalance === 0 ? "RECOVERED" : "RECOVERING" },
-      });
-    }
-  }
+  if (isFull) await applyAdvanceRecovery(prisma, employeeId);
 
   await recordAudit({
     userId: req.user!.sub,

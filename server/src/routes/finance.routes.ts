@@ -7,6 +7,8 @@ import * as payables from "../controllers/finance/payables.controller";
 import * as expenses from "../controllers/finance/expenses.controller";
 import * as coa from "../controllers/finance/coa.controller";
 import * as journal from "../controllers/finance/journal.controller";
+import * as paymentRequests from "../controllers/finance/paymentRequests.controller";
+import * as withdrawals from "../controllers/finance/withdrawalRequests.controller";
 import * as commissions from "../controllers/finance/commissions.controller";
 import * as salesTargets from "../controllers/finance/salesTargets.controller";
 import * as reports from "../controllers/finance/reports.controller";
@@ -58,6 +60,30 @@ router.get("/commission-withdrawals", requireFinanceAdminOrSales, commissions.li
 router.post("/commission-withdrawals", requireFinanceAdminOrSales, commissions.requestCommissionWithdrawal);
 router.post("/commission-withdrawals/:id/approve", requireFinanceAdmin, commissions.approveCommissionWithdrawal);
 router.post("/commission-withdrawals/:id/reject", requireFinanceAdmin, commissions.rejectCommissionWithdrawal);
+
+// Payment requests (reimbursement / travel / purchase — anything but salary).
+// Raising and viewing your own is open to ANY signed-in employee, so there's
+// deliberately no role guard on those two — the controller scopes the list to
+// the caller's own linked Employee and files requests only as the caller.
+// Deciding one moves real money out, so approve/reject are Finance/Admin only
+// and both write an audit row (who, what, when) atomically with the decision.
+router.get("/payment-requests", paymentRequests.listPaymentRequests);
+router.post("/payment-requests", paymentRequests.createPaymentRequest);
+router.post("/payment-requests/:id/approve", requireFinanceAdmin, paymentRequests.approvePaymentRequest);
+router.post("/payment-requests/:id/reject", requireFinanceAdmin, paymentRequests.rejectPaymentRequest);
+
+// Salary withdrawal requests — salary ALREADY EARNED in a closed payroll month,
+// paid out early (distinct from Advance Salary, which is HR-approved against the
+// still-open month). Raising one and checking your own eligibility is open to any
+// signed-in employee; the controller pins both to the caller's own linked Employee
+// and the server — not the client — decides the month and caps the amount. Listing
+// also lets HR (who run payroll) see everyone's. Deciding one moves real money out,
+// so approve/reject are Finance/Admin only, audit-logged atomically.
+router.get("/withdrawal-requests", withdrawals.listWithdrawalRequests);
+router.get("/withdrawal-requests/eligibility", withdrawals.getWithdrawalEligibility);
+router.post("/withdrawal-requests", withdrawals.createWithdrawalRequest);
+router.post("/withdrawal-requests/:id/approve", requireFinanceAdmin, withdrawals.approveWithdrawalRequest);
+router.post("/withdrawal-requests/:id/reject", requireFinanceAdmin, withdrawals.rejectWithdrawalRequest);
 
 // Monthly sales target + bonus — the target/rate are readable by Sales (to
 // show progress on their own workspace) but only writable by Finance/Admin;

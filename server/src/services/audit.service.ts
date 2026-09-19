@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 
 interface AuditParams {
@@ -14,8 +15,10 @@ interface AuditParams {
 // Fire-and-forget-shaped but always awaited by callers — a failed audit
 // write should surface (500) rather than silently let a money/salary
 // action go unlogged. See CROSS-CUTTING SECURITY REQUIREMENTS.
-export async function recordAudit(params: AuditParams): Promise<void> {
-  await prisma.auditLog.create({
+// Pass a transaction client as `db` to make the audit row commit or roll back
+// together with the money movement it describes.
+export async function recordAudit(params: AuditParams, db: Pick<Prisma.TransactionClient, "auditLog"> = prisma): Promise<void> {
+  await db.auditLog.create({
     data: {
       userId: params.userId ?? null,
       action: params.action,

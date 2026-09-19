@@ -130,6 +130,24 @@ export const commissionWithdrawalApproveSchema = z.object({
   date: dateStr.optional(),
 });
 
+export const paymentRequestCreateSchema = z.object({
+  category: z.enum(["REIMBURSEMENT", "TRAVEL", "PURCHASE_VENDOR", "OTHER"]),
+  // Upper bound keeps a fat-fingered amount from overflowing DECIMAL(12,2).
+  amount: z.number().positive().max(100_000_000),
+  reason: z.string().trim().min(1).max(500),
+});
+
+export const paymentRequestApproveSchema = z.object({
+  accountId: z.string().uuid(),
+  date: dateStr,
+});
+
+// Only an amount — the month is derived server-side (see closedPayrollMonth) and the
+// amount is re-checked against the earned-but-unpaid balance, never trusted.
+export const withdrawalRequestCreateSchema = z.object({
+  amount: z.number().positive().max(100_000_000),
+});
+
 export const salesPolicyUpdateSchema = z.object({
   monthlyTarget: z.number().positive().optional(),
   bonusRate: z.number().min(0).max(1).optional(),

@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
 
@@ -12,8 +13,9 @@ const POLICY_FIELD: Record<LeaveTypeKey, "casualLeaveDays" | "sickLeaveDays" | "
 // Real computation from the actual request/adjustment history — the old
 // prototype hardcoded "days used" per employee instead of deriving it from
 // `leaveRequests`, so this is a genuine fix, not a straight port.
-export async function computeLeaveBalance(employeeId: string) {
-  const policy = await prisma.hrPolicy.findUnique({ where: { id: 1 } });
+// `db` lets a caller already inside a transaction run this on that same connection.
+export async function computeLeaveBalance(employeeId: string, db: Prisma.TransactionClient = prisma) {
+  const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
   const base = {
     casualLeaveDays: policy?.casualLeaveDays ?? 12,
     sickLeaveDays: policy?.sickLeaveDays ?? 8,
@@ -21,8 +23,8 @@ export async function computeLeaveBalance(employeeId: string) {
   };
 
   const [adjustments, approved] = await Promise.all([
-    prisma.leaveBalanceAdjustment.groupBy({ by: ["type"], where: { employeeId }, _sum: { days: true } }),
-    prisma.leaveRequest.groupBy({ by: ["type"], where: { employeeId, status: "APPROVED" }, _sum: { days: true } }),
+    db.leaveBalanceAdjustment.groupBy({ by: ["type"], where: { employeeId }, _sum: { days: true } }),
+    db.leaveRequest.groupBy({ by: ["type"], where: { employeeId, status: "APPROVED" }, _sum: { days: true } }),
   ]);
 
   const adjByType = Object.fromEntries(adjustments.map((a) => [a.type, Number(a._sum.days ?? 0)]));
@@ -39,11 +41,11 @@ export async function computeLeaveBalance(employeeId: string) {
 
 // Loss-of-pay days = approved leave taken beyond the computed balance for
 // CASUAL/SICK/EARNED, plus all approved UNPAID leave outright.
-export async function computeLopDays(employeeId: string): Promise<number> {
-  const balance = await computeLeaveBalance(employeeId);
+export async function computeLopDays(employeeId: string, db: Prisma.TransactionClient = prisma): Promise<number> {
+  const balance = await computeLeaveBalance(employeeId, db);
   const overBalance = TYPES.reduce((sum, t) => sum + Math.max(0, -balance[t.toLowerCase()].remaining), 0);
 
-  const unpaid = await prisma.leaveRequest.aggregate({
+  const unpaid = await db.leaveRequest.aggregate({
     where: { employeeId, status: "APPROVED", type: "UNPAID" },
     _sum: { days: true },
   });
