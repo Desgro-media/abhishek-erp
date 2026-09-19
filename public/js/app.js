@@ -2219,6 +2219,9 @@ function toggleSalaryField(dept){
   const isSales = dept==='Sales';
   input.hidden = isSales; note.hidden = !isSales;
   input.required = !isSales;
+  // min must drop too: a hidden input holding 0 would otherwise fail min="1000"
+  // validation on an unfocusable field, and the browser silently blocks submit.
+  input.min = isSales ? '0' : '1000';
   if(isSales) input.value = '0';
 }
 function openAddEmployee(){
