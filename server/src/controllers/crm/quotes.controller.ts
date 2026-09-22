@@ -25,8 +25,16 @@ async function nextAutoInvoiceNo(): Promise<string> {
   return `DG-${new Date().getFullYear()}-${1000 + count + 1}`;
 }
 
-export const listQuotes: RequestHandler = asyncHandler(async (_req, res) => {
-  const quotes = await prisma.quote.findMany({ include: INCLUDE, orderBy: { createdAt: "desc" } });
+// Mounted behind requireCrmUser (ADMIN or SALES). A plain Sales caller only
+// ever sees the quotes they personally prepared (createdBy) — same
+// "narrow self-service slice" as listClients/listInvoices — ADMIN sees everyone's.
+export const listQuotes: RequestHandler = asyncHandler(async (req, res) => {
+  const admin = req.user?.roles?.includes("ADMIN") ?? false;
+  const quotes = await prisma.quote.findMany({
+    where: admin ? undefined : { createdBy: req.user!.name },
+    include: INCLUDE,
+    orderBy: { createdAt: "desc" },
+  });
   res.json({ quotes });
 });
 

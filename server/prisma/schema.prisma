@@ -293,6 +293,15 @@ model Advance {
   status           AdvanceStatus @default(PENDING)
   decidedBy        String?       @map("decided_by")
   decidedAt        DateTime?     @map("decided_at")
+  // Set only once Finance actually pays the lump sum out — separate from
+  // decidedBy/decidedAt (HR's approve/reject call), same "decide vs pay"
+  // split as PaymentRequest. Recovery afterward happens automatically out
+  // of payroll (installments/monthlyDeduction/balance above), so this is a
+  // one-time payout, not a balance Finance pays down over multiple visits.
+  paidDate         DateTime?     @map("paid_date") @db.Date
+  paidBy           String?       @map("paid_by")
+  accountId        String?       @map("account_id")
+  account          BankAccount?  @relation(fields: [accountId], references: [id], onDelete: Restrict)
 
   @@index([employeeId])
   @@index([status])
@@ -482,6 +491,7 @@ enum BankTxnRefType {
   TRANSFER
   JOURNAL
   MANUAL
+  ADVANCE
 }
 
 enum AccountType {
@@ -642,6 +652,7 @@ model BankAccount {
   expenses        Expense[]
   transfersFrom   Transfer[]        @relation("TransferFrom")
   transfersTo     Transfer[]        @relation("TransferTo")
+  advances        Advance[]
 
   @@map("bank_accounts")
 }

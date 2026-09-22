@@ -110,6 +110,7 @@ function mapAdvance(a){
     amount: Number(a.amount), reason: a.reason, requested: isoDate(a.requestedAt),
     installments: a.installments, status: TITLECASE_FROM_API(a.status),
     monthlyDeduction: Number(a.monthlyDeduction), balance: Number(a.balance),
+    paidDate: a.paidDate ? isoDate(a.paidDate) : undefined,
   };
 }
 function mapComplaint(c){
@@ -201,6 +202,22 @@ async function loadHiring(){
   const { positions } = await apiJson("/api/hr/positions");
   openPositions = positions.map(mapPosition);
   candidates = positions.flatMap(p=>(p.candidates||[]).map(mapCandidate));
+}
+// Matches the server's CandidateStage enum exactly (APPLIED/INTERVIEW/OFFER/HIRED/REJECTED) — no
+// "Shortlisted" step, unlike the design mockup this was ported from, which predates this schema.
+const CANDIDATE_STAGES = ["Applied","Interview","Offer","Hired","Rejected"];
+async function updateCandidateStage(id, stage){
+  const c = candidates.find(x=>x.id===id);
+  if(!c) return;
+  const prevStage = c.stage;
+  c.stage = stage; render(); // optimistic — snappy dropdown feedback, same pattern as cycleAttendance
+  try{
+    await apiJson(`/api/hr/candidates/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ stage: TITLECASE_TO_API(stage) }) });
+    toast(c.name+" moved to "+stage);
+  }catch(err){
+    c.stage = prevStage; render();
+    toast(err.message || "Couldn't update candidate stage");
+  }
 }
 async function loadNotices(){
   const { notices: list } = await apiJson("/api/hr/notices");
@@ -806,16 +823,23 @@ function openRequestPayment(){
 }
 
 // Finance/Admin queue — oldest first, plus the most recent decisions so a paid or
-// rejected request doesn't just vanish from view.
+// rejected request doesn't just vanish from view. Two sources feed the same queue: advance
+// salaries HR has already approved but Finance hasn't paid out yet, and payment requests anyone
+// raised for something other than salary — see pendingAdvanceDisbursements/loadPendingAdvanceDisbursements above.
 function acctPaymentRequests(){
-  const rows = pendingPaymentRequests();
+  const advRows = pendingAdvanceDisbursements.slice().sort((a,b)=>a.requested.localeCompare(b.requested));
+  const reqRows = pendingPaymentRequests();
+  const totalPending = advRows.length + reqRows.length;
   const decided = paymentRequests.filter(r=>r.status!=="Pending").slice().sort((a,b)=>(b.decidedDate||b.requested).localeCompare(a.decidedDate||a.requested)).slice(0,8);
   return `
-  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Payment requests anyone in the company raised for something other than salary — they skip HR and land here directly. Approving pays it in full from the account you choose and records the debit against that account; rejecting just declines it. Every decision is logged with who made it and when.</div></div>
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Two queues in one: advance salaries HR has already approved but Finance hasn't paid out yet — recovery afterward happens automatically out of payroll, nothing to track here — and payment requests anyone in the company raised for something other than salary, which skip HR and land here directly. Rejecting only applies to payment requests; an advance salary decision is HR's — reject it from HR &gt; Advance Salary instead. Every decision is logged with who made it and when.</div></div>
   <div class="panel">
-    <div class="panel-head"><h3>Payment Requests</h3><div class="sub">${rows.length} awaiting Finance</div></div>
+    <div class="panel-head"><h3>Payment Requests</h3><div class="sub">${totalPending} awaiting Finance</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Type</th><th>Raised by</th><th class="num">Amount</th><th>Reason</th><th>Requested</th><th></th></tr></thead>
-      <tbody>${rows.length?rows.map(r=>`<tr><td><span class="tag type">${esc(r.category)}</span></td><td class="muted">${esc(r.empName)}</td><td class="num mono">${inr(r.amount)}</td><td class="muted">${esc(r.reason)}</td><td class="muted">${fmtDateShort(r.requested)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openApprovePaymentRequest('${r.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve &amp; pay</button><button class="btn btn-sm danger" onclick="rejectPaymentRequest('${r.id}')">Reject</button></div></td></tr>`).join(""):'<tr><td colspan="6"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
+      <tbody>${totalPending?[
+        ...advRows.map(a=>`<tr><td>${pill('Advance Salary','blue')}<div class="subtext">HR-approved</div></td><td class="muted">${esc(a.empName)}</td><td class="num mono">${inr(a.amount)}</td><td class="muted">${esc(a.reason)}</td><td class="muted">${fmtDateShort(a.requested)}</td><td><button class="btn btn-sm primary" onclick="openDisburseAdvance('${a.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Pay</button></td></tr>`),
+        ...reqRows.map(r=>`<tr><td><span class="tag type">${esc(r.category)}</span></td><td class="muted">${esc(r.empName)}</td><td class="num mono">${inr(r.amount)}</td><td class="muted">${esc(r.reason)}</td><td class="muted">${fmtDateShort(r.requested)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openApprovePaymentRequest('${r.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve &amp; pay</button><button class="btn btn-sm danger" onclick="rejectPaymentRequest('${r.id}')">Reject</button></div></td></tr>`)
+      ].join(""):'<tr><td colspan="6"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
     </table></div>
   </div>
   ${decided.length?`<div class="panel">
@@ -864,6 +888,49 @@ async function rejectPaymentRequest(id){
     toast(err.message || "Couldn't reject payment request");
     if(/already decided/i.test(err.message||"")){ await loadPaymentRequests().catch(()=>{}); render(); }
   }
+}
+
+// HR already decided pending/approved/rejected (see decideAdvance in the HR module) — these are
+// advances HR has approved ("Recovering") that Finance hasn't actually paid out yet. A one-time
+// lump sum, not a balance paid down over multiple visits — recovery out of payroll afterward is
+// automatic (advDeduction) and unrelated to this. Shown alongside Payment Requests below since
+// both are the same kind of queue: money HR/an employee cleared that Finance still needs to pay.
+let pendingAdvanceDisbursements = [];
+function mapAdvanceDisbursement(a){
+  return { id:a.id, empId:a.employee.employeeCode, empName:a.employee.name, amount:Number(a.amount),
+    reason:a.reason, requested:isoDate(a.requestedAt) };
+}
+async function loadPendingAdvanceDisbursements(){
+  pendingAdvanceDisbursements = (await apiJson("/api/finance/advances/pending-disbursement")).advances.map(mapAdvanceDisbursement);
+}
+function openDisburseAdvance(id){
+  const a = pendingAdvanceDisbursements.find(x=>x.id===id);
+  if(!a) return;
+  showModal(`
+    <div class="modal-head"><h3>Pay advance salary — ${esc(a.empName)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-disburse-advance"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>HR-approved · ${esc(a.reason)} · <b>${inr(a.amount)}</b> requested ${fmtDateShort(a.requested)}. Paid in full from the account below — recovery from payroll happens automatically afterward.</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Paid from account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)} — ${inr(b.balance)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Pay out</button></div></div>
+    </form>`);
+  document.getElementById("f-disburse-advance").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const submit = e.target.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    const f = new FormData(e.target);
+    try{
+      await apiJson(`/api/finance/advances/${id}/disburse`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId:f.get("accountId"), date:f.get("date") }) });
+      await Promise.all([loadPendingAdvanceDisbursements(), loadBankAccounts()]);
+      toast(a.empName+"'s advance paid out"); closeModal(); render();
+    }catch(err){
+      submit.disabled = false; toast(err.message || "Couldn't pay out advance");
+      if(/already paid|already decided/i.test(err.message||"")){ await loadPendingAdvanceDisbursements().catch(()=>{}); closeModal(); render(); }
+    }
+  });
 }
 
 /* ===================== WITHDRAWAL REQUESTS + MY PAYROLL ===================== */
@@ -1392,7 +1459,7 @@ async function loadFinanceModule(){
   const roles = (currentUser && currentUser.roles) || [];
   if(admin){
     await Promise.all([loadBankAccounts(), loadChartOfAccounts()]);
-    await Promise.all([loadInvoices(), loadPayables(), loadExpenses(), loadJournalEntries(), loadCommissionWithdrawals(), loadSalesPolicy(), loadSalesTargets()]);
+    await Promise.all([loadInvoices(), loadPayables(), loadExpenses(), loadJournalEntries(), loadCommissionWithdrawals(), loadPendingAdvanceDisbursements(), loadSalesPolicy(), loadSalesTargets()]);
     await loadFinanceReports(payroll.selectedMonth);
   } else if(roles.includes('SALES')){
     // Sales' narrow slice: their own invoices, their own Commission/Sales
@@ -1448,7 +1515,8 @@ const MODULES = [
   {id:"accounts", label:"Accounts", icon:"i-wallet", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"invoices", label:"Invoices", icon:"i-receipt", count:()=>invoices.filter(i=>invoiceStatus(i)==="Overdue").length},
-    {id:"requests", label:"Payment Requests", icon:"i-coins", count:()=>pendingPaymentRequests().length},
+    {id:"receipts", label:"Payment Receipts", icon:"i-receipt", count:()=>pendingSalesPayments().length},
+    {id:"requests", label:"Payment Requests", icon:"i-coins", count:()=>pendingAdvanceDisbursements.length+pendingPaymentRequests().length},
     {id:"payroll", label:"Payroll", icon:"i-wallet", count:()=>{ const m = payroll.history[payroll.selectedMonth]; return m ? employees.filter(e=>e.dept!=='Sales' && !(e.id in m.entries)).length : 0; }},
     {id:"payables", label:"Payables", icon:"i-coins", count:()=>payables.filter(p=>payableStatus(p)!=="Paid").length},
     {id:"expenses", label:"Expenses", icon:"i-file"},
@@ -1535,7 +1603,7 @@ function visibleModules(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
-  "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests],
+  "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "hr/withdrawals":[loadWithdrawalRequests],
 };
 function refreshTab(mid, sid){
@@ -1662,7 +1730,7 @@ function render(){
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
-  else if(nav.module==="accounts") root.innerHTML = ({overview:acctOverview,invoices:acctInvoices,requests:acctPaymentRequests,payroll:acctPayroll,payables:acctPayables,expenses:acctExpenses,profitability:acctProfitability,banks:acctBanks,quotes:acctQuotes,commissions:acctCommissions,coa:acctChartOfAccounts,journal:acctJournal,reports:acctReports})[nav.sub.accounts]();
+  else if(nav.module==="accounts") root.innerHTML = ({overview:acctOverview,invoices:acctInvoices,receipts:acctPaymentReceipts,requests:acctPaymentRequests,payroll:acctPayroll,payables:acctPayables,expenses:acctExpenses,profitability:acctProfitability,banks:acctBanks,quotes:acctQuotes,commissions:acctCommissions,coa:acctChartOfAccounts,journal:acctJournal,reports:acctReports})[nav.sub.accounts]();
   if(nav.module==="marketing" && nav.sub.marketing==="content") initContentBoard();
   if(nav.module==="workspace" && nav.sub.workspace==="tasks") renderMyTaskBoard();
 }
@@ -2350,7 +2418,7 @@ function hrHiring(){
   <div class="panel">
     <div class="panel-head"><h3>Candidates</h3><div class="sub">${activeCandidates.length} in pipeline</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Contact</th><th>Applied</th><th>Stage</th><th></th></tr></thead>
-      <tbody>${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td>${pill(c.stage,statusKind(c.stage))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
+      <tbody>${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td><select class="select-sm" onchange="updateCandidateStage('${c.id}',this.value)">${CANDIDATE_STAGES.map(s=>`<option value="${s}" ${s===c.stage?'selected':''}>${s}</option>`).join("")}</select></td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
     </table></div>
   </div>
   ${archivedCandidates.length ? `
@@ -2498,7 +2566,7 @@ function hrAdvances(){
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Amount</th><th>Reason</th><th>Requested</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${sorted.map(a=>{
         const emp=byId(a.empId);
-        const actions = a.status==="Pending" ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="decideAdvance('${a.id}','Recovering')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm danger" onclick="decideAdvance('${a.id}','Rejected')">Reject</button></div>` : `<span class="faint" style="font-size:11.5px;">${a.status==='Rejected'?(a.note||''):inr(a.monthlyDeduction)+'/mo'}</span>`;
+        const actions = a.status==="Pending" ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="decideAdvance('${a.id}','Recovering')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm danger" onclick="decideAdvance('${a.id}','Rejected')">Reject</button></div>` : a.status==='Rejected' ? `<span class="faint" style="font-size:11.5px;">${a.note||''}</span>` : `<span class="faint" style="font-size:11.5px;">${inr(a.monthlyDeduction)}/mo</span>${a.paidDate?`<div class="subtext">Paid out ${fmtDateShort(a.paidDate)}</div>`:`<div class="subtext" style="color:var(--warn);">Awaiting payout — Accounts &gt; Payment Requests</div>`}`;
         return `<tr><td>${personCell(emp)}</td><td class="num mono">${inr(a.amount)}</td><td class="muted">${esc(a.reason)}</td><td class="muted">${fmtDate(a.requested)}</td><td class="num mono">${a.status==='Rejected'?'—':inr(a.balance)}</td><td>${pill(a.status,statusKind(a.status))}</td><td>${actions}</td></tr>`;
       }).join("")}</tbody>
     </table></div>
@@ -3600,14 +3668,17 @@ async function deleteContentCard(){
 
 function clientPaymentDue(clientId){ return invoices.filter(i=>i.clientId===clientId).reduce((s,i)=>s+invoiceBalance(i),0); }
 function clientsAll(){
+  // The server already scopes `clients` to just this Sales caller's own book when they're a plain
+  // Sales role (see listClients) — this just labels the view to match what's actually being shown.
+  const isSalesViewer = isSalesRole(currentUser);
   const filtered = clients.filter(c=>clientsMonthFilter==='All' || c.onboarded.slice(0,7)===clientsMonthFilter);
   const hidePayment = isStaffRole(currentUser);
   return `
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Onboarded</span><select class="select-sm" onchange="setClientsMonthFilter(this.value)">${monthFilterOptions(clients.map(c=>c.onboarded), clientsMonthFilter)}</select></div><button class="btn primary" onclick="openAddClient()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add client</button></div>
   <div class="panel">
-    <div class="panel-head"><h3>Clients</h3><div class="sub">${filtered.length} of ${clients.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}</div></div>
+    <div class="panel-head"><h3>${isSalesViewer?'My clients':'Clients'}</h3><div class="sub">${filtered.length} of ${clients.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th>${hidePayment?'':'<th class="num">Payment Due</th>'}<th>Status</th></tr></thead>
-      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?5:6}"><div class="empty">No clients onboarded that month.</div></td></tr>`}</tbody>
+      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?5:6}"><div class="empty">${isSalesViewer?'No clients assigned to you yet.':'No clients onboarded that month.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -3788,15 +3859,18 @@ function updateQuoteTotal(){
   if(el) el.innerHTML = "Total: <b>"+inr(total)+"</b>";
 }
 function mktQuotes(){
+  // Same story as clientsAll(): the server already scopes `quotes` to just this Sales caller's own
+  // (createdBy===them) when they're a plain Sales role (see listQuotes) — this just labels it.
+  const isSalesViewer = isSalesRole(currentUser);
   const filtered = quotes.filter(q=>quotesMonthFilter==='All' || q.createdDate.slice(0,7)===quotesMonthFilter);
   const sorted = filtered.slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   return `
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Month</span><select class="select-sm" onchange="setQuotesMonthFilter(this.value)">${monthFilterOptions(quotes.map(q=>q.createdDate), quotesMonthFilter)}</select></div><button class="btn primary" onclick="openAddQuote()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New quote</button></div>
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>A quote can be for an existing client or a lead, with several services priced independently. As the client pays — in full or in installments — record each payment here to push it to Finance; they confirm the money landed and approve it from Accounts &gt; Quotes. A lead becomes a client automatically the first time Finance approves a payment for them.</div></div>
   <div class="panel">
-    <div class="panel-head"><h3>Quotes</h3><div class="sub">${filtered.length} of ${quotes.length}${quotesMonthFilter!=='All'?' in '+monthLabel(quotesMonthFilter):' total'}</div></div>
+    <div class="panel-head"><h3>${isSalesViewer?'My quotes':'Quotes'}</h3><div class="sub">${filtered.length} of ${quotes.length}${quotesMonthFilter!=='All'?' in '+monthLabel(quotesMonthFilter):' total'}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th>Service(s)</th><th class="num">Amount</th><th>Prepared by</th><th>Status</th><th></th></tr></thead>
-      <tbody>${sorted.map(q=>{ const party=quoteParty(q); return `<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="muted">${esc(q.createdBy)}</td><td>${pill(q.status,quoteStatusKind(q.status))}</td><td>${quoteActionsMkt(q)}</td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No quotes that month.</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(q=>{ const party=quoteParty(q); return `<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="muted">${esc(q.createdBy)}</td><td>${pill(q.status,quoteStatusKind(q.status))}</td><td>${quoteActionsMkt(q)}</td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">${isSalesViewer?'No quotes prepared by you yet.':'No quotes that month.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4414,6 +4488,33 @@ async function performDeleteReceipt(source, parentId, pendingId){
     toast("Payment entry deleted"); closeModal(); render();
   }catch(err){ toast(err.message || "Couldn't delete payment entry"); }
 }
+// Every payment Sales has pushed and Finance hasn't confirmed yet — whether it's against a quote
+// (before it's become an invoice) or logged against an already-raised invoice. Both used to be
+// listed inline on their own Quotes/Invoices tabs, which meant Finance had two separate queues to
+// check; this rolls them into one single "Payment Receipts" queue instead.
+function pendingSalesPayments(){
+  const rows = [];
+  invoices.forEach(inv=>{ (inv.pendingPayments||[]).forEach((p,idx)=>{ if(!p.approved) rows.push({source:'invoice', inv, p, idx}); }); });
+  quotes.forEach(q=>{ (q.payments||[]).forEach((p,idx)=>{ if(!p.approved) rows.push({source:'quote', q, p, idx}); }); });
+  return rows.sort((a,b)=>(b.p.date||'').localeCompare(a.p.date||''));
+}
+function acctPaymentReceipts(){
+  const rows = pendingSalesPayments();
+  return `
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Sales pushes a payment here the moment a client pays — even a partial one — whether it's against a quote or an existing invoice. Confirm which account the money actually landed in before approving; that's what creates (or tops up) the invoice and posts it to the bank ledger. Approving a lead's first payment also turns them into a client automatically.</div></div>
+  <div class="panel">
+    <div class="panel-head"><h3>Payment Receipts</h3><div class="sub">${rows.length} payment${rows.length===1?'':'s'} pushed by Sales, awaiting confirmation</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">This payment</th><th class="num">Total</th><th>Pushed by</th><th>Sales note</th><th></th></tr></thead>
+      <tbody>${rows.length?rows.map(r=>{
+        if(r.source==='quote'){
+          const party = quoteParty(r.q);
+          return `<tr><td class="mono">${esc(r.q.title)}<div class="subtext">Quote</div></td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(quoteTotal(r.q))}</td><td class="muted">${esc(r.q.createdBy)}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${r.q.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('quote','${r.q.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
+        }
+        return `<tr><td class="mono">${esc(r.inv.invoiceNo)}<div class="subtext">Invoice</div></td><td class="muted">${esc(clientById(r.inv.clientId).name)}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(invoiceBalance(r.inv))}</td><td class="muted">${esc(r.p.salesPerson||'—')}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${r.inv.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${r.inv.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
+      }).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+}
 function acctInvoices(){
   const totalReceivable = invoices.reduce((s,i)=>s+invoiceBalance(i),0);
   const overdueAmt = invoices.filter(i=>invoiceStatus(i)==="Overdue").reduce((s,i)=>s+invoiceBalance(i),0);
@@ -4425,13 +4526,6 @@ function acctInvoices(){
     <div class="kpi-card hero"><div class="kpi-label">Total Receivable</div><div class="kpi-value mono">${inr(totalReceivable)}</div><div class="kpi-sub">${inr(overdueAmt)} overdue</div></div>
     <div class="kpi-card"><div class="kpi-label">Total Invoiced</div><div class="kpi-value mono">${inr(invoices.reduce((s,i)=>s+invoiceTotal(i),0))}</div><div class="kpi-sub">${invoices.length} invoices, all time</div></div>
   </div>
-  ${(()=>{ const pendingRows=[]; invoices.forEach(inv=>{ (inv.pendingPayments||[]).forEach((p,idx)=>{ if(!p.approved) pendingRows.push({inv,p,idx}); }); }); return `
-  <div class="panel">
-    <div class="panel-head"><h3>Awaiting confirmation</h3><div class="sub">${pendingRows.length} payment${pendingRows.length===1?'':'s'} Sales collected against an existing invoice</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th class="num">This payment</th><th class="num">Balance</th><th>Collected by</th><th>Sales note</th><th></th></tr></thead>
-      <tbody>${pendingRows.length?pendingRows.map(({inv,p,idx})=>`<tr><td class="mono">${esc(inv.invoiceNo)}</td><td class="muted">${clientById(inv.clientId).name}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${inr(invoiceBalance(inv))}</td><td class="muted">${esc(p.salesPerson||'—')}</td><td class="muted">${esc(p.note||'—')} · ${fmtDateShort(p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${inv.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${inv.id}','${p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
-    </table></div>
-  </div>`; })()}
   <div class="panel">
     <div class="panel-head"><h3>Invoices</h3><div class="sub">${filtered.length} of ${invoices.length}${dateFilterSuffix(invoicesMonthFilter,'issued in')}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th>Issued</th><th>Due</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
@@ -5000,18 +5094,10 @@ async function openBankLedger(accountId){
 
 /* ---- Quotes (Finance side — see the Marketing > Quotes functions for the Sales side) ---- */
 function acctQuotes(){
-  const pendingRows = [];
-  quotes.forEach(q=>{ (q.payments||[]).forEach((p,idx)=>{ if(!p.approved) pendingRows.push({q,p,idx}); }); });
   const filtered = quotes.filter(q=>quotesMonthFilter==='All' || q.createdDate.slice(0,7)===quotesMonthFilter);
   const rest = filtered.slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   return `
-  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Sales pushes a payment here as soon as the client pays — even a partial one. Confirm which account the money actually landed in before approving — that's what creates (or tops up) the invoice and posts it to the bank ledger. Approving a lead's first payment also turns them into a client automatically.</div></div>
-  <div class="panel">
-    <div class="panel-head"><h3>Awaiting confirmation</h3><div class="sub">${pendingRows.length} payment${pendingRows.length===1?'':'s'} pushed by Sales · all months</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th class="num">This payment</th><th class="num">Quote total</th><th>Sales note</th><th>Prepared by</th><th></th></tr></thead>
-      <tbody>${pendingRows.length?pendingRows.map(({q,p,idx})=>{ const party=quoteParty(q); return `<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="muted">${esc(p.note||'—')} · ${fmtDateShort(p.date)}</td><td class="muted">${esc(q.createdBy)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${q.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('quote','${q.id}','${p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`; }).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
-    </table></div>
-  </div>
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Payments Sales pushes against a quote are confirmed from Accounts &gt; Payment Receipts, not here — approving one there is what creates (or tops up) the invoice and posts it to the bank ledger, and turns a lead into a client on their first approved payment.</div></div>
   <div class="panel">
     <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>All quotes</h3><div class="sub">${filtered.length} of ${quotes.length}${quotesMonthFilter!=='All'?' in '+monthLabel(quotesMonthFilter):' total'}</div></div><div class="filter-group"><span class="filter-label">Month</span><select class="select-sm" onchange="setQuotesMonthFilter(this.value)">${monthFilterOptions(quotes.map(q=>q.createdDate), quotesMonthFilter)}</select></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th>Service(s)</th><th class="num">Amount</th><th class="num">Approved so far</th><th>Status</th><th></th></tr></thead>
