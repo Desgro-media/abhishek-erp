@@ -48,6 +48,33 @@ export const markAttendance: RequestHandler = asyncHandler(async (req, res) => {
   res.json({ record });
 });
 
+// HR/Admin only — company-wide per-employee ON_LEAVE/WFH day counts for a
+// month, straight from Attendance. Powers the "Leave & WFH this month" panel
+// on HR > Leave Requests — a read-only overview alongside the annual leave
+// balance (computeLeaveBalance) and payroll's Loss of Pay (computeLopDays),
+// not a replacement for either.
+export const getMonthlySummary: RequestHandler = asyncHandler(async (req, res) => {
+  const month = (req.query.month as string) || todayStr().slice(0, 7);
+  const start = new Date(`${month}-01`);
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+
+  const grouped = await prisma.attendanceRecord.groupBy({
+    by: ["employeeId", "status"],
+    where: { date: { gte: start, lt: end }, status: { in: ["ON_LEAVE", "WFH"] } },
+    _count: { _all: true },
+  });
+
+  const byEmployee: Record<string, { leave: number; wfh: number }> = {};
+  for (const row of grouped) {
+    byEmployee[row.employeeId] ??= { leave: 0, wfh: 0 };
+    if (row.status === "ON_LEAVE") byEmployee[row.employeeId].leave = row._count._all;
+    else byEmployee[row.employeeId].wfh = row._count._all;
+  }
+
+  res.json({ month, byEmployee });
+});
+
 // HR/Admin can view any employee's history; anyone else only their own.
 export const getAttendanceHistory: RequestHandler = asyncHandler(async (req, res) => {
   const targetId = req.params.employeeId;

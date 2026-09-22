@@ -86,3 +86,19 @@ export const recordPayablePayment: RequestHandler = asyncHandler(async (req, res
   await recordAudit({ userId: req.user!.sub, action: "FIN_PAYABLE_PAYMENT", entityType: "Payable", entityId: payableId, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(201).json({ payment });
 });
+
+// Same rule as deleteInvoice: only before any payment has been recorded
+// against it — PayablePayment is append-only, so a paid-out payable is
+// corrected, never deleted out from under its own ledger entries.
+export const deletePayable: RequestHandler = asyncHandler(async (req, res) => {
+  const payable = await prisma.payable.findUnique({ where: { id: req.params.id }, include: { payments: true } });
+  if (!payable) return res.status(404).json({ error: "Payable not found" });
+  if (payable.payments.length > 0) {
+    return res.status(409).json({ error: "Can't delete a payable with recorded payments — the payment ledger is append-only." });
+  }
+
+  await prisma.payable.delete({ where: { id: payable.id } });
+
+  await recordAudit({ userId: req.user!.sub, action: "FIN_PAYABLE_DELETE", entityType: "Payable", entityId: payable.id, beforeData: { category: payable.category, payee: payable.payee }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.status(204).send();
+});

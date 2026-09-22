@@ -73,6 +73,10 @@ const TITLECASE_TO_API = s => s==null ? s : String(s).toUpperCase().replace(/ /g
 // transform (old "half"/"leave" vs API "HALF_DAY"/"ON_LEAVE").
 const ATTENDANCE_FROM_API = {PRESENT:"present", LATE:"late", HALF_DAY:"half", ABSENT:"absent", ON_LEAVE:"leave", WFH:"wfh"};
 const ATTENDANCE_TO_API = {present:"PRESENT", late:"LATE", half:"HALF_DAY", absent:"ABSENT", leave:"ON_LEAVE", wfh:"WFH"};
+// LeaveRequest.type doesn't round-trip through TITLECASE either (WFH is an
+// all-caps abbreviation, not a title-cased word).
+const LEAVE_TYPE_FROM_API = {CASUAL_SICK:"Casual/Sick", WFH:"WFH"};
+const LEAVE_TYPE_TO_API = {"Casual/Sick":"CASUAL_SICK", WFH:"WFH"};
 const isoDate = s => s ? String(s).slice(0,10) : s;
 
 function mapEmployee(e){
@@ -89,7 +93,7 @@ function mapEmployee(e){
 function mapLeaveRequest(l){
   return {
     id: l.id, empId: employeeCodeByDbId[l.employeeId] || l.employeeId,
-    type: TITLECASE_FROM_API(l.type), duration: TITLECASE_FROM_API(l.duration),
+    type: LEAVE_TYPE_FROM_API[l.type] || l.type, duration: TITLECASE_FROM_API(l.duration),
     from: isoDate(l.fromDate), to: isoDate(l.toDate), days: Number(l.days),
     reason: l.reason, status: TITLECASE_FROM_API(l.status),
     applied: isoDate(l.appliedAt), note: l.note || undefined,
@@ -107,10 +111,10 @@ function mapComplaint(c){
   return { id:c.id, category:c.category, dept:c.dept||"", text:c.text, submitted:isoDate(c.submittedAt), status:TITLECASE_FROM_API(c.status), note:c.note||undefined };
 }
 function mapPosition(p){
-  return { id:p.id, role:p.role, dept:p.dept, openings:p.openings, status:TITLECASE_FROM_API(p.status), postedDate:isoDate(p.postedDate) };
+  return { id:p.id, role:p.role, dept:p.dept, openings:p.openings, status:TITLECASE_FROM_API(p.status), postedDate:isoDate(p.postedDate), archived:!!p.archived };
 }
 function mapCandidate(c){
-  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate) };
+  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate), archived:!!c.archived };
 }
 function mapNotice(n){
   return { id:n.id, title:n.title, message:n.message, postedBy:n.postedByUser?.name||"", postedDate:isoDate(n.postedDate) };
@@ -120,6 +124,7 @@ function mapNotice(n){
 function mapPayrollRow(r){
   return { basic:r.basic, hra:r.hra, special:r.special, gross:r.gross, pf:r.pf, pt:r.pt,
     advDeduction:r.advDeduction, lopDays:r.lopDays, lopDeduction:r.lopDeduction,
+    wfhExcessDays:r.wfhExcessDays||0, wfhDeduction:r.wfhDeduction||0,
     monthWorkingDays:r.monthWorkingDays, totalDeductions:r.totalDeductions, net:r.net,
     paid:r.paid, balance:r.balance, payStatus:r.payStatus,
     payments:(r.payments||[]).map(p=>({amount:Number(p.amount), date:isoDate(p.paidDate), note:p.note})) };
@@ -133,9 +138,13 @@ async function apiJson(url, opts){
 }
 
 /* ===================== HR MODULE — LOADERS ===================== */
-let hrPolicy = { casualLeaveDays:12, sickLeaveDays:8, earnedLeaveDays:15, weeklyOff:0, notes:"", holidays:[] };
+let hrPolicy = { weeklyOff:0, paidLeavesPerMonth:1, paidWfhPerMonth:1, notes:"", holidays:[] };
 let leavePayPolicy = { notes:"" };
-let leaveBalanceCache = {}; // empCode -> {casual:{used,total},sick:{...},earned:{...}}
+// empCode -> computeMonthlyLeaveUsage() shape for whatever month was last fetched
+// ({month, leaveDays, leaveCap, leaveRemaining, lopDays, wfhDays, wfhCap, wfhRemaining, wfhExcessDays}).
+// A monthly cap, not a running balance — there's no single "current" figure
+// without a month attached, unlike the old annual entitlement this replaced.
+let leaveBalanceCache = {};
 let attendanceToday = {};   // empCode -> {status,in}
 // Fake per-employee MTD override in the old prototype — real MTD attendance
 // isn't tracked yet beyond "today", so every lookup below just falls back to
@@ -153,8 +162,8 @@ let payroll = { selectedMonth: TODAY.slice(0,7), history: {} };
 async function loadPolicy(){
   const { policy, holidays } = await apiJson("/api/hr/policy");
   hrPolicy = {
-    casualLeaveDays: policy.casualLeaveDays, sickLeaveDays: policy.sickLeaveDays, earnedLeaveDays: policy.earnedLeaveDays,
-    weeklyOff: policy.weeklyOff, notes: policy.generalNotes || "",
+    weeklyOff: policy.weeklyOff, paidLeavesPerMonth: policy.paidLeavesPerMonth, paidWfhPerMonth: policy.paidWfhPerMonth,
+    notes: policy.generalNotes || "",
     holidays: holidays.map(h=>({date:isoDate(h.date), name:h.name})),
   };
   leavePayPolicy = { notes: policy.leavePayNotes || "" };
@@ -204,6 +213,18 @@ async function loadAttendanceToday(){
   // Anyone without a record today reads as absent rather than crashing the render layer.
   employees.forEach(e=>{ if(!attendanceToday[e.id]) attendanceToday[e.id] = { status:"absent", in:null }; });
 }
+// Month -> {empCode: {leave, wfh}} — company-wide ON_LEAVE/WFH day counts from
+// real Attendance, for HR > Leave Requests' "Leave & WFH this month" panel.
+// Read-only overview; doesn't feed payroll's Loss of Pay (computeLopDays,
+// balance-based) or the annual leave-balance panel — see that endpoint's
+// server-side comment for why the two aren't the same figure.
+let attendanceMonthSummary = {};
+async function loadAttendanceMonthSummary(month){
+  const { byEmployee } = await apiJson(`/api/hr/attendance/summary?month=${month}`);
+  const byCode = {};
+  Object.entries(byEmployee).forEach(([dbId, counts])=>{ byCode[employeeCodeByDbId[dbId] || dbId] = counts; });
+  attendanceMonthSummary[month] = byCode;
+}
 async function loadPayrollMonth(month){
   const { rows } = await apiJson(`/api/hr/payroll?month=${month}`);
   payroll.history[month] = { entries: {} };
@@ -232,7 +253,7 @@ async function loadHrModule(){
     await Promise.all([
       loadPolicy(), loadLeaveRequests(), loadAdvances(), loadComplaints(),
       loadHiring(), loadNotices(), loadLeaveBalances(), loadAttendanceToday(),
-      loadArchivedEmployees(),
+      loadArchivedEmployees(), loadAttendanceMonthSummary(TODAY.slice(0,7)),
     ]);
     const prevMonth = (()=>{ const [y,m]=TODAY.slice(0,7).split('-').map(Number); const d=new Date(y,m-2,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })();
     await Promise.all([loadPayrollMonth(TODAY.slice(0,7)), loadPayrollMonth(prevMonth)]);
@@ -310,33 +331,15 @@ function calendarEventsForMonth(monthStr){
   return map;
 }
 
+// Monthly cap usage (computeMonthlyLeaveUsage() shape), not an annual
+// balance — see leaveBalanceCache above. Falls back to a zero-usage default
+// against the org-wide caps if nothing's been fetched for this employee yet.
 function leaveBalance(empId){
   return leaveBalanceCache[empId] || {
-    casual:{used:0,total:hrPolicy.casualLeaveDays}, sick:{used:0,total:hrPolicy.sickLeaveDays}, earned:{used:0,total:hrPolicy.earnedLeaveDays},
+    month: TODAY.slice(0,7),
+    leaveDays:0, leaveCap:hrPolicy.paidLeavesPerMonth, leaveRemaining:hrPolicy.paidLeavesPerMonth, lopDays:0,
+    wfhDays:0, wfhCap:hrPolicy.paidWfhPerMonth, wfhRemaining:hrPolicy.paidWfhPerMonth, wfhExcessDays:0,
   };
-}
-async function openAdjustLeaveBalance(empId){
-  const e = byId(empId);
-  showModal(`
-    <div class="modal-head"><h3>Add leave balance</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
-    <form id="f-adjust-balance"><div class="modal-body">
-      <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
-      <div class="field-row">
-        <div><label class="field-label">Leave type</label><select class="field-input" name="type"><option value="casual">Casual</option><option value="sick">Sick</option><option value="earned">Earned</option></select></div>
-        <div><label class="field-label">Days to add</label><input class="field-input" type="number" name="days" step="0.25" required placeholder="e.g. 2 (use a negative number to correct downward)"></div>
-      </div>
-      <div><label class="field-label">Reason</label><input class="field-input" name="reason" placeholder="e.g. Carried forward from last year, comp-off granted"></div>
-    </div>
-    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Add to balance</button></div></div>
-    </form>`);
-  document.getElementById("f-adjust-balance").addEventListener("submit", async ev=>{
-    ev.preventDefault();
-    const f = new FormData(ev.target);
-    const type = f.get("type"); const days = Number(f.get("days"));
-    await apiJson("/api/hr/leave-balance-adjustments", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId: employeeDbIdByCode[empId], type: type.toUpperCase(), days, note: f.get("reason")||undefined }) });
-    await loadLeaveBalances();
-    toast(`${days>0?"+":""}${days} ${type} day(s) added for ${e.name}`); closeModal(); render();
-  });
 }
 
 function monthLabel(m){ const [y,mm] = m.split('-').map(Number); return new Date(y, mm-1, 1).toLocaleDateString('en-US', {month:'long', year:'numeric'}); }
@@ -354,6 +357,43 @@ let quotesMonthFilter = "All";
 function setQuotesMonthFilter(v){ quotesMonthFilter = v; render(); }
 let clientsMonthFilter = "All";
 function setClientsMonthFilter(v){ clientsMonthFilter = v; render(); }
+// "Today / month-wise / All time" filter — a superset of monthFilterOptions
+// above (adds a Today option) for lists where "just today" is a common ask
+// (Advances, Expenses, Invoices, Payables, Commissions, Journal, Client Task
+// Board). Left the older monthFilterOptions()/*MonthFilter above untouched
+// rather than migrating them, to keep this additive.
+function dateFilterOptions(dates, current){
+  const months = [...new Set(dates.filter(Boolean).map(d=>d.slice(0,7)))].sort().reverse();
+  return `<option value="Today" ${current==='Today'?'selected':''}>Today</option>`
+    + `<option value="All" ${current==='All'?'selected':''}>All time</option>`
+    + months.map(m=>`<option value="${m}" ${m===current?'selected':''}>${monthLabel(m)}</option>`).join('');
+}
+function matchesDateFilter(dateStr, filterValue){
+  if(!dateStr) return false;
+  if(filterValue==='Today') return dateStr===TODAY;
+  if(filterValue==='All') return true;
+  return dateStr.slice(0,7)===filterValue;
+}
+function dateFilterSuffix(filterValue, verb){
+  const v = verb || 'in';
+  if(filterValue==='Today') return ' today';
+  if(filterValue==='All') return ' total';
+  return ' '+v+' '+monthLabel(filterValue);
+}
+let invoicesMonthFilter = "All";
+function setInvoicesMonthFilter(v){ invoicesMonthFilter = v; render(); }
+let payablesMonthFilter = "All";
+function setPayablesMonthFilter(v){ payablesMonthFilter = v; render(); }
+let expensesMonthFilter = "All";
+function setExpensesMonthFilter(v){ expensesMonthFilter = v; render(); }
+let commissionsMonthFilter = "All";
+function setCommissionsMonthFilter(v){ commissionsMonthFilter = v; render(); }
+let journalMonthFilter = "All";
+function setJournalMonthFilter(v){ journalMonthFilter = v; render(); }
+let advancesMonthFilter = "All";
+function setAdvancesMonthFilter(v){ advancesMonthFilter = v; render(); }
+let clientTaskBoardMonthFilter = {}; // per-client — {clientId: "All"|"Today"|"YYYY-MM"}
+function setClientTaskBoardMonthFilter(clientId, v){ clientTaskBoardMonthFilter[clientId] = v; render(); }
 
 const COMPLAINT_CATEGORIES = ["Workplace Behavior","Harassment","Management / Leadership","Compensation & Benefits","Work Environment","Policy Violation","Other"];
 
@@ -802,7 +842,7 @@ function workspacePayroll(){
   if(!currentUser) return '';
   const e = currentUser;
   const latest = myPayroll[0] || null;
-  const payCuts = latest ? latest.lopDeduction : 0;
+  const payCuts = latest ? latest.lopDeduction + (latest.wfhDeduction||0) : 0;
 
   const myAdvances = advances.filter(a=>a.empId===e.id).map(a=>({type:"Advance", date:a.requested, amount:a.amount, paid:0, balance: a.status==="Recovering"?a.balance:0, status:a.status}));
   const myWithdrawals = withdrawalRequests.filter(w=>w.empId===e.id).map(w=>({type:"Withdrawal", date:w.requested, amount:w.amount, paid: w.status==="Approved"?w.amount:0, balance: w.status==="Pending"?w.amount:0, status: w.status==="Approved"?"Paid":w.status}));
@@ -821,6 +861,7 @@ function workspacePayroll(){
       <div class="calc-line"><span>Salary</span><span class="mono">${inr(latest.gross)}</span></div>
       <div class="calc-line"><span>Pay cuts</span><span class="mono ${payCuts>0?'':'faint'}" style="${payCuts>0?'color:var(--neg);':''}">${payCuts>0?'−'+inr(payCuts):'none'}</span></div>
       ${latest.lopDeduction>0?`<div class="calc-line" style="padding-left:14px;"><span class="faint" style="font-size:12.5px;">Loss of Pay — ${latest.lopDays} day${latest.lopDays===1?"":"s"} beyond your leave balance</span><span class="mono faint" style="font-size:12.5px;">−${inr(latest.lopDeduction)}</span></div>`:""}
+      ${latest.wfhDeduction>0?`<div class="calc-line" style="padding-left:14px;"><span class="faint" style="font-size:12.5px;">WFH — ${latest.wfhExcessDays} day${latest.wfhExcessDays===1?"":"s"} beyond your paid WFH allowance, at 75% pay</span><span class="mono faint" style="font-size:12.5px;">−${inr(latest.wfhDeduction)}</span></div>`:""}
       <div class="calc-line total"><span>Final salary</span><span class="mono">${inr(latest.net)}</span></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
         <span class="sub">Payment status</span>
@@ -832,7 +873,7 @@ function workspacePayroll(){
   <div class="panel">
     <div class="panel-head"><h3>History</h3><div class="sub">Every cycle you've been part of</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th></tr></thead>
-      <tbody>${myPayroll.map(r=>`<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${r.lopDeduction>0?'warn':'faint'}">${r.lopDeduction>0?'−'+inr(r.lopDeduction):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td></tr>`).join("")}</tbody>
+      <tbody>${myPayroll.map(r=>{ const cuts=r.lopDeduction+(r.wfhDeduction||0); return `<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${cuts>0?'warn':'faint'}">${cuts>0?'−'+inr(cuts):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>` : ``}
   <div class="panel">
@@ -1323,6 +1364,7 @@ const MODULES = [
     {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
     {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
+    {id:"complaints", label:"Complaints", icon:"i-megaphone"},
   ]},
   {id:"hr", label:"HR", icon:"i-users", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
@@ -1396,6 +1438,7 @@ const SALES_WORKSPACE_SUB = [
   {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
   {id:"commission", label:"My Commission", icon:"i-percent", count:()=>currentUser?payables.filter(p=>p.category==="Commission" && p.salesPerson===currentUser.name && payableBalance(p)>0).length:0},
   {id:"leaderboard", label:"Leaderboard", icon:"i-target"},
+  {id:"complaints", label:"Complaints", icon:"i-megaphone"},
 ];
 function visibleModules(){
   // Leadership/Admin must win ties — someone can legitimately hold both HR
@@ -1561,7 +1604,7 @@ function render(){
   }
   renderTopbar();
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard})[nav.sub.workspace]();
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
@@ -1772,6 +1815,25 @@ function workspaceLeaderboard(){
     </table></div>
   </div>`;
 }
+// Anonymous complaints, opened up to every non-HR sign-in — HR already has this inside the HR module,
+// which most staff don't have access to. No "your submissions" list here — a submission carries no
+// employee ID, so there's nothing to tie back to currentUser without breaking the anonymity itself.
+function workspaceComplaints(){
+  return `
+  <div class="banner muted">
+    <svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg>
+    <div><b>Anonymous by design.</b> A submission carries no name, employee ID or contact detail — only the category, an optional department, and the message. Because nothing identifies you, there's no "your submissions" list here either — once it's sent, it's out of your hands the same way it would be for anyone else.</div>
+  </div>
+  <div class="panel">
+    <div class="panel-body" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+      <div>
+        <div style="font-weight:700;margin-bottom:4px;">Something to raise?</div>
+        <div class="sub">Workplace behavior, management, compensation, work environment, policy — whatever it is</div>
+      </div>
+      <button class="btn primary" onclick="openSubmitComplaint()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Submit a complaint</button>
+    </div>
+  </div>`;
+}
 function workspaceTasks(){
   const archivedCount = currentUser ? clientTasks.filter(t=>t.assignedTo===currentUser.name && isTaskArchived(t)).length : 0;
   return `
@@ -1784,14 +1846,27 @@ function workspaceTasks(){
 function workspaceLeave(){
   if(!currentUser) return '';
   const mine = leaveRequests.filter(l=>l.empId===currentUser.id).slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
-  const idx = employees.findIndex(e=>e.id===currentUser.id);
-  const bal = leaveBalance(currentUser.id, idx);
+  const bal = leaveBalance(currentUser.id);
+  const hasImpact = bal.lopDays>0 || bal.wfhExcessDays>0;
   return `
   <div class="toolbar"><div></div><button class="btn primary" onclick="openApplyLeave()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Apply for leave</button></div>
-  <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);">
-    <div class="kpi-card"><div class="kpi-label">Casual</div><div class="kpi-value mono">${bal.casual.total-bal.casual.used}<span style="font-size:13px;color:var(--ink-soft);"> / ${bal.casual.total}</span></div></div>
-    <div class="kpi-card"><div class="kpi-label">Sick</div><div class="kpi-value mono">${bal.sick.total-bal.sick.used}<span style="font-size:13px;color:var(--ink-soft);"> / ${bal.sick.total}</span></div></div>
-    <div class="kpi-card"><div class="kpi-label">Earned</div><div class="kpi-value mono">${bal.earned.total-bal.earned.used}<span style="font-size:13px;color:var(--ink-soft);"> / ${bal.earned.total}</span></div></div>
+  <div class="panel">
+    <div class="panel-head"><h3>This month's leave &amp; WFH</h3><div class="sub">${esc(monthLabel(bal.month))} · ${hrPolicy.paidLeavesPerMonth} paid leave day &amp; ${hrPolicy.paidWfhPerMonth} paid WFH day per month</div></div>
+    <div class="panel-body">
+      <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Paid leave left</div><div class="kpi-value mono ${bal.leaveRemaining<=0?'warn':''}">${bal.leaveRemaining} <span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;">/ ${hrPolicy.paidLeavesPerMonth}</span></div><div class="kpi-sub">${bal.leaveDays} taken so far this month</div></div>
+        <div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Paid WFH left</div><div class="kpi-value mono ${bal.wfhRemaining<=0?'warn':''}">${bal.wfhRemaining} <span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;">/ ${hrPolicy.paidWfhPerMonth}</span></div><div class="kpi-sub">${bal.wfhDays} taken so far this month</div></div>
+      </div>
+      ${hasImpact ? `
+      <div class="banner" style="margin-top:12px;">
+        <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
+        <div><b>This is already affecting your payroll.</b> ${bal.lopDays>0?`${bal.lopDays} leave day${bal.lopDays===1?"":"s"} beyond your ${hrPolicy.paidLeavesPerMonth}/month allowance means a full Loss of Pay deduction for ${bal.lopDays===1?"that day":"those days"}.`:""} ${bal.wfhExcessDays>0?`${bal.wfhExcessDays} WFH day${bal.wfhExcessDays===1?"":"s"} beyond your ${hrPolicy.paidWfhPerMonth}/month allowance is paid at 75% instead of full pay.`:""} See exactly how much in My Payroll.</div>
+      </div>` : `
+      <div class="banner muted" style="margin-top:12px;">
+        <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
+        <div>You're within your paid leave and WFH allowance for ${esc(monthLabel(bal.month))} — no pay impact yet.</div>
+      </div>`}
+    </div>
   </div>
   <div class="panel">
     <div class="panel-head"><h3>Your requests</h3></div>
@@ -1801,23 +1876,26 @@ function workspaceLeave(){
   </div>`;
 }
 function openApplyLeave(){
+  applyLeaveMonthUsage = {}; // fresh cache per modal open
   showModal(`
     <div class="modal-head"><h3>Apply for leave</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-apply-leave"><div class="modal-body">
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval.</div></div>
       <div class="field-row">
-        <div><label class="field-label">Type</label><select class="field-input" name="type"><option>Casual</option><option>Sick</option><option>Earned</option><option>Unpaid</option></select></div>
-        <div><label class="field-label">Duration</label><select class="field-input" name="duration"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
+        <div><label class="field-label">Type</label><select class="field-input" id="leave-type" name="type" onchange="updateLeaveImpactNote()"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option></select></div>
+        <div><label class="field-label">Duration</label><select class="field-input" id="leave-duration" name="duration" onchange="updateLeaveImpactNote()"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
       </div>
       <div class="field-row">
-        <div><label class="field-label">From</label><input class="field-input" type="date" name="from" value="${TODAY}" required></div>
-        <div><label class="field-label">To</label><input class="field-input" type="date" name="to" value="${TODAY}" required></div>
+        <div><label class="field-label">From</label><input class="field-input" id="leave-from" type="date" name="from" value="${TODAY}" required onchange="updateLeaveImpactNote()"></div>
+        <div><label class="field-label">To</label><input class="field-input" id="leave-to" type="date" name="to" value="${TODAY}" required onchange="updateLeaveImpactNote()"></div>
       </div>
       <div class="subtext">Half Day and Quarter Day apply only when From and To are the same date — a multi-day range is always counted as full days.</div>
+      <div id="leave-impact-note"></div>
       <div><label class="field-label">Reason</label><textarea class="field-input" name="reason" required placeholder="Brief reason for the request"></textarea></div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Submit request</button></div></div>
     </form>`);
+  updateLeaveImpactNote();
   document.getElementById("f-apply-leave").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
@@ -1828,12 +1906,77 @@ function openApplyLeave(){
     if(from===to && duration==="Quarter Day") days = 0.25;
     try{
       await apiJson("/api/hr/leave-requests", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
-        type: TITLECASE_TO_API(f.get("type")), duration: TITLECASE_TO_API(from===to?duration:"Full Day"), fromDate:from, toDate:to, days, reason:f.get("reason"),
+        type: LEAVE_TYPE_TO_API[f.get("type")] || f.get("type"), duration: TITLECASE_TO_API(from===to?duration:"Full Day"), fromDate:from, toDate:to, days, reason:f.get("reason"),
       })});
       leaveRequests = (await apiJson(`/api/hr/leave-requests?employeeId=${currentUser._dbId}`)).leaveRequests.map(mapLeaveRequest);
       toast("Leave request submitted"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't submit leave request"); }
   });
+}
+// Live "will this cause a pay cut" preview inside the Apply for Leave form — recalculated on every
+// Type/From/To/Duration change so staff see the Loss of Pay/WFH pay-cut consequence before they
+// submit, not after HR approves it. Computed the same way the real deduction is: days already marked
+// in Attendance this month (per computeMonthlyLeaveUsage) plus the newly requested days, split by
+// calendar month in case the range straddles a month boundary, against the org-wide monthly cap. Only
+// Full Day requests are previewed — Half/Quarter Day never touch Attendance (see decideLeaveRequest),
+// so they never affect this. The real deduction still only applies once HR approves the request.
+let applyLeaveMonthUsage = {}; // month -> {leaveDays,leaveCap,wfhDays,wfhCap,...} for the signed-in employee, cached for this modal
+async function updateLeaveImpactNote(){
+  const fromEl = document.getElementById('leave-from');
+  const toEl = document.getElementById('leave-to');
+  const durationEl = document.getElementById('leave-duration');
+  const typeEl = document.getElementById('leave-type');
+  const noteEl = document.getElementById('leave-impact-note');
+  if(!fromEl || !toEl || !noteEl || !currentUser) return;
+  const from = fromEl.value, to = toEl.value;
+  const duration = durationEl ? durationEl.value : 'Full Day';
+  const isWfh = typeEl ? typeEl.value === 'WFH' : false;
+  if(!from || !to || to<from){ noteEl.innerHTML = ''; return; }
+  if(from===to && duration!=='Full Day'){
+    noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;">
+      <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
+      <div>Half Day and Quarter Day requests don't affect Loss of Pay or the WFH pay-cut — only Full Day requests do.</div>
+    </div>`;
+    return;
+  }
+
+  // Split the requested (new) days by calendar month.
+  const newDaysByMonth = {};
+  for(let d=new Date(from+"T00:00:00Z"), end=new Date(to+"T00:00:00Z"); d<=end; d=new Date(d.getTime()+86400000)){
+    const m = d.toISOString().slice(0,7);
+    newDaysByMonth[m] = (newDaysByMonth[m]||0) + 1;
+  }
+  const months = Object.keys(newDaysByMonth);
+
+  noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;"><div>Checking your allowance…</div></div>`;
+  await Promise.all(months.map(async m=>{
+    if(!applyLeaveMonthUsage[m]){
+      applyLeaveMonthUsage[m] = await apiJson(`/api/hr/leave-balance/${currentUser._dbId}?month=${m}`).then(r=>r.balance).catch(()=>null);
+    }
+  }));
+  // The form may have changed again while that fetch was in flight — bail rather than show a stale preview.
+  if(fromEl.value!==from || toEl.value!==to || !document.getElementById('leave-impact-note')) return;
+
+  const dayKey = isWfh ? 'wfhDays' : 'leaveDays', capKey = isWfh ? 'wfhCap' : 'leaveCap';
+  const withExcess = months.map(m=>{
+    const usage = applyLeaveMonthUsage[m];
+    if(!usage) return null;
+    const newTotal = usage[dayKey] + newDaysByMonth[m];
+    const excess = Math.max(0, newTotal - usage[capKey]);
+    return excess>0 ? {month:m, excess, cap:usage[capKey]} : null;
+  }).filter(Boolean);
+
+  if(withExcess.length){
+    noteEl.innerHTML = `<div class="banner" style="margin-top:2px;margin-bottom:10px;">
+      <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
+      <div><b>This request will cause a pay cut.</b> ${withExcess.map(m=>`${m.excess} day${m.excess===1?"":"s"} in ${esc(monthLabel(m.month))} beyond your ${m.cap}/month ${isWfh?"paid-WFH":"paid-leave"} allowance — expect ${isWfh?"a 25% pay cut (paid at 75%)":"a Loss of Pay deduction"} for ${m.excess===1?"that day":"those days"} once approved.`).join(' ')}</div>
+    </div>`;
+  } else {
+    noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;">
+      <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
+      <div>Within your paid ${isWfh?"WFH":"leave"} allowance — no pay impact expected.</div>
+    </div>`;
+  }
 }
 function workspaceAttendance(){
   if(!currentUser) return '';
@@ -2069,30 +2212,51 @@ function hrAttendance(){
   </div>`;
 }
 
+let leaveRequestsMonthFilter = "All";
+async function setLeaveRequestsMonthFilter(v){
+  leaveRequestsMonthFilter = v;
+  const summaryMonth = (v!=='All' && v!=='Today') ? v : TODAY.slice(0,7);
+  if(!attendanceMonthSummary[summaryMonth]) await loadAttendanceMonthSummary(summaryMonth).catch(()=>{});
+  render();
+}
 function hrLeave(){
-  const sorted = leaveRequests.slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
+  const filtered = leaveRequests.filter(l=>matchesDateFilter(l.from, leaveRequestsMonthFilter));
+  const sorted = filtered.slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
   return `
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openAddLeave()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New request</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeaveRequestsMonthFilter(this.value)">${dateFilterOptions(leaveRequests.map(l=>l.from), leaveRequestsMonthFilter)}</select></div><button class="btn primary" onclick="openAddLeave()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New request</button></div>
   <div class="panel">
-    <div class="panel-head"><h3>Requests</h3></div>
+    <div class="panel-head"><h3>Requests</h3><div class="sub">${filtered.length} of ${leaveRequests.length}${dateFilterSuffix(leaveRequestsMonthFilter,'starting in')}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th class="num">Days</th><th>Reason</th><th>Status</th><th></th></tr></thead>
       <tbody>${sorted.map(l=>{
         const emp=byId(l.empId);
         const range = l.from===l.to ? fmtDateShort(l.from) : `${fmtDateShort(l.from)} – ${fmtDateShort(l.to)}`;
         const actions = l.status==="Pending" ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="decideLeave('${l.id}','Approved')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm danger" onclick="decideLeave('${l.id}','Rejected')">Reject</button></div>` : (l.note ? `<span class="faint" style="font-size:11.5px;">${esc(l.note)}</span>` : "");
         return `<tr><td>${personCell(emp)}</td><td>${esc(l.type)}${l.duration && l.duration!=="Full Day" ? ` <span class="faint">· ${esc(l.duration)}</span>` : ""}</td><td class="muted">${range}</td><td class="num">${l.days}</td><td class="muted">${esc(l.reason)}</td><td>${pill(l.status,statusKind(l.status))}</td><td>${actions}</td></tr>`;
-      }).join("")}</tbody>
+      }).join("") || `<tr><td colspan="7"><div class="empty">No leave requests${leaveRequestsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>
+  ${(()=>{
+    // Marked "On Leave"/"WFH" in Attendance for the chosen month — computed the same way payroll's
+    // Loss of Pay / WFH pay-cut are (computeLopDays()/computeWfhExcessDays()), both against the
+    // org-wide monthly caps set in HR Settings. Monthly caps, not an annual balance — there's no
+    // "Leave balances" table anymore, since that concept no longer exists in this policy.
+    const summaryMonth = (leaveRequestsMonthFilter!=='All' && leaveRequestsMonthFilter!=='Today') ? leaveRequestsMonthFilter : TODAY.slice(0,7);
+    const summary = attendanceMonthSummary[summaryMonth] || {};
+    return `
   <div class="panel">
-    <div class="panel-head"><h3>Leave balances</h3><div class="sub">Base annual entitlement · Casual ${hrPolicy.casualLeaveDays} · Sick ${hrPolicy.sickLeaveDays} · Earned ${hrPolicy.earnedLeaveDays} — set in HR Settings · use Add to grant extra days (carry-forward, comp-off, corrections)</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Casual</th><th class="num">Sick</th><th class="num">Earned</th><th></th></tr></thead>
-      <tbody>${employees.map((e,i)=>{ const b=leaveBalance(e.id,i); return `<tr><td>${personCell(e)}</td><td class="num">${b.casual.total-b.casual.used} <span class="faint">/ ${b.casual.total}</span></td><td class="num">${b.sick.total-b.sick.used} <span class="faint">/ ${b.sick.total}</span></td><td class="num">${b.earned.total-b.earned.used} <span class="faint">/ ${b.earned.total}</span></td><td><button class="btn btn-sm ghost" onclick="openAdjustLeaveBalance('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add</button></td></tr>`; }).join("")}</tbody>
+    <div class="panel-head"><h3>Leave &amp; WFH — ${esc(monthLabel(summaryMonth))}</h3><div class="sub">${hrPolicy.paidLeavesPerMonth} paid leave day${hrPolicy.paidLeavesPerMonth===1?'':'s'} &amp; ${hrPolicy.paidWfhPerMonth} paid WFH day${hrPolicy.paidWfhPerMonth===1?'':'s'} per employee per month — set in HR Settings</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">On Leave</th><th class="num">LOP days</th><th class="num">WFH</th><th class="num">WFH pay-cut days</th></tr></thead>
+      <tbody>${employees.map(e=>{ const c=summary[e.id]||{leave:0,wfh:0}; const lop=Math.max(0,c.leave-hrPolicy.paidLeavesPerMonth); const wfhCut=Math.max(0,c.wfh-hrPolicy.paidWfhPerMonth); return `<tr><td>${personCell(e)}</td><td class="num">${c.leave||'—'}</td><td class="num ${lop>0?'warn':''}">${lop||'—'}</td><td class="num">${c.wfh||'—'}</td><td class="num ${wfhCut>0?'warn':''}">${wfhCut||'—'}</td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>`;
+  })()}`;
 }
 
 function hrHiring(){
+  const activePositions = openPositions.filter(p=>!p.archived);
+  const archivedPositions = openPositions.filter(p=>p.archived);
+  const activeCandidates = candidates.filter(c=>!c.archived);
+  const archivedCandidates = candidates.filter(c=>c.archived);
   return `
   <div class="toolbar">
     <div></div>
@@ -2104,16 +2268,87 @@ function hrHiring(){
   </div>
   <div class="panel">
     <div class="panel-head"><div><h3>Open positions</h3><div class="sub">One application link covers every open role below — share it on hiring posts and WhatsApp broadcasts</div></div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Role</th><th>Department</th><th class="num">Openings</th><th>Posted</th><th>Status</th><th class="num">Candidates</th></tr></thead>
-      <tbody>${openPositions.map(p=>`<tr><td class="cell-strong" style="font-weight:700;">${esc(p.role)}</td><td class="muted">${esc(p.dept)}</td><td class="num">${p.openings}</td><td class="muted">${fmtDate(p.postedDate)}</td><td>${pill(p.status,statusKind(p.status))}</td><td class="num mono">${candidates.filter(c=>c.posId===p.id).length}</td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">No open positions.</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Role</th><th>Department</th><th class="num">Openings</th><th>Posted</th><th>Status</th><th class="num">Candidates</th><th></th></tr></thead>
+      <tbody>${activePositions.map(p=>`<tr><td class="cell-strong" style="font-weight:700;">${esc(p.role)}</td><td class="muted">${esc(p.dept)}</td><td class="num">${p.openings}</td><td class="muted">${fmtDate(p.postedDate)}</td><td>${pill(p.status,statusKind(p.status))}</td><td class="num mono">${activeCandidates.filter(c=>c.posId===p.id).length}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEditPosition('${p.id}')" title="Edit"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>${p.status==="Closed"?`<button class="btn btn-sm ghost" onclick="archivePosition('${p.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button>`:""}</div></td></tr>`).join("") || `<tr><td colspan="7"><div class="empty">No open positions.</div></td></tr>`}</tbody>
     </table></div>
   </div>
+  ${archivedPositions.length ? `
   <div class="panel">
-    <div class="panel-head"><h3>Candidates</h3><div class="sub">${candidates.length} in pipeline</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Contact</th><th>Applied</th><th>Stage</th><th></th></tr></thead>
-      <tbody>${candidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td>${pill(c.stage,statusKind(c.stage))}</td><td><button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg>Offer letter</button></td></tr>`; }).join("")}</tbody>
+    <div class="panel-head"><div><h3>Archived positions</h3><div class="sub">Closed roles, kept for the record</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Role</th><th>Department</th><th>Posted</th><th>Status</th><th></th></tr></thead>
+      <tbody>${archivedPositions.map(p=>`<tr><td class="muted">${esc(p.role)}</td><td class="muted">${esc(p.dept)}</td><td class="muted">${fmtDate(p.postedDate)}</td><td>${pill(p.status,statusKind(p.status))}</td><td><button class="btn btn-sm ghost" onclick="unarchivePosition('${p.id}')">Reopen</button></td></tr>`).join("")}</tbody>
     </table></div>
-  </div>`;
+  </div>` : ""}
+  <div class="panel">
+    <div class="panel-head"><h3>Candidates</h3><div class="sub">${activeCandidates.length} in pipeline</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Contact</th><th>Applied</th><th>Stage</th><th></th></tr></thead>
+      <tbody>${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td>${pill(c.stage,statusKind(c.stage))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
+    </table></div>
+  </div>
+  ${archivedCandidates.length ? `
+  <div class="panel">
+    <div class="panel-head"><div><h3>Archived candidates</h3><div class="sub">${archivedCandidates.length} out of the active pipeline</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Stage when archived</th><th></th></tr></thead>
+      <tbody>${archivedCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td class="muted">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td>${pill(c.stage,statusKind(c.stage))}</td><td><button class="btn btn-sm ghost" onclick="unarchiveCandidate('${c.id}')">Restore</button></td></tr>`; }).join("")}</tbody>
+    </table></div>
+  </div>` : ""}`;
+}
+function openEditPosition(id){
+  const p = openPositions.find(x=>x.id===id);
+  showModal(`
+    <div class="modal-head"><h3>Edit position</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-edit-position"><div class="modal-body">
+      <div><label class="field-label">Role</label><input class="field-input" name="role" required value="${esc(p.role)}"></div>
+      <div class="field-row">
+        <div><label class="field-label">Department</label><select class="field-input" name="dept">${DEPARTMENTS.map(d=>`<option ${d===p.dept?'selected':''}>${esc(d)}</option>`).join("")}</select></div>
+        <div><label class="field-label">Openings</label><input class="field-input" type="number" name="openings" min="1" value="${p.openings}" required></div>
+      </div>
+      <div><label class="field-label">Status</label><select class="field-input" name="status"><option value="Open" ${p.status==='Open'?'selected':''}>Open</option><option value="On Hold" ${p.status==='On Hold'?'selected':''}>On Hold</option><option value="Closed" ${p.status==='Closed'?'selected':''}>Closed</option></select></div>
+      <div class="subtext">Mark it Closed once hiring is done — that's what unlocks the archive option.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-edit-position").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try{
+      await apiJson(`/api/hr/positions/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ role:f.get("role"), dept:f.get("dept"), openings:Number(f.get("openings")), status:TITLECASE_TO_API(f.get("status")) }) });
+      await loadHiring();
+      toast("Position updated"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't update position"); }
+  });
+}
+async function archivePosition(id){
+  const p = openPositions.find(x=>x.id===id);
+  try{
+    await apiJson(`/api/hr/positions/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ archived:true }) });
+    await loadHiring();
+    toast(p.role+" archived"); render();
+  }catch(err){ toast(err.message || "Couldn't archive position"); }
+}
+async function unarchivePosition(id){
+  const p = openPositions.find(x=>x.id===id);
+  try{
+    await apiJson(`/api/hr/positions/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ archived:false }) });
+    await loadHiring();
+    toast(p.role+" reopened"); render();
+  }catch(err){ toast(err.message || "Couldn't reopen position"); }
+}
+async function archiveCandidate(id){
+  const c = candidates.find(x=>x.id===id);
+  try{
+    await apiJson(`/api/hr/candidates/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ archived:true }) });
+    await loadHiring();
+    toast(c.name+" archived"); render();
+  }catch(err){ toast(err.message || "Couldn't archive candidate"); }
+}
+async function unarchiveCandidate(id){
+  const c = candidates.find(x=>x.id===id);
+  try{
+    await apiJson(`/api/hr/candidates/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ archived:false }) });
+    await loadHiring();
+    toast(c.name+" restored"); render();
+  }catch(err){ toast(err.message || "Couldn't restore candidate"); }
 }
 
 // The payroll table itself — shared by HR > Payroll and Accounts > Payroll (same data, same
@@ -2155,7 +2390,7 @@ function payrollView(){
   <div class="panel">
     <div class="panel-head"><h3>Payroll — ${MONTH_LABEL[month]}</h3><div class="sub">${includedEmployees.length} added</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${r.calc.balance>0?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}')">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="8"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
+      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${r.calc.balance>0?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}')">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="8"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -2163,12 +2398,12 @@ function hrPayroll(){
   return payrollView() + `
   <div class="panel">
     <div class="panel-head">
-      <div><h3>Leave &amp; WFH pay policy</h3><div class="sub">Loss of Pay for leave beyond balance is already applied above · WFH's effect is still open</div></div>
+      <div><h3>Leave &amp; WFH pay policy</h3><div class="sub">Loss of Pay for leave beyond balance, and the WFH pay cut, are already applied above · half/quarter-day leave is still open</div></div>
     </div>
     <div class="panel-body">
       <div class="banner muted">
         <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-        <div><b>Loss of Pay is live.</b> Casual/Sick/Earned days beyond each employee's HR Settings balance, and any approved Unpaid leave, are already deducted in the Gross → Net figures above. Half/quarter-day leave and Work From Home don't have a fixed salary rule yet — jot it down below as it firms up.</div>
+        <div><b>Loss of Pay and WFH pay cut are both live.</b> Casual/Sick/Earned days beyond each employee's HR Settings balance, and any approved Unpaid leave, are already deducted in the Gross → Net figures above — and so are WFH days beyond the HR Settings cap, at 75% pay. Half/quarter-day leave doesn't have a fixed salary rule yet — jot it down below as it firms up.</div>
       </div>
       <label class="field-label" style="margin-top:12px;">Policy notes</label>
       <textarea class="field-input" id="policy-notes-textarea" rows="4" style="resize:vertical;font-family:inherit;" placeholder="e.g. WFH counts as full attendance; quarter-day leave deducts 0.25 day's gross...">${esc(leavePayPolicy.notes)}</textarea>
@@ -2186,11 +2421,12 @@ async function saveLeavePayPolicyNotes(){
 }
 
 function hrAdvances(){
-  const sorted = advances.slice().sort((a,b)=>{ const order={Pending:0,Recovering:1,Recovered:2,Rejected:3}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.requested.localeCompare(a.requested); });
+  const filtered = advances.filter(a=>matchesDateFilter(a.requested, advancesMonthFilter));
+  const sorted = filtered.slice().sort((a,b)=>{ const order={Pending:0,Recovering:1,Recovered:2,Rejected:3}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.requested.localeCompare(a.requested); });
   return `
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openAddAdvance()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New request</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setAdvancesMonthFilter(this.value)">${dateFilterOptions(advances.map(a=>a.requested), advancesMonthFilter)}</select></div><button class="btn primary" onclick="openAddAdvance()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New request</button></div>
   <div class="panel">
-    <div class="panel-head"><h3>Requests</h3><div class="sub">Approved advances recover automatically from payroll</div></div>
+    <div class="panel-head"><h3>Requests</h3><div class="sub">${filtered.length} of ${advances.length}${dateFilterSuffix(advancesMonthFilter,'requested in')} · approved advances recover automatically from payroll</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Amount</th><th>Reason</th><th>Requested</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${sorted.map(a=>{
         const emp=byId(a.empId);
@@ -2437,17 +2673,16 @@ function hrPolicies(){
   </div>
   ${hrCalendarPanel()}
   <div class="panel">
-    <div class="panel-head"><h3>Leave entitlements</h3><div class="sub">Annual days per employee, by leave type — feeds every employee's leave balance</div></div>
+    <div class="panel-head"><h3>Monthly paid leave &amp; WFH allowance</h3><div class="sub">What actually drives payroll's Loss of Pay and WFH pay-cut, every month</div></div>
     <div class="panel-body">
       <div class="field-row">
-        <div><label class="field-label">Casual leave (days/yr)</label><input class="field-input" id="policy-casual" type="number" min="0" value="${hrPolicy.casualLeaveDays}"></div>
-        <div><label class="field-label">Sick leave (days/yr)</label><input class="field-input" id="policy-sick" type="number" min="0" value="${hrPolicy.sickLeaveDays}"></div>
-        <div><label class="field-label">Earned leave (days/yr)</label><input class="field-input" id="policy-earned" type="number" min="0" value="${hrPolicy.earnedLeaveDays}"></div>
+        <div><label class="field-label">Paid leave (days/month)</label><input class="field-input" id="policy-paid-leaves" type="number" min="0" step="1" value="${hrPolicy.paidLeavesPerMonth}"></div>
+        <div><label class="field-label">Paid WFH (days/month)</label><input class="field-input" id="policy-paid-wfh" type="number" min="0" step="1" value="${hrPolicy.paidWfhPerMonth}"></div>
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:10px;"><button class="btn primary btn-sm" onclick="saveLeaveEntitlements()">Save entitlements</button></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px;"><button class="btn primary btn-sm" onclick="saveLeavePayCaps()">Save caps</button></div>
       <div class="banner muted" style="margin-top:14px;">
         <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-        <div><b>Loss of Pay, automatic.</b> Once someone's approved Casual/Sick/Earned leave crosses these entitlements — or they take approved Unpaid leave — the extra days are deducted from that month's payroll at gross ÷ working days. Lower an entitlement here and it applies going forward.</div>
+        <div><b>Loss of Pay &amp; WFH cut, automatic.</b> Any day beyond the paid-leave cap, marked "On Leave" in Attendance that same month, is a full day's Loss of Pay. Any day beyond the paid-WFH cap, marked "Work From Home", is paid at 75% instead of full pay. Both are calculated straight from Attendance and apply the moment someone's added to that month's payroll. Leave is tracked monthly only — there's no separate annual entitlement to configure.</div>
       </div>
     </div>
   </div>
@@ -2477,16 +2712,15 @@ function hrPolicies(){
     </div>
   </div>`;
 }
-async function saveLeaveEntitlements(){
+async function saveLeavePayCaps(){
   try{
     await apiJson("/api/hr/policy", { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
-      casualLeaveDays: Number(document.getElementById("policy-casual").value) || 0,
-      sickLeaveDays: Number(document.getElementById("policy-sick").value) || 0,
-      earnedLeaveDays: Number(document.getElementById("policy-earned").value) || 0,
+      paidLeavesPerMonth: Number(document.getElementById("policy-paid-leaves").value) || 0,
+      paidWfhPerMonth: Number(document.getElementById("policy-paid-wfh").value) || 0,
     })});
     await loadPolicy();
-    toast("Leave entitlements updated"); render();
-  }catch(err){ toast(err.message || "Couldn't save entitlements"); }
+    toast("Monthly leave & WFH caps updated"); render();
+  }catch(err){ toast(err.message || "Couldn't save leave & WFH caps"); }
 }
 async function saveWeeklyOff(val){
   try{
@@ -2798,7 +3032,7 @@ function openAddLeave(){
     <form id="f-add-leave"><div class="modal-body">
       <div><label class="field-label">Employee</label><select class="field-input" name="empId">${employees.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join("")}</select></div>
       <div class="field-row">
-        <div><label class="field-label">Type</label><select class="field-input" name="type"><option>Casual</option><option>Sick</option><option>Earned</option><option>Unpaid</option></select></div>
+        <div><label class="field-label">Type</label><select class="field-input" name="type"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option></select></div>
         <div><label class="field-label">Duration</label><select class="field-input" name="duration"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
       </div>
       <div class="field-row">
@@ -2820,7 +3054,7 @@ function openAddLeave(){
     if(from===to && duration==="Quarter Day") days = 0.25;
     try{
       await apiJson("/api/hr/leave-requests", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
-        employeeId: employeeDbIdByCode[f.get("empId")], type: TITLECASE_TO_API(f.get("type")),
+        employeeId: employeeDbIdByCode[f.get("empId")], type: LEAVE_TYPE_TO_API[f.get("type")] || f.get("type"),
         duration: TITLECASE_TO_API(from===to?duration:"Full Day"), fromDate:from, toDate:to, days, reason:f.get("reason"),
       })});
       await loadLeaveRequests();
@@ -3289,6 +3523,9 @@ function openClientDetail(id){ nav.detail = {type:'client', id}; render(); }
 function clientDetailPage(id){
   const c = clientById(id);
   const billingType = c.billingType || "Prepaid";
+  const boardFilter = clientTaskBoardMonthFilter[id] || "All";
+  const boardTasks = tasksOf(id).filter(t=>!isTaskArchived(t));
+  const boardTasksFiltered = boardTasks.filter(t=>matchesDateFilter(t.due, boardFilter));
   const clientInvoices = invoices.filter(i=>i.clientId===id).slice().sort((a,b)=>b.issued.localeCompare(a.issued));
   const billed = clientInvoices.reduce((s,i)=>s+invoiceTotal(i),0);
   const pending = clientInvoices.reduce((s,i)=>s+invoiceBalance(i),0);
@@ -3319,7 +3556,14 @@ function clientDetailPage(id){
       ${clientInvoices.length?`<div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Issued</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
         <tbody>${clientInvoices.map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i), pendingAmt=invoicePendingAmount(i); return `<tr><td class="mono">${esc(i.invoiceNo)}</td><td class="muted">${fmtDateShort(i.issued)}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}${pendingAmt>0?' '+pill(inr(pendingAmt)+' pending Finance','warn'):''}</td><td><div style="display:flex;gap:6px;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm ghost" onclick="openSubmitInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Log payment</button>`:''}<button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}</div></td></tr>`; }).join("")}</tbody>
       </table></div>`:`<div class="empty">No invoice raised for this client yet.</div>`}`}`}
-      <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;">Workflow<div style="display:flex;gap:6px;">${tasksOf(c.id).filter(isTaskArchived).length?`<button class="btn btn-sm ghost" onclick="openTaskArchive('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Archive (${tasksOf(c.id).filter(isTaskArchived).length})</button>`:''}<button class="btn btn-sm ghost" onclick="openAddTask('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add task</button></div></div>
+      <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">Workflow<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;">${boardTasksFiltered.length} of ${boardTasks.length}${dateFilterSuffix(boardFilter)}</span></div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          <div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setClientTaskBoardMonthFilter('${c.id}', this.value)">${dateFilterOptions(tasksOf(c.id).map(t=>t.due), boardFilter)}</select></div>
+          ${tasksOf(c.id).filter(isTaskArchived).length?`<button class="btn btn-sm ghost" onclick="openTaskArchive('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Archive (${tasksOf(c.id).filter(isTaskArchived).length})</button>`:''}
+          <button class="btn btn-sm ghost" onclick="openAddTask('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add task</button>
+        </div>
+      </div>
       <div class="board-scroll"><div class="board" id="client-task-board"></div></div>
       </div>
     </div>`;
@@ -3392,9 +3636,26 @@ function mktLeads(){
   <div class="panel">
     <div class="panel-head"><h3>Lead pipeline</h3><div class="sub">${filtered.length} of ${marketingLeads.length}${leadsMonthFilter!=='All'?' in '+monthLabel(leadsMonthFilter):' total'}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Service Interested</th><th>Source</th><th>Lead Owner</th><th>Created</th><th></th></tr></thead>
-      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div><div class="subtext">${esc(l.email)}</div></td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${esc(l.leadOwner)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td><button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">No leads that month.</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div><div class="subtext">${esc(l.email)}</div></td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${l.leadOwner?esc(l.leadOwner):'<span class="faint">Unassigned</span>'}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">No leads that month.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
+}
+// Any Sales caller can claim an unowned lead for themselves — Leadership/Admin
+// don't get the claim button since they're not the ones working the pipeline.
+function leadOwnerActionsCell(l){
+  const canClaim = !l.leadOwner && currentUser && isSalesRole(currentUser);
+  const assignBtn = canClaim ? `<button class="btn btn-sm primary" onclick="assignLeadToMe('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Assign to me</button>` : '';
+  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></div>`;
+}
+async function assignLeadToMe(id){
+  if(!currentUser) return;
+  const l = marketingLeads.find(x=>x.id===id);
+  if(!l || l.leadOwner) return;
+  try{
+    await apiJson(`/api/crm/leads/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ leadOwner: currentUser.name }) });
+    await loadLeads();
+    toast(l.name+" assigned to you"); render();
+  }catch(err){ toast(err.message || "Couldn't assign lead"); }
 }
 function salesTeamOptions(){
   const pool = assignableEmployees();
@@ -3454,10 +3715,12 @@ function clientsMissingInvoice(){
 }
 function mktInvoices(){
   const missing = clientsMissingInvoice();
-  const sorted = invoices.slice().sort((a,b)=>b.issued.localeCompare(a.issued));
+  // Shares invoicesMonthFilter with Accounts > Invoices — same "Today / month-wise / All time" filter either page sets carries to the other.
+  const filtered = invoices.filter(i=>matchesDateFilter(i.issued, invoicesMonthFilter));
+  const sorted = filtered.slice().sort((a,b)=>b.issued.localeCompare(a.issued));
   const totalReceivable = invoices.reduce((s,i)=>s+invoiceBalance(i),0);
   return `
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openAddInvoice()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New invoice</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setInvoicesMonthFilter(this.value)">${dateFilterOptions(invoices.map(i=>i.issued), invoicesMonthFilter)}</select></div><button class="btn primary" onclick="openAddInvoice()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New invoice</button></div>
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Every client should have a corresponding invoice — unless they're Postpaid, where the amount is only finalized once the service is complete. Use this to spot Prepaid clients Sales hasn't invoiced yet.</div></div>
   <div class="kpi-grid">
     <div class="kpi-card hero"><div class="kpi-label">Total Receivable</div><div class="kpi-value mono">${inr(totalReceivable)}</div><div class="kpi-sub">${invoices.length} invoices raised</div></div>
@@ -3470,7 +3733,7 @@ function mktInvoices(){
     </table></div>
   </div>`:`<div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg><div>Every Prepaid client has a corresponding invoice.</div></div>`}
   <div class="panel">
-    <div class="panel-head"><h3>All invoices</h3><div class="sub">${invoices.length} total · log a payment you've collected here and push it to Finance for confirmation</div></div>
+    <div class="panel-head"><h3>All invoices</h3><div class="sub">${filtered.length} of ${invoices.length}${dateFilterSuffix(invoicesMonthFilter,'issued in')} · log a payment you've collected here and push it to Finance for confirmation</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th>Service(s)</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${sorted.map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i), pendingAmt=invoicePendingAmount(i); return `<tr><td class="mono">${esc(i.invoiceNo)}</td><td class="muted">${clientById(i.clientId).name}</td><td class="muted">${(i.items||[]).map(it=>esc(it.dept)).join(', ')||'<span class="faint">—</span>'}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openSubmitInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Log payment</button>`:''}${pendingAmt>0?`<span class="faint" style="font-size:11.5px;">${inr(pendingAmt)} awaiting Finance</span>`:''}<button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No invoices yet.</div></td></tr>`}</tbody>
     </table></div>
@@ -3718,7 +3981,8 @@ function taskCardHTML(t, showClient){
 function renderClientTaskBoard(clientId){
   const board = document.getElementById('client-task-board');
   if(!board) return;
-  const tasks = tasksOf(clientId).filter(t=>!isTaskArchived(t));
+  const boardFilter = clientTaskBoardMonthFilter[clientId] || "All";
+  const tasks = tasksOf(clientId).filter(t=>!isTaskArchived(t)).filter(t=>matchesDateFilter(t.due, boardFilter));
   board.innerHTML = TASK_STAGES.map(stage=>{
     const inStage = tasks.filter(t=>t.status===stage);
     return `<div class="col" data-stage="${stage}" ondragover="onTaskDragOver(event)" ondrop="onTaskDrop(event,'${stage}','${clientId}')" ondragleave="onTaskDragLeave(event)">
@@ -3966,11 +4230,103 @@ function acctOverview(){
     <div class="panel-body">${deptRevenue.length?`<div class="barchart">${deptRevenue.map(x=>`<div class="bar-row"><div class="bar-label">${esc(x.d)}</div><div class="bar-track"><div class="bar-fill" style="width:${(x.n/maxDept)*100}%"></div></div><div class="bar-val mono">${inr(x.n)}</div></div>`).join("")}</div>`:'<div class="empty">No invoiced revenue yet.</div>'}</div>
   </div>`;
 }
+// ---- Delete confirmation (quotes/invoices/payables/expenses/bank accounts) ----
+// Each kind maps to its own DELETE endpoint; the server is the real gatekeeper
+// on whether a delete is actually allowed (e.g. blocked once a payment's been
+// recorded against it — the payment ledger is append-only), this just gives a
+// clear heads-up before asking.
+function deleteWarningFor(kind, id){
+  const fallback = "This permanently removes it from the records. This can't be undone.";
+  if(kind==='quote'){
+    const q = quotes.find(x=>x.id===id); if(!q) return {label:"this quote", warning:fallback};
+    const party = quoteParty(q);
+    let w = `"${esc(q.title)}" for ${esc(party.name)}.`;
+    w += q.invoiceId ? ` It's already been invoiced (${esc(q.invoiceId)}) — the payment ledger is append-only, so this can't be deleted.` : " This can't be undone.";
+    return {label:"this quote", warning:w};
+  }
+  if(kind==='invoice'){
+    const inv = invoices.find(x=>x.id===id); if(!inv) return {label:"this invoice", warning:fallback};
+    const blocked = (inv.payments||[]).length>0;
+    let w = `${esc(inv.invoiceNo)} for ${esc(clientById(inv.clientId).name)}.`;
+    w += blocked ? " It has recorded payments — the payment ledger is append-only, so this can't be deleted." : " This can't be undone.";
+    return {label:"this invoice", warning:w};
+  }
+  if(kind==='payable'){
+    const p = payables.find(x=>x.id===id); if(!p) return {label:"this payable", warning:fallback};
+    const blocked = (p.payments||[]).length>0;
+    let w = `${esc(p.category)} — ${esc(p.payee)}.`;
+    if(p.category==='Commission') w += " This is a sales commission entry — deleting it removes that person's earned commission record.";
+    w += blocked ? " It has recorded payments — the payment ledger is append-only, so this can't be deleted." : " This can't be undone.";
+    return {label:"this payable", warning:w};
+  }
+  if(kind==='expense'){
+    const e = expenses.find(x=>x.id===id); if(!e) return {label:"this expense", warning:fallback};
+    return {label:"this expense", warning:`${esc(e.category)} — ${esc(e.description)}, ${inr(e.amount)}. Its bank ledger entry is removed too.`};
+  }
+  if(kind==='bank'){
+    const b = bankAccounts.find(x=>x.id===id); if(!b) return {label:"this bank account", warning:fallback};
+    return {label:"this bank account", warning:`${esc(b.name)} (${esc(b.bank)}), current balance ${inr(bankAccountBalance(id))}. Only allowed while it has zero ledger transactions — if anything's ever been posted to it, this will be refused.`};
+  }
+  return {label:"this record", warning:fallback};
+}
+function openConfirmDelete(kind, id){
+  const {label, warning} = deleteWarningFor(kind, id);
+  showModal(`
+    <div class="modal-head"><h3>Delete ${esc(label)}?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div>${warning}</div></div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="button" class="btn danger" onclick="performDelete('${kind}','${esc(id)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg>Delete</button></div>`);
+}
+async function performDelete(kind, id){
+  const ENDPOINTS = {
+    quote: { url:`/api/crm/quotes/${id}`, reload: loadQuotes, label:"Quote" },
+    invoice: { url:`/api/finance/invoices/${id}`, reload: loadInvoices, label:"Invoice" },
+    payable: { url:`/api/finance/payables/${id}`, reload: loadPayables, label:"Payable" },
+    expense: { url:`/api/finance/expenses/${id}`, reload: loadExpenses, label:"Expense" },
+    bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
+  };
+  const ep = ENDPOINTS[kind];
+  if(!ep) return;
+  try{
+    await apiJson(ep.url, { method:"DELETE" });
+    await ep.reload();
+    toast(ep.label+" deleted"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't delete"); }
+}
+// Payment Receipts: discards a not-yet-approved pending payment Sales pushed —
+// for a duplicate or mistaken submission, not a real payment simply not yet
+// confirmed. The server refuses this once the entry's been approved.
+function openConfirmDeleteReceipt(source, parentId, pendingId){
+  const parent = source==='quote' ? quotes.find(x=>x.id===parentId) : invoices.find(x=>x.id===parentId);
+  const payment = parent && (source==='quote' ? (parent.payments||[]) : (parent.pendingPayments||[])).find(p=>p.id===pendingId);
+  const desc = payment ? `${inr(payment.amount)} pushed ${source==='quote'?'against quote '+esc(parentId):'against invoice '+esc(parentId)}` : "this payment entry";
+  showModal(`
+    <div class="modal-head"><h3>Delete this payment entry?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div>${desc} — nothing has been posted to the ledger yet, so this just discards the entry Sales pushed. Use it for a duplicate or mistaken submission, not a real payment you simply haven't confirmed.</div></div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="button" class="btn danger" onclick="performDeleteReceipt('${source}','${esc(parentId)}','${esc(pendingId)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg>Delete</button></div>`);
+}
+async function performDeleteReceipt(source, parentId, pendingId){
+  try{
+    if(source==='quote'){
+      await apiJson(`/api/crm/quotes/${parentId}/pending-payments/${pendingId}`, { method:"DELETE" });
+      await loadQuotes();
+    } else {
+      await apiJson(`/api/finance/invoices/${parentId}/pending-payments/${pendingId}`, { method:"DELETE" });
+      await loadInvoices();
+    }
+    toast("Payment entry deleted"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't delete payment entry"); }
+}
 function acctInvoices(){
   const totalReceivable = invoices.reduce((s,i)=>s+invoiceBalance(i),0);
   const overdueAmt = invoices.filter(i=>invoiceStatus(i)==="Overdue").reduce((s,i)=>s+invoiceBalance(i),0);
+  // Shares invoicesMonthFilter with Marketing > Invoices — same "Today / month-wise / All time" filter either page sets carries to the other.
+  const filtered = invoices.filter(i=>matchesDateFilter(i.issued, invoicesMonthFilter));
   return `
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openAddInvoice()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New invoice</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setInvoicesMonthFilter(this.value)">${dateFilterOptions(invoices.map(i=>i.issued), invoicesMonthFilter)}</select></div><button class="btn primary" onclick="openAddInvoice()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New invoice</button></div>
   <div class="kpi-grid">
     <div class="kpi-card hero"><div class="kpi-label">Total Receivable</div><div class="kpi-value mono">${inr(totalReceivable)}</div><div class="kpi-sub">${inr(overdueAmt)} overdue</div></div>
     <div class="kpi-card"><div class="kpi-label">Total Invoiced</div><div class="kpi-value mono">${inr(invoices.reduce((s,i)=>s+invoiceTotal(i),0))}</div><div class="kpi-sub">${invoices.length} invoices, all time</div></div>
@@ -3979,29 +4335,30 @@ function acctInvoices(){
   <div class="panel">
     <div class="panel-head"><h3>Awaiting confirmation</h3><div class="sub">${pendingRows.length} payment${pendingRows.length===1?'':'s'} Sales collected against an existing invoice</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th class="num">This payment</th><th class="num">Balance</th><th>Collected by</th><th>Sales note</th><th></th></tr></thead>
-      <tbody>${pendingRows.length?pendingRows.map(({inv,p,idx})=>`<tr><td class="mono">${esc(inv.invoiceNo)}</td><td class="muted">${clientById(inv.clientId).name}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${inr(invoiceBalance(inv))}</td><td class="muted">${esc(p.salesPerson||'—')}</td><td class="muted">${esc(p.note||'—')} · ${fmtDateShort(p.date)}</td><td><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${inv.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button></td></tr>`).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
+      <tbody>${pendingRows.length?pendingRows.map(({inv,p,idx})=>`<tr><td class="mono">${esc(inv.invoiceNo)}</td><td class="muted">${clientById(inv.clientId).name}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${inr(invoiceBalance(inv))}</td><td class="muted">${esc(p.salesPerson||'—')}</td><td class="muted">${esc(p.note||'—')} · ${fmtDateShort(p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${inv.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${inv.id}','${p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
     </table></div>
   </div>`; })()}
   <div class="panel">
-    <div class="panel-head"><h3>Invoices</h3><div class="sub">${invoices.length} total</div></div>
+    <div class="panel-head"><h3>Invoices</h3><div class="sub">${filtered.length} of ${invoices.length}${dateFilterSuffix(invoicesMonthFilter,'issued in')}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th>Issued</th><th>Due</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${invoices.slice().sort((a,b)=>b.issued.localeCompare(a.issued)).map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i); return `<tr><td class="mono">${i.invoiceNo}</td><td class="muted">${clientById(i.clientId).name}</td><td class="muted">${fmtDateShort(i.issued)}</td><td class="muted">${fmtDateShort(i.due)}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditInvoice('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}</div></td></tr>`; }).join("")}</tbody>
+      <tbody>${filtered.slice().sort((a,b)=>b.issued.localeCompare(a.issued)).map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i); return `<tr><td class="mono">${i.invoiceNo}</td><td class="muted">${clientById(i.clientId).name}</td><td class="muted">${fmtDateShort(i.issued)}</td><td class="muted">${fmtDateShort(i.due)}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditInvoice('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:`<button class="btn btn-sm ghost" onclick="openConfirmDelete('invoice','${i.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="8"><div class="empty">No invoices${invoicesMonthFilter==='All'?'':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
 function acctPayables(){
-  const total = payables.reduce((s,p)=>s+p.amount,0);
-  const outstanding = payables.reduce((s,p)=>s+payableBalance(p),0);
+  const filtered = payables.filter(p=>matchesDateFilter(p.due, payablesMonthFilter));
+  const total = filtered.reduce((s,p)=>s+p.amount,0);
+  const outstanding = filtered.reduce((s,p)=>s+payableBalance(p),0);
   return `
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openAddPayable()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New payable</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setPayablesMonthFilter(this.value)">${dateFilterOptions(payables.map(p=>p.due), payablesMonthFilter)}</select></div><button class="btn primary" onclick="openAddPayable()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New payable</button></div>
   <div class="kpi-grid">
-    <div class="kpi-card hero"><div class="kpi-label">Total Payable</div><div class="kpi-value mono warn">${inr(outstanding)}</div><div class="kpi-sub">${payables.filter(p=>payableStatus(p)!=='Paid').length} outstanding</div></div>
-    <div class="kpi-card"><div class="kpi-label">Total Logged</div><div class="kpi-value mono">${inr(total)}</div><div class="kpi-sub">${payables.length} payables, all time</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Total Payable</div><div class="kpi-value mono warn">${inr(outstanding)}</div><div class="kpi-sub">${filtered.filter(p=>payableStatus(p)!=='Paid').length} outstanding</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Logged</div><div class="kpi-value mono">${inr(total)}</div><div class="kpi-sub">${filtered.length} payables${dateFilterSuffix(payablesMonthFilter,'due in')}</div></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h3>Payables</h3><div class="sub">${inr(total)} total logged · cleared Salary &amp; Rent → Commission &amp; Internal Loans → Vendor</div></div>
+    <div class="panel-head"><h3>Payables</h3><div class="sub">${inr(total)}${dateFilterSuffix(payablesMonthFilter,'due in')} · cleared Salary &amp; Rent → Commission &amp; Internal Loans → Vendor</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Category</th><th>Liability Account</th><th>Payee / Purpose</th><th>Due</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${payables.slice().sort((a,b)=>CLEAR_ORDER.indexOf(a.category)-CLEAR_ORDER.indexOf(b.category)).map(p=>{ const st=payableStatus(p), bal=payableBalance(p); return `<tr><td><span class="tag type">${esc(p.category)}</span></td><td class="muted">${esc(liabilityAccountFor(p.category))}</td><td class="muted">${esc(p.payee)}</td><td class="muted">${fmtDateShort(p.due)}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,payableStatusKind(st))}</td><td><div style="display:flex;gap:6px;">${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditPayable('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></div></td></tr>`; }).join("")}</tbody>
+      <tbody>${filtered.slice().sort((a,b)=>CLEAR_ORDER.indexOf(a.category)-CLEAR_ORDER.indexOf(b.category)).map(p=>{ const st=payableStatus(p), bal=payableBalance(p); return `<tr><td><span class="tag type">${esc(p.category)}</span></td><td class="muted">${esc(liabilityAccountFor(p.category))}</td><td class="muted">${esc(p.payee)}</td><td class="muted">${fmtDateShort(p.due)}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,payableStatusKind(st))}</td><td><div style="display:flex;gap:6px;">${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditPayable('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${(p.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No payables${payablesMonthFilter==='All'?'':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4032,7 +4389,16 @@ function salesLeaderboardRows(){
 function acctCommissions(){
   const commissionPayables = payables.filter(p=>p.category==="Commission");
   const salesNames = [...new Set(commissionPayables.map(p=>p.salesPerson).filter(Boolean))];
-  const rows = commissionRowsByPerson();
+  // "Commission by sales person" below respects the month filter (by each entry's due date); the KPI
+  // cards above stay all-time, same as Total Receivable does on Accounts > Invoices. Filtered locally
+  // rather than through commissionRowsByPerson(), which stays unfiltered — it's shared with a Sales
+  // sign-in's own My Commission / Leaderboard tabs, which should always show their real running balance.
+  const filteredPayables = commissionPayables.filter(p=>matchesDateFilter(p.due, commissionsMonthFilter));
+  const filteredNames = [...new Set(filteredPayables.map(p=>p.salesPerson).filter(Boolean))];
+  const rows = filteredNames.map(name=>{
+    const mine = filteredPayables.filter(p=>p.salesPerson===name);
+    return {name, mine, earned: mine.reduce((s,p)=>s+p.amount,0), paid: mine.reduce((s,p)=>s+payablePaid(p),0), balance: mine.reduce((s,p)=>s+payableBalance(p),0)};
+  }).sort((a,b)=> b.balance-a.balance || b.earned-a.earned);
   const totalEarned = commissionPayables.reduce((s,p)=>s+p.amount,0);
   const totalPaid = commissionPayables.reduce((s,p)=>s+payablePaid(p),0);
   const totalBalance = commissionPayables.reduce((s,p)=>s+payableBalance(p),0);
@@ -4071,7 +4437,7 @@ function acctCommissions(){
     </table></div>
   </div>`:''}
   <div class="panel">
-    <div class="panel-head"><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine</div></div>
+    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionPayables.map(p=>p.due), commissionsMonthFilter)}</select></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">Earned</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th></tr></thead>
       <tbody>${rows.length?rows.map(r=>{ const statusLabel = r.balance<=0?'Settled':(r.paid>0?'Partially Paid':'Outstanding'); return `<tr><td colspan="5" style="padding:0;border-bottom:1px solid var(--line);">
         <details class="report-details">
@@ -4092,7 +4458,7 @@ function acctCommissions(){
             </div>`; }).join('')}
           </div>
         </details>
-      </td></tr>`; }).join(""):`<tr><td colspan="5"><div class="empty">No commission earned yet.</div></td></tr>`}</tbody>
+      </td></tr>`; }).join(""):`<tr><td colspan="5"><div class="empty">No commission earned${commissionsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4121,13 +4487,14 @@ function openEditSalesPolicy(){
   });
 }
 function acctExpenses(){
-  const total = expenses.reduce((s,e)=>s+e.amount,0);
+  const filtered = expenses.filter(e=>matchesDateFilter(e.date, expensesMonthFilter));
+  const total = filtered.reduce((s,e)=>s+e.amount,0);
   return `
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openAddExpense()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Log expense</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setExpensesMonthFilter(this.value)">${dateFilterOptions(expenses.map(e=>e.date), expensesMonthFilter)}</select></div><button class="btn primary" onclick="openAddExpense()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Log expense</button></div>
   <div class="panel">
-    <div class="panel-head"><h3>Expenses</h3><div class="sub">${inr(total)} logged · untagged expenses count as shared overhead in Department Profitability</div></div>
+    <div class="panel-head"><h3>Expenses</h3><div class="sub">${inr(total)}${dateFilterSuffix(expensesMonthFilter,'logged in')} · untagged expenses count as shared overhead in Department Profitability</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Category</th><th>Description</th><th>Department</th><th>Date</th><th>Account</th><th class="num">Amount</th><th></th></tr></thead>
-      <tbody>${expenses.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e=>`<tr><td><span class="tag type">${esc(e.category)}</span></td><td class="muted">${esc(e.description)}</td><td class="muted">${e.dept?esc(e.dept):'<span class="faint">Shared</span>'}</td><td class="muted">${fmtDateShort(e.date)}</td><td class="muted">${bankById(e.accountId)?esc(bankById(e.accountId).name):'—'}</td><td class="num mono">${inr(e.amount)}</td><td><button class="btn btn-sm ghost" onclick="openEditExpense('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></td></tr>`).join("")}
+      <tbody>${filtered.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e=>`<tr><td><span class="tag type">${esc(e.category)}</span></td><td class="muted">${esc(e.description)}</td><td class="muted">${e.dept?esc(e.dept):'<span class="faint">Shared</span>'}</td><td class="muted">${fmtDateShort(e.date)}</td><td class="muted">${bankById(e.accountId)?esc(bankById(e.accountId).name):'—'}</td><td class="num mono">${inr(e.amount)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEditExpense('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('expense','${e.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`).join("") || `<tr><td colspan="6"><div class="empty">No expenses${expensesMonthFilter==='All'?'':' for this range'}.</div></td></tr>`}
       <tr class="total"><td colspan="6">Total</td><td class="num mono">${inr(total)}</td></tr></tbody>
     </table></div>
   </div>`;
@@ -4437,7 +4804,7 @@ function acctBanks(){
   <div class="panel">
     <div class="panel-head"><h3>Accounts</h3><div class="sub">Opening balance + every credit/debit recorded against it</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Account</th><th>Bank</th><th>Number</th><th class="num">Opening balance</th><th class="num">Current balance</th><th></th></tr></thead>
-      <tbody>${bankAccounts.map(b=>`<tr><td>${esc(b.name)}</td><td class="muted">${esc(b.bank)}</td><td class="mono muted">${esc(b.number)}</td><td class="num mono">${inr(b.opening)}</td><td class="num mono" style="color:var(--pos)">${inr(bankAccountBalance(b.id))}</td><td><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="openBankLedger('${b.id}')">View ledger</button><button class="btn btn-sm ghost" onclick="openEditBankAccount('${b.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></div></td></tr>`).join("")}</tbody>
+      <tbody>${bankAccounts.map(b=>`<tr><td>${esc(b.name)}</td><td class="muted">${esc(b.bank)}</td><td class="mono muted">${esc(b.number)}</td><td class="num mono">${inr(b.opening)}</td><td class="num mono" style="color:var(--pos)">${inr(bankAccountBalance(b.id))}</td><td><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="openBankLedger('${b.id}')">View ledger</button><button class="btn btn-sm ghost" onclick="openEditBankAccount('${b.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('bank','${b.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`).join("")}</tbody>
     </table></div>
   </div>`;
 }
@@ -4548,13 +4915,13 @@ function acctQuotes(){
   <div class="panel">
     <div class="panel-head"><h3>Awaiting confirmation</h3><div class="sub">${pendingRows.length} payment${pendingRows.length===1?'':'s'} pushed by Sales · all months</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th class="num">This payment</th><th class="num">Quote total</th><th>Sales note</th><th>Prepared by</th><th></th></tr></thead>
-      <tbody>${pendingRows.length?pendingRows.map(({q,p,idx})=>{ const party=quoteParty(q); return `<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="muted">${esc(p.note||'—')} · ${fmtDateShort(p.date)}</td><td class="muted">${esc(q.createdBy)}</td><td><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${q.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button></td></tr>`; }).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
+      <tbody>${pendingRows.length?pendingRows.map(({q,p,idx})=>{ const party=quoteParty(q); return `<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="muted">${esc(p.note||'—')} · ${fmtDateShort(p.date)}</td><td class="muted">${esc(q.createdBy)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${q.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('quote','${q.id}','${p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`; }).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
     </table></div>
   </div>
   <div class="panel">
     <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>All quotes</h3><div class="sub">${filtered.length} of ${quotes.length}${quotesMonthFilter!=='All'?' in '+monthLabel(quotesMonthFilter):' total'}</div></div><div class="filter-group"><span class="filter-label">Month</span><select class="select-sm" onchange="setQuotesMonthFilter(this.value)">${monthFilterOptions(quotes.map(q=>q.createdDate), quotesMonthFilter)}</select></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th>Service(s)</th><th class="num">Amount</th><th class="num">Approved so far</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rest.map(q=>{ const party=quoteParty(q); const paid=quoteApprovedPaid(q); return `<tr><td>${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="num mono">${paid>0?inr(paid):'<span class="faint">—</span>'}</td><td>${pill(q.status,quoteStatusKind(q.status))}${q.status==='Invoiced'&&q.invoiceId?` <span class="faint" style="font-size:11px;">${esc(q.invoiceId)}</span>`:''}</td><td><button class="btn btn-sm ghost" onclick="downloadQuote('${q.id}')" title="Download quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No quotes that month.</div></td></tr>`}</tbody>
+      <tbody>${rest.map(q=>{ const party=quoteParty(q); const paid=quoteApprovedPaid(q); return `<tr><td>${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="num mono">${paid>0?inr(paid):'<span class="faint">—</span>'}</td><td>${pill(q.status,quoteStatusKind(q.status))}${q.status==='Invoiced'&&q.invoiceId?` <span class="faint" style="font-size:11px;">${esc(q.invoiceId)}</span>`:''}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="downloadQuote('${q.id}')" title="Download quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${q.invoiceId?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('quote','${q.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No quotes that month.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4645,14 +5012,15 @@ function openAddCoaAccount(){
 /* ---- Manual Journal ---- */
 function journalEntryTotal(j){ return j.lines.reduce((s,l)=>s+(l.side==="debit"?l.amount:0),0); }
 function acctJournal(){
-  const sorted = journalEntries.slice().sort((a,b)=>b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+  const filtered = journalEntries.filter(j=>matchesDateFilter(j.date, journalMonthFilter));
+  const sorted = filtered.slice().sort((a,b)=>b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
   return `
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>For anything the structured forms (Invoices, Payables, Expenses, Banks) don't capture — write-offs, accruals, corrections. Each entry must balance (total debits = total credits). Debit increases an Asset or Expense; Credit increases a Liability or Income. A line against a bank account posts straight to that account's ledger. Entries are permanent once posted — a correction goes in as a new entry, never an edit to history.</div></div>
-  <div class="toolbar"><div></div><button class="btn primary" onclick="openAddJournalEntry()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New journal entry</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setJournalMonthFilter(this.value)">${dateFilterOptions(journalEntries.map(j=>j.date), journalMonthFilter)}</select></div><button class="btn primary" onclick="openAddJournalEntry()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New journal entry</button></div>
   <div class="panel">
-    <div class="panel-head"><h3>Journal entries</h3><div class="sub">${journalEntries.length} entries</div></div>
+    <div class="panel-head"><h3>Journal entries</h3><div class="sub">${filtered.length} of ${journalEntries.length}${dateFilterSuffix(journalMonthFilter,'posted in')}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Memo</th><th>Lines</th><th class="num">Amount</th></tr></thead>
-      <tbody>${sorted.map(j=>`<tr><td class="muted">${fmtDate(j.date)}</td><td style="font-weight:600;">${esc(j.memo)}</td><td class="muted" style="font-size:12px;">${j.lines.map(l=>`${esc(journalAccountLabel(l.account))} ${l.side==='debit'?'Dr':'Cr'} ${inr(l.amount)}`).join(' · ')}</td><td class="num mono">${inr(journalEntryTotal(j))}</td></tr>`).join("") || `<tr><td colspan="4"><div class="empty">No journal entries yet.</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(j=>`<tr><td class="muted">${fmtDate(j.date)}</td><td style="font-weight:600;">${esc(j.memo)}</td><td class="muted" style="font-size:12px;">${j.lines.map(l=>`${esc(journalAccountLabel(l.account))} ${l.side==='debit'?'Dr':'Cr'} ${inr(l.amount)}`).join(' · ')}</td><td class="num mono">${inr(journalEntryTotal(j))}</td></tr>`).join("") || `<tr><td colspan="4"><div class="empty">No journal entries${journalMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }

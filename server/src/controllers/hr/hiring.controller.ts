@@ -17,6 +17,9 @@ async function nextPositionCode(): Promise<string> {
   return `POS-${String(lastNum + 1).padStart(2, "0")}`;
 }
 
+// Returns both active and archived positions/candidates in one shot — the
+// client (loadHiring()) fetches this once and splits active vs. archived
+// itself, the same way it already does for status/stage.
 export const listPositions: RequestHandler = asyncHandler(async (req, res) => {
   const positions = await prisma.openPosition.findMany({
     where: { status: req.query.status as any },

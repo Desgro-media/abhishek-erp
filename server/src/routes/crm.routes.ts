@@ -21,9 +21,11 @@ router.patch("/leads/:id", leads.updateLead);
 router.get("/quotes", quotes.listQuotes);
 router.post("/quotes", quotes.createQuote);
 router.patch("/quotes/:id", quotes.updateQuote);
+router.delete("/quotes/:id", quotes.deleteQuote);
 router.post("/quotes/:id/send", quotes.sendQuote);
 router.post("/quotes/:id/lost", quotes.markQuoteLost);
 router.post("/quotes/:id/pending-payments", quotes.submitQuotePendingPayment);
+router.delete("/quotes/:id/pending-payments/:pendingId", quotes.deleteQuotePendingPayment);
 router.post("/quotes/:id/pending-payments/:pendingId/approve", quotes.approveQuotePendingPayment);
 
 router.get("/tasks", tasks.listTasks);

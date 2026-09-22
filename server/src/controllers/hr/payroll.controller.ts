@@ -32,6 +32,7 @@ export const listMyPayroll: RequestHandler = asyncHandler(async (req, res) => {
   const computed = await Promise.all(entries.map((e) => computeRow(employeeId, e.month)));
   const rows = computed.filter((r): r is NonNullable<typeof r> => r !== null).map((r) => ({
     month: r.month, gross: r.gross, lopDays: r.lopDays, lopDeduction: r.lopDeduction,
+    wfhExcessDays: r.wfhExcessDays, wfhDeduction: r.wfhDeduction,
     net: r.net, paid: r.paid, balance: r.balance, payStatus: r.payStatus,
   }));
   res.json({ rows });

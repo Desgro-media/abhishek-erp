@@ -69,7 +69,7 @@ export const attendanceMarkSchema = z.object({
 
 export const leaveRequestCreateSchema = z.object({
   employeeId: z.string().uuid().optional(), // HR only — self-service infers from the caller
-  type: z.enum(["CASUAL", "SICK", "EARNED", "UNPAID"]),
+  type: z.enum(["CASUAL_SICK", "WFH"]),
   duration: z.enum(["FULL_DAY", "HALF_DAY", "QUARTER_DAY"]).default("FULL_DAY"),
   fromDate: dateStr,
   toDate: dateStr,
@@ -79,13 +79,6 @@ export const leaveRequestCreateSchema = z.object({
 
 export const leaveDecisionSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
-  note: z.string().optional(),
-});
-
-export const leaveBalanceAdjustmentSchema = z.object({
-  employeeId: z.string().uuid(),
-  type: z.enum(["CASUAL", "SICK", "EARNED"]),
-  days: z.number().refine((n) => n !== 0, "days can't be zero"),
   note: z.string().optional(),
 });
 
@@ -122,6 +115,7 @@ export const positionUpdateSchema = z.object({
   dept: z.string().min(1).optional(),
   openings: z.number().int().positive().optional(),
   status: z.enum(["OPEN", "ON_HOLD", "CLOSED"]).optional(),
+  archived: z.boolean().optional(),
 });
 
 export const candidateCreateSchema = z.object({
@@ -136,6 +130,7 @@ export const candidateUpdateSchema = z.object({
   name: z.string().min(1).optional(),
   phone: z.string().optional(),
   email: z.string().email().optional(),
+  archived: z.boolean().optional(),
 });
 
 export const noticeCreateSchema = z.object({
@@ -149,10 +144,9 @@ export const noticeUpdateSchema = z.object({
 });
 
 export const policyUpdateSchema = z.object({
-  casualLeaveDays: z.number().int().nonnegative().optional(),
-  sickLeaveDays: z.number().int().nonnegative().optional(),
-  earnedLeaveDays: z.number().int().nonnegative().optional(),
   weeklyOff: z.number().int().min(0).max(6).optional(),
+  paidLeavesPerMonth: z.number().int().nonnegative().optional(),
+  paidWfhPerMonth: z.number().int().nonnegative().optional(),
   generalNotes: z.string().optional(),
   leavePayNotes: z.string().optional(),
 });

@@ -38,6 +38,7 @@ router.post("/employees/:id/reinstate", requireHRAdmin, employees.reinstateEmplo
 // Attendance
 router.get("/attendance", requireHRAdmin, attendance.listAttendanceForDate);
 router.post("/attendance", requireHRAdmin, attendance.markAttendance);
+router.get("/attendance/summary", requireHRAdmin, attendance.getMonthlySummary);
 router.get("/attendance/:employeeId/history", attendance.getAttendanceHistory); // self-or-HR
 
 // Leave
@@ -46,7 +47,6 @@ router.post("/leave-requests", leave.createLeaveRequest); // self-service or HR-
 router.patch("/leave-requests/:id", requireHRAdmin, leave.decideLeaveRequest);
 router.get("/leave-balance", requireHRAdmin, leave.listAllLeaveBalances);
 router.get("/leave-balance/:employeeId", leave.getLeaveBalance); // self-or-HR
-router.post("/leave-balance-adjustments", requireHRAdmin, leave.addLeaveBalanceAdjustment);
 
 // Advances
 router.get("/advances", advances.listAdvances); // self-or-HR (checked inside)

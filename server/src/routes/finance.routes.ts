@@ -20,6 +20,7 @@ router.use(authenticate);
 router.get("/bank-accounts", requireFinanceAdmin, bank.listBankAccounts);
 router.post("/bank-accounts", requireFinanceAdmin, bank.createBankAccount);
 router.patch("/bank-accounts/:id", requireFinanceAdmin, bank.updateBankAccount);
+router.delete("/bank-accounts/:id", requireFinanceAdmin, bank.deleteBankAccount);
 router.get("/bank-accounts/:id/ledger", requireFinanceAdmin, bank.getLedger);
 router.post("/transfers", requireFinanceAdmin, bank.createTransfer);
 
@@ -29,8 +30,10 @@ router.get("/invoices", requireFinanceAdminOrSales, invoices.listInvoices);
 router.get("/invoices/:id", requireFinanceAdminOrSales, invoices.getInvoice);
 router.post("/invoices", requireFinanceAdmin, invoices.createInvoice);
 router.patch("/invoices/:id", requireFinanceAdmin, invoices.updateInvoice);
+router.delete("/invoices/:id", requireFinanceAdmin, invoices.deleteInvoice);
 router.post("/invoices/:id/payments", requireFinanceAdmin, invoices.recordInvoicePayment);
 router.post("/invoices/:id/pending-payments", requireFinanceAdminOrSales, invoices.submitPendingPayment);
+router.delete("/invoices/:id/pending-payments/:pendingId", requireFinanceAdminOrSales, invoices.deletePendingPayment);
 router.post("/invoices/:id/pending-payments/:pendingId/approve", requireFinanceAdmin, invoices.approvePendingPayment);
 
 // Payables — writes are Finance/Admin only; reads also let Sales through
@@ -40,11 +43,13 @@ router.post("/invoices/:id/pending-payments/:pendingId/approve", requireFinanceA
 router.get("/payables", requireFinanceAdminOrSales, payables.listPayables);
 router.post("/payables", requireFinanceAdmin, payables.createPayable);
 router.patch("/payables/:id", requireFinanceAdmin, payables.updatePayable);
+router.delete("/payables/:id", requireFinanceAdmin, payables.deletePayable);
 router.post("/payables/:id/payments", requireFinanceAdmin, payables.recordPayablePayment);
 
 router.get("/expenses", requireFinanceAdmin, expenses.listExpenses);
 router.post("/expenses", requireFinanceAdmin, expenses.createExpense);
 router.patch("/expenses/:id", requireFinanceAdmin, expenses.updateExpense);
+router.delete("/expenses/:id", requireFinanceAdmin, expenses.deleteExpense);
 
 router.get("/coa", requireFinanceAdmin, coa.listAccounts);
 router.post("/coa", requireFinanceAdmin, coa.createAccount);
