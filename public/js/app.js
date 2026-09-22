@@ -11,7 +11,12 @@ const inr = n => "₹" + Math.round(Number(n)||0).toLocaleString("en-IN");
 const fmtDate = iso => iso ? new Date(iso+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}) : "—";
 const fmtDateShort = iso => iso ? new Date(iso+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const initials = name => String(name||"").split(" ").map(p=>p[0]).filter(Boolean).slice(0,2).join("").toUpperCase();
-const TODAY = "2026-09-15";
+// Real current date (UTC-based, matching the server's own todayStr()) — was a
+// hardcoded "2026-09-15" left over from the original static-seed-data
+// prototype, so every "today" default/cap across the app (Attendance's date
+// picker, month filters, etc.) was frozen on that one date instead of
+// tracking the real clock.
+const TODAY = new Date().toISOString().slice(0,10);
 function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
 function toast(msg){
   const root = document.getElementById("toast-root");
