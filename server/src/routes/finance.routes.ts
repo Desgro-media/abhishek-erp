@@ -10,6 +10,7 @@ import * as journal from "../controllers/finance/journal.controller";
 import * as paymentRequests from "../controllers/finance/paymentRequests.controller";
 import * as withdrawals from "../controllers/finance/withdrawalRequests.controller";
 import * as commissions from "../controllers/finance/commissions.controller";
+import * as advances from "../controllers/finance/advances.controller";
 import * as salesTargets from "../controllers/finance/salesTargets.controller";
 import * as reports from "../controllers/finance/reports.controller";
 
@@ -76,6 +77,13 @@ router.get("/payment-requests", paymentRequests.listPaymentRequests);
 router.post("/payment-requests", paymentRequests.createPaymentRequest);
 router.post("/payment-requests/:id/approve", requireFinanceAdmin, paymentRequests.approvePaymentRequest);
 router.post("/payment-requests/:id/reject", requireFinanceAdmin, paymentRequests.rejectPaymentRequest);
+
+// Advance salary — HR already decided pending/approved/rejected (see
+// hr.routes.ts's PATCH /advances/:id); this is Finance actually paying an
+// approved one out. A one-time lump sum, not a balance paid down over
+// multiple visits — recovery happens automatically out of payroll instead.
+router.get("/advances/pending-disbursement", requireFinanceAdmin, advances.listPendingAdvanceDisbursements);
+router.post("/advances/:id/disburse", requireFinanceAdmin, advances.disburseAdvance);
 
 // Salary withdrawal requests — salary ALREADY EARNED in a closed payroll month,
 // paid out early (distinct from Advance Salary, which is HR-approved against the

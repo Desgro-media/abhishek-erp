@@ -10,17 +10,23 @@ async function nextClientCode(): Promise<string> {
   return `CLI-${String(lastNum + 1).padStart(2, "0")}`;
 }
 
+// Mounted behind requireCrmUser (ADMIN or SALES). A plain Sales caller only
+// ever sees their own book — same "narrow self-service slice" listInvoices
+// already does by salesPerson — ADMIN sees everyone's.
 export const listClients: RequestHandler = asyncHandler(async (req, res) => {
+  const admin = req.user?.roles?.includes("ADMIN") ?? false;
   const clients = await prisma.client.findMany({
-    where: { status: req.query.status as any },
+    where: { status: req.query.status as any, salesPerson: admin ? undefined : req.user!.name },
     orderBy: { name: "asc" },
   });
   res.json({ clients });
 });
 
 export const getClient: RequestHandler = asyncHandler(async (req, res) => {
+  const admin = req.user?.roles?.includes("ADMIN") ?? false;
   const client = await prisma.client.findUnique({ where: { id: req.params.id } });
   if (!client) return res.status(404).json({ error: "Client not found" });
+  if (!admin && client.salesPerson !== req.user!.name) return res.status(403).json({ error: "Forbidden — not your client" });
   res.json({ client });
 });
 

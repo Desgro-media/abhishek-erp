@@ -142,6 +142,11 @@ export const paymentRequestApproveSchema = z.object({
   date: dateStr,
 });
 
+export const advanceDisburseSchema = z.object({
+  accountId: z.string().uuid(),
+  date: dateStr,
+});
+
 // Only an amount — the month is derived server-side (see closedPayrollMonth) and the
 // amount is re-checked against the earned-but-unpaid balance, never trusted.
 export const withdrawalRequestCreateSchema = z.object({
