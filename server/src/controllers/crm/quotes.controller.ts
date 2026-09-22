@@ -102,6 +102,20 @@ export const submitQuotePendingPayment: RequestHandler = asyncHandler(async (req
   res.status(201).json({ pending });
 });
 
+// Same rule as invoices' deletePendingPayment: only a not-yet-approved
+// entry can be discarded — once approved it's a real InvoicePayment.
+export const deleteQuotePendingPayment: RequestHandler = asyncHandler(async (req, res) => {
+  const { id: quoteId, pendingId } = req.params;
+  const pending = await prisma.quotePendingPayment.findUnique({ where: { id: pendingId } });
+  if (!pending || pending.quoteId !== quoteId) return res.status(404).json({ error: "Pending payment not found" });
+  if (pending.approved) return res.status(409).json({ error: "Already approved — it's a real payment now, not a pending entry." });
+
+  await prisma.quotePendingPayment.delete({ where: { id: pendingId } });
+
+  await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_PENDING_PAYMENT_DELETE", entityType: "Quote", entityId: quoteId, beforeData: { pendingId, amount: pending.amount } });
+  res.status(204).send();
+});
+
 // Finance-side: the one real fix this migration owes the old prototype —
 // approving a quote payment now goes through the actual Finance transaction
 // machinery (recordBankTxn, createCommissionPayable) instead of directly
@@ -188,4 +202,23 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
 
   await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_PAYMENT_APPROVED", entityType: "Quote", entityId: quoteId, afterData: { pendingId, amount: pending.amount }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(201).json(result);
+});
+
+// Blocked once a payment has been approved against this quote — that's
+// exactly when invoiceId gets set (see approveQuotePendingPayment above),
+// so it doubles as "has any money actually moved" without a second query.
+// Cascades items/pendingPayments (schema) — an unconfirmed pending payment
+// still just gets discarded along with the quote, same as it would if
+// Finance rejected it outright.
+export const deleteQuote: RequestHandler = asyncHandler(async (req, res) => {
+  const quote = await prisma.quote.findUnique({ where: { id: req.params.id } });
+  if (!quote) return res.status(404).json({ error: "Quote not found" });
+  if (quote.invoiceId) {
+    return res.status(409).json({ error: "Can't delete a quote that's already been invoiced — its payment ledger is append-only." });
+  }
+
+  await prisma.quote.delete({ where: { id: quote.id } });
+
+  await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_DELETE", entityType: "Quote", entityId: quote.id, beforeData: { quoteCode: quote.quoteCode } });
+  res.status(204).send();
 });

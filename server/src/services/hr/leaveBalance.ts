@@ -2,55 +2,74 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
 
-type LeaveTypeKey = "CASUAL" | "SICK" | "EARNED";
-const TYPES: LeaveTypeKey[] = ["CASUAL", "SICK", "EARNED"];
-const POLICY_FIELD: Record<LeaveTypeKey, "casualLeaveDays" | "sickLeaveDays" | "earnedLeaveDays"> = {
-  CASUAL: "casualLeaveDays",
-  SICK: "sickLeaveDays",
-  EARNED: "earnedLeaveDays",
-};
-
-// Real computation from the actual request/adjustment history — the old
-// prototype hardcoded "days used" per employee instead of deriving it from
-// `leaveRequests`, so this is a genuine fix, not a straight port.
-// `db` lets a caller already inside a transaction run this on that same connection.
-export async function computeLeaveBalance(employeeId: string, db: Prisma.TransactionClient = prisma) {
-  const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
-  const base = {
-    casualLeaveDays: policy?.casualLeaveDays ?? 12,
-    sickLeaveDays: policy?.sickLeaveDays ?? 8,
-    earnedLeaveDays: policy?.earnedLeaveDays ?? 15,
-  };
-
-  const [adjustments, approved] = await Promise.all([
-    db.leaveBalanceAdjustment.groupBy({ by: ["type"], where: { employeeId }, _sum: { days: true } }),
-    db.leaveRequest.groupBy({ by: ["type"], where: { employeeId, status: "APPROVED" }, _sum: { days: true } }),
-  ]);
-
-  const adjByType = Object.fromEntries(adjustments.map((a) => [a.type, Number(a._sum.days ?? 0)]));
-  const usedByType = Object.fromEntries(approved.map((a) => [a.type, Number(a._sum.days ?? 0)]));
-
-  const balance: Record<string, { used: number; total: number; remaining: number }> = {};
-  for (const type of TYPES) {
-    const total = base[POLICY_FIELD[type]] + (adjByType[type] ?? 0);
-    const used = usedByType[type] ?? 0;
-    balance[type.toLowerCase()] = { used, total, remaining: total - used };
-  }
-  return balance;
+function monthRange(month: string): { start: Date; end: Date } {
+  const [y, m] = month.split("-").map(Number);
+  return { start: new Date(Date.UTC(y, m - 1, 1)), end: new Date(Date.UTC(y, m, 1)) };
 }
 
-// Loss-of-pay days = approved leave taken beyond the computed balance for
-// CASUAL/SICK/EARNED, plus all approved UNPAID leave outright.
-export async function computeLopDays(employeeId: string, db: Prisma.TransactionClient = prisma): Promise<number> {
-  const balance = await computeLeaveBalance(employeeId, db);
-  const overBalance = TYPES.reduce((sum, t) => sum + Math.max(0, -balance[t.toLowerCase()].remaining), 0);
+// Loss-of-pay days for a given employee + payroll month = days marked
+// ON_LEAVE in Attendance that month, beyond hrPolicy.paidLeavesPerMonth.
+// Computed from Attendance, not LeaveRequest — approving a request writes
+// Attendance (see decideLeaveRequest), so a later correction made directly
+// to attendance stays correct even without touching the original request.
+// `db` lets a caller already inside a transaction run this on that same connection.
+export async function computeLopDays(employeeId: string, month: string, db: Prisma.TransactionClient = prisma): Promise<number> {
+  const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
+  const cap = policy?.paidLeavesPerMonth ?? 1;
+  const { start, end } = monthRange(month);
 
-  const unpaid = await db.leaveRequest.aggregate({
-    where: { employeeId, status: "APPROVED", type: "UNPAID" },
-    _sum: { days: true },
+  const leaveCount = await db.attendanceRecord.count({
+    where: { employeeId, status: "ON_LEAVE", date: { gte: start, lt: end } },
   });
 
-  return overBalance + Number(unpaid._sum.days ?? 0);
+  return Math.max(0, leaveCount - cap);
+}
+
+// WFH days beyond hrPolicy.paidWfhPerMonth in a given payroll month, paid at
+// 75% (a 25% cut per excess day) instead of a full Loss of Pay — see
+// computePayrollRow(). Counted from actual attendance records, same
+// "derive from real history" approach computeLopDays takes for leave.
+export async function computeWfhExcessDays(employeeId: string, month: string, db: Prisma.TransactionClient = prisma): Promise<number> {
+  const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
+  const cap = policy?.paidWfhPerMonth ?? 1;
+  const { start, end } = monthRange(month);
+
+  const wfhCount = await db.attendanceRecord.count({
+    where: { employeeId, status: "WFH", date: { gte: start, lt: end } },
+  });
+
+  return Math.max(0, wfhCount - cap);
+}
+
+// Both leave and WFH usage for a month in one shot, against the org-wide
+// caps — powers HR's "Leave & WFH this month" panel and an employee's own
+// pre-submit pay-impact preview on Apply for Leave, so both read the exact
+// same figures payroll actually deducts against (computeLopDays/computeWfhExcessDays).
+export async function computeMonthlyLeaveUsage(employeeId: string, month: string, db: Prisma.TransactionClient = prisma) {
+  const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
+  const leaveCap = policy?.paidLeavesPerMonth ?? 1;
+  const wfhCap = policy?.paidWfhPerMonth ?? 1;
+  const { start, end } = monthRange(month);
+
+  const grouped = await db.attendanceRecord.groupBy({
+    by: ["status"],
+    where: { employeeId, status: { in: ["ON_LEAVE", "WFH"] }, date: { gte: start, lt: end } },
+    _count: { _all: true },
+  });
+  const leaveDays = grouped.find((g) => g.status === "ON_LEAVE")?._count._all ?? 0;
+  const wfhDays = grouped.find((g) => g.status === "WFH")?._count._all ?? 0;
+
+  return {
+    month,
+    leaveDays,
+    leaveCap,
+    leaveRemaining: Math.max(0, leaveCap - leaveDays),
+    lopDays: Math.max(0, leaveDays - leaveCap),
+    wfhDays,
+    wfhCap,
+    wfhRemaining: Math.max(0, wfhCap - wfhDays),
+    wfhExcessDays: Math.max(0, wfhDays - wfhCap),
+  };
 }
 
 export function decimalToNumber(d: Decimal | number | null | undefined): number {

@@ -66,3 +66,22 @@ export const updateExpense: RequestHandler = asyncHandler(async (req, res) => {
   });
   res.json({ expense });
 });
+
+// Removes the expense and its single linked bank transaction together —
+// same "single-shot, correctable" treatment as updateExpense above, just
+// the delete case of it rather than an in-place edit.
+export const deleteExpense: RequestHandler = asyncHandler(async (req, res) => {
+  const before = await prisma.expense.findUnique({ where: { id: req.params.id } });
+  if (!before) return res.status(404).json({ error: "Expense not found" });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.bankTransaction.deleteMany({ where: { refType: "EXPENSE", refId: before.id } });
+    await tx.expense.delete({ where: { id: before.id } });
+  });
+
+  await recordAudit({
+    userId: req.user!.sub, action: "FIN_EXPENSE_DELETE", entityType: "Expense", entityId: before.id,
+    beforeData: { ...before, amount: before.amount.toString() }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null,
+  });
+  res.status(204).send();
+});

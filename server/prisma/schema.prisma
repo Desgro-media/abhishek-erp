@@ -133,11 +133,15 @@ enum AttendanceStatus {
   WFH
 }
 
+// Simplified from CASUAL/SICK/EARNED/UNPAID — Loss of Pay is now a monthly
+// cap on Attendance ON_LEAVE days (see HrPolicy.paidLeavesPerMonth), not a
+// per-type annual bank, so the type distinction that fed those banks is
+// gone. WFH is a LeaveType (not just an Attendance status) because a WFH
+// day still goes through the same request/approval flow as leave — see
+// LeaveRequest and the approval-writes-attendance flow in leave.controller.ts.
 enum LeaveType {
-  CASUAL
-  SICK
-  EARNED
-  UNPAID
+  CASUAL_SICK
+  WFH
 }
 
 enum LeaveDuration {
@@ -210,7 +214,6 @@ model Employee {
   salaryRevisions         SalaryRevision[]
   attendanceRecords       AttendanceRecord[]
   leaveRequests           LeaveRequest[]
-  leaveBalanceAdjustments LeaveBalanceAdjustment[]
   advances                Advance[]
   payrollEntries          PayrollEntry[]
   commissionWithdrawals   CommissionWithdrawal[]
@@ -277,25 +280,6 @@ model LeaveRequest {
   @@map("leave_requests")
 }
 
-// Append-only ledger of extra/clawed-back days on top of the HrPolicy base
-// entitlement. Balance = policy entitlement + sum(adjustments) - sum(approved
-// leave days of that type) — computed at read time, never stored, so it's
-// always consistent with the actual leave request history (the old prototype
-// hardcoded "days used" per employee instead of deriving it — fixed here).
-model LeaveBalanceAdjustment {
-  id         String    @id @default(uuid())
-  employeeId String    @map("employee_id")
-  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  type       LeaveType
-  days       Decimal   @db.Decimal(4, 2)
-  note       String?
-  createdAt  DateTime  @default(now()) @map("created_at")
-  createdBy  String?   @map("created_by")
-
-  @@index([employeeId])
-  @@map("leave_balance_adjustments")
-}
-
 model Advance {
   id               String        @id @default(uuid())
   employeeId       String        @map("employee_id")
@@ -339,6 +323,7 @@ model OpenPosition {
   openings     Int
   status       PositionStatus @default(OPEN)
   postedDate   DateTime       @default(now()) @map("posted_date")
+  archived     Boolean        @default(false)
 
   candidates Candidate[]
 
@@ -354,6 +339,7 @@ model Candidate {
   email       String?
   stage       CandidateStage @default(APPLIED)
   appliedDate DateTime       @default(now()) @map("applied_date")
+  archived    Boolean        @default(false)
 
   @@index([positionId])
   @@map("candidates")
@@ -376,15 +362,22 @@ model Notice {
 
 // Singleton config row (id fixed at 1) — HR/Admin-editable leave policy.
 model HrPolicy {
-  id              Int      @id @default(1)
-  casualLeaveDays Int      @default(12) @map("casual_leave_days")
-  sickLeaveDays   Int      @default(8) @map("sick_leave_days")
-  earnedLeaveDays Int      @default(15) @map("earned_leave_days")
+  id Int @id @default(1)
   // 0 = Sunday ... 6 = Saturday, matching JS Date#getDay().
-  weeklyOff       Int      @default(0) @map("weekly_off")
-  generalNotes    String?  @map("general_notes")
-  leavePayNotes   String?  @map("leave_pay_notes")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  weeklyOff Int @default(0) @map("weekly_off")
+  // Org-wide monthly caps, not annual per-type banks — replaces
+  // casual/sick/earnedLeaveDays. Days beyond paidLeavesPerMonth marked
+  // ON_LEAVE in Attendance in a given payroll month are a full day's Loss
+  // of Pay each; days beyond paidWfhPerMonth marked WFH are paid at 75%
+  // instead (a 25% cut) — see computeLopDays()/computeWfhExcessDays().
+  // Computed from Attendance, not LeaveRequest, so a correction to
+  // attendance alone stays correct even if the original request isn't
+  // touched. Org-wide for now, not per-employee/per-role.
+  paidLeavesPerMonth Int      @default(1) @map("paid_leaves_per_month")
+  paidWfhPerMonth    Int      @default(1) @map("paid_wfh_per_month")
+  generalNotes       String?  @map("general_notes")
+  leavePayNotes      String?  @map("leave_pay_notes")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("hr_policy")
 }

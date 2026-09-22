@@ -139,6 +139,25 @@ export const submitPendingPayment: RequestHandler = asyncHandler(async (req, res
   res.status(201).json({ pending });
 });
 
+// Discards a Sales-submitted payment nothing's been posted for yet — for a
+// duplicate or mistaken submission, not a real payment Finance just hasn't
+// gotten to. Once approved it's a real InvoicePayment (append-only), so this
+// refuses to touch it — approving is a one-way door.
+export const deletePendingPayment: RequestHandler = asyncHandler(async (req, res) => {
+  const { id: invoiceId, pendingId } = req.params;
+  const pending = await prisma.invoicePendingPayment.findUnique({ where: { id: pendingId } });
+  if (!pending || pending.invoiceId !== invoiceId) return res.status(404).json({ error: "Pending payment not found" });
+  if (pending.approved) return res.status(409).json({ error: "Already approved — it's a real payment now, not a pending entry." });
+  if (!isFinanceAdmin(req.user?.roles) && pending.salesPerson !== req.user!.name) {
+    return res.status(403).json({ error: "Forbidden — you can only delete your own pending payment" });
+  }
+
+  await prisma.invoicePendingPayment.delete({ where: { id: pendingId } });
+
+  await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PENDING_PAYMENT_DELETE", entityType: "Invoice", entityId: invoiceId, beforeData: { pendingId, amount: pending.amount } });
+  res.status(204).send();
+});
+
 // Finance-side: confirms a Sales-submitted payment actually landed —
 // creates the real InvoicePayment + ledger row + (if a salesperson is
 // attached) a Commission payable, all in one transaction.
@@ -179,4 +198,21 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_APPROVED", entityType: "Invoice", entityId: invoiceId, afterData: { pendingId, amount: pending.amount }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(201).json(result);
+});
+
+// Only allowed before any money has moved against this invoice — payments
+// are append-only (see InvoicePayment) and never get silently deleted out
+// from under a real ledger entry. Once a payment exists, correct via Finance
+// rather than deleting the invoice. Cascades items/pendingPayments (schema).
+export const deleteInvoice: RequestHandler = asyncHandler(async (req, res) => {
+  const invoice = await prisma.invoice.findUnique({ where: { id: req.params.id }, include: { payments: true } });
+  if (!invoice) return res.status(404).json({ error: "Invoice not found" });
+  if (invoice.payments.length > 0) {
+    return res.status(409).json({ error: "Can't delete an invoice with recorded payments — the payment ledger is append-only." });
+  }
+
+  await prisma.invoice.delete({ where: { id: invoice.id } });
+
+  await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_DELETE", entityType: "Invoice", entityId: invoice.id, beforeData: { invoiceNo: invoice.invoiceNo }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.status(204).send();
 });

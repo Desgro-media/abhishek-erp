@@ -39,6 +39,26 @@ export const updateBankAccount: RequestHandler = asyncHandler(async (req, res) =
   res.json({ account });
 });
 
+// Only allowed with an empty ledger — every cash-affecting action (payments,
+// expenses, transfers) posts a BankTransaction row here, so this is the same
+// "nothing has ever moved through it" check the append-only ledger already
+// implies. A DB-level FK (no cascade) would refuse it anyway; this just
+// gives a clearer error than a raw constraint violation.
+export const deleteBankAccount: RequestHandler = asyncHandler(async (req, res) => {
+  const account = await prisma.bankAccount.findUnique({ where: { id: req.params.id } });
+  if (!account) return res.status(404).json({ error: "Bank account not found" });
+
+  const txnCount = await prisma.bankTransaction.count({ where: { accountId: account.id } });
+  if (txnCount > 0) {
+    return res.status(409).json({ error: "Can't delete a bank account with ledger transactions on it." });
+  }
+
+  await prisma.bankAccount.delete({ where: { id: account.id } });
+
+  await recordAudit({ userId: req.user!.sub, action: "FIN_BANK_ACCOUNT_DELETE", entityType: "BankAccount", entityId: account.id, beforeData: { name: account.name, bank: account.bank } });
+  res.status(204).send();
+});
+
 export const getLedger: RequestHandler = asyncHandler(async (req, res) => {
   const accountId = req.params.id;
   const account = await prisma.bankAccount.findUnique({ where: { id: accountId } });

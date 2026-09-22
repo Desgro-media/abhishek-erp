@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
-import { computeLopDays } from "./leaveBalance";
+import { computeLopDays, computeWfhExcessDays } from "./leaveBalance";
 import { workingDaysInMonth } from "./workingDays";
 
 // Same formula as the old computePayrollRow() in app.js: 60/20/20 basic/HRA/
@@ -28,11 +28,14 @@ export async function computePayrollRow(employeeId: string, month: string, db: P
   const advDeduction = recoveringAdvances.reduce((sum, a) => sum + Math.min(Number(a.monthlyDeduction), Number(a.balance)), 0);
 
   const monthWorkingDays = await workingDaysInMonth(month, db);
-  const lopDays = await computeLopDays(employeeId, db);
+  const lopDays = await computeLopDays(employeeId, month, db);
   const perDayRate = monthWorkingDays ? gross / monthWorkingDays : 0;
   const lopDeduction = Math.round(perDayRate * lopDays);
 
-  const totalDeductions = pf + pt + advDeduction + lopDeduction;
+  const wfhExcessDays = await computeWfhExcessDays(employeeId, month, db);
+  const wfhDeduction = Math.round(perDayRate * 0.25 * wfhExcessDays);
+
+  const totalDeductions = pf + pt + advDeduction + lopDeduction + wfhDeduction;
   const net = gross - totalDeductions;
   const paid = entry.payments.reduce((sum, p) => sum + Number(p.amount), 0);
   const balance = Math.max(0, net - paid);
@@ -50,6 +53,8 @@ export async function computePayrollRow(employeeId: string, month: string, db: P
     advDeduction,
     lopDays,
     lopDeduction,
+    wfhExcessDays,
+    wfhDeduction,
     monthWorkingDays,
     totalDeductions,
     net,
