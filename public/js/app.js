@@ -47,6 +47,11 @@ const SERVICE_DEPARTMENTS = DEPARTMENTS.filter(d=>d!=='Administrative' && d!=='S
    Day", "Permanent", "Approved"...) — the map*() functions below do that
    translation once, at load time, so nothing downstream has to care. */
 let employees = [];
+// Lightweight name+dept roster for CRM pickers (Account Manager / Sales Person) —
+// populated for roles that can reach CRM but not full HR (e.g. Sales), since
+// listEmployees() itself is HR/Admin only. See loadEmployeeDirectory()/assignableEmployees().
+let employeeDirectory = [];
+function assignableEmployees(){ return employees.length ? employees : employeeDirectory; }
 let employeeDbIdByCode = {}; // "EMP-101" -> real Employee uuid
 let employeeCodeByDbId = {}; // real Employee uuid -> "EMP-101"
 const byId = id => employees.find(e=>e.id===id) || archivedEmployees.find(e=>e.id===id);
@@ -385,9 +390,13 @@ function mapClient(c){
   };
 }
 async function loadClients(){ clients = (await apiJson("/api/crm/clients")).clients.map(mapClient); }
+async function loadEmployeeDirectory(){
+  const { employees: list } = await apiJson("/api/hr/employees/directory");
+  employeeDirectory = list.map(e=>({ id: e.employeeCode, _dbId: e.id, name: e.name, dept: e.dept }));
+}
 
 async function loadCrmModule(){
-  await Promise.all([loadClients(), loadLeads(), loadQuotes(), loadTasks()]);
+  await Promise.all([loadClients(), loadLeads(), loadQuotes(), loadTasks(), loadEmployeeDirectory()]);
 }
 async function loadContentModule(){
   await Promise.all([loadContentItems(), loadMetaCampaigns()]);
@@ -3327,8 +3336,8 @@ function openEditClient(id){
       </div>
       <div><label class="field-label">Services</label><div class="check-row">${SERVICE_DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="services" value="${esc(d)}" ${c.services.includes(d)?'checked':''}>${esc(d)}</label>`).join('')}</div></div>
       <div class="field-row">
-        <div><label class="field-label">Account Manager</label><select class="field-input" name="accountManager">${employees.map(e=>`<option ${e.name===c.accountManager?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
-        <div><label class="field-label">Sales Person</label><select class="field-input" name="salesPerson">${(()=>{ const s=employees.filter(e=>e.dept==='Sales'); return (s.length?s:employees).map(e=>`<option ${e.name===c.salesPerson?'selected':''}>${esc(e.name)}</option>`).join(''); })()}</select></div>
+        <div><label class="field-label">Account Manager</label><select class="field-input" name="accountManager">${assignableEmployees().map(e=>`<option ${e.name===c.accountManager?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Sales Person</label><select class="field-input" name="salesPerson">${(()=>{ const pool=assignableEmployees(); const s=pool.filter(e=>e.dept==='Sales'); return (s.length?s:pool).map(e=>`<option ${e.name===c.salesPerson?'selected':''}>${esc(e.name)}</option>`).join(''); })()}</select></div>
       </div>
       <div class="field-row">
         <div><label class="field-label">Status</label><select class="field-input" name="status">${["Active","Paused","Churned"].map(s=>`<option ${s===c.status?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -3388,8 +3397,9 @@ function mktLeads(){
   </div>`;
 }
 function salesTeamOptions(){
-  const salesEmps = employees.filter(e=>e.dept==='Sales');
-  return (salesEmps.length?salesEmps:employees).map(e=>`<option>${esc(e.name)}</option>`).join('');
+  const pool = assignableEmployees();
+  const salesEmps = pool.filter(e=>e.dept==='Sales');
+  return (salesEmps.length?salesEmps:pool).map(e=>`<option>${esc(e.name)}</option>`).join('');
 }
 function quoteActionsMkt(q){
   const downloadBtn = `<button class="btn btn-sm ghost" onclick="downloadQuote('${q.id}')" title="Download quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>`;
@@ -3578,7 +3588,7 @@ function openAddClient(){
       </div>
       <div><label class="field-label">Services</label><div class="check-row">${SERVICE_DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="services" value="${esc(d)}">${esc(d)}</label>`).join('')}</div></div>
       <div class="field-row">
-        <div><label class="field-label">Account Manager</label><select class="field-input" name="accountManager">${employees.map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Account Manager</label><select class="field-input" name="accountManager">${assignableEmployees().map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Sales Person</label><select class="field-input" name="salesPerson">${salesTeamOptions()}</select></div>
       </div>
       <div><label class="field-label">Billing</label><select class="field-input" name="billingType"><option value="Prepaid">Prepaid — amount agreed up front</option><option value="Postpaid">Postpaid — amount finalized once work is complete</option></select></div>
@@ -3639,7 +3649,7 @@ function openEditLead(id){
         <div><label class="field-label">Source</label><select class="field-input" name="source">${LEAD_SOURCES.map(s=>`<option ${s===l.source?'selected':''}>${s}</option>`).join('')}</select></div>
         <div><label class="field-label">Service Interested</label><select class="field-input" name="serviceInterested">${SERVICE_DEPARTMENTS.map(d=>`<option ${d===l.serviceInterested?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
       </div>
-      <div><label class="field-label">Lead Owner</label><select class="field-input" name="leadOwner">${employees.filter(e=>e.dept==='Sales').map(e=>`<option ${e.name===l.leadOwner?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+      <div><label class="field-label">Lead Owner</label><select class="field-input" name="leadOwner">${assignableEmployees().filter(e=>e.dept==='Sales').map(e=>`<option ${e.name===l.leadOwner?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></div>
     </form>`);
@@ -3778,7 +3788,7 @@ function openAddTask(clientId){
     <form id="f-add-task"><div class="modal-body">
       <div><label class="field-label">Task</label><input class="field-input" name="title" required placeholder="e.g. First draft — homepage copy"></div>
       <div class="field-row">
-        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${employees.map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${assignableEmployees().map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" value="${TODAY}" required></div>
       </div>
     </div>
@@ -3849,7 +3859,7 @@ function openEditTask(id){
     <form id="f-edit-task"><div class="modal-body">
       <div><label class="field-label">Task</label><input class="field-input" name="title" required value="${esc(t.title)}"></div>
       <div class="field-row">
-        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${employees.map(e=>`<option ${e.name===t.assignedTo?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${assignableEmployees().map(e=>`<option ${e.name===t.assignedTo?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" value="${t.due}" required></div>
       </div>
       <div class="field-row">
@@ -4014,7 +4024,7 @@ function commissionRowsByPerson(){
 // new hire still appears) — powers the Leaderboard tab and the rank shown on a Sales sign-in's overview.
 function salesLeaderboardRows(){
   const commission = commissionRowsByPerson();
-  return employees.filter(e=>e.dept==='Sales').map(e=>{
+  return assignableEmployees().filter(e=>e.dept==='Sales').map(e=>{
     const row = commission.find(r=>r.name===e.name);
     return { emp:e, name:e.name, earned: row?row.earned:0, clients: clients.filter(c=>c.salesPerson===e.name).length };
   }).sort((a,b)=>b.earned-a.earned);
@@ -4224,8 +4234,9 @@ function openSubmitInvoicePayment(id){
   const inv = invoices.find(x=>x.id===id);
   const bal = invoiceBalance(inv);
   const client = clientById(inv.clientId);
-  const salesEmps = employees.filter(e=>e.dept==='Sales');
-  const salesOptions = (salesEmps.length?salesEmps:employees).map(e=>`<option ${e.name===client.salesPerson?'selected':''}>${esc(e.name)}</option>`).join('');
+  const assignablePool = assignableEmployees();
+  const salesEmps = assignablePool.filter(e=>e.dept==='Sales');
+  const salesOptions = (salesEmps.length?salesEmps:assignablePool).map(e=>`<option ${e.name===client.salesPerson?'selected':''}>${esc(e.name)}</option>`).join('');
   showModal(`
     <div class="modal-head"><h3>Log payment collected — ${esc(inv.invoiceNo)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-submit-invoice-payment"><div class="modal-body">

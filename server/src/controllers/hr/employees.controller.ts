@@ -46,6 +46,22 @@ export const listEmployees: RequestHandler = asyncHandler(async (req, res) => {
   res.json({ employees: employees.map(withAccessFlag) });
 });
 
+// Non-sensitive name+dept roster (no salary/PII) for pickers outside HR —
+// e.g. CRM's Account Manager / Sales Person selects on a client — for roles
+// that can't call listEmployees above.
+export const listEmployeeDirectory: RequestHandler = asyncHandler(async (req, res) => {
+  const roles = req.user?.roles ?? [];
+  if (!roles.includes("ADMIN") && !roles.includes("HR") && !roles.includes("SALES")) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const employees = await prisma.employee.findMany({
+    where: { employmentStatus: { not: "LEFT" } },
+    select: { id: true, employeeCode: true, name: true, dept: true },
+    orderBy: { name: "asc" },
+  });
+  res.json({ employees });
+});
+
 export const getEmployee: RequestHandler = asyncHandler(async (req, res) => {
   const targetId = req.params.id;
   const scoped = resolveScopedEmployeeId(req, targetId);
