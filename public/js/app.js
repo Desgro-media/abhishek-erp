@@ -212,6 +212,22 @@ async function loadAttendanceToday(){
   records.forEach(r=>{ attendanceToday[employeeCodeByDbId[r.employee.id] || r.employee.id] = { status: ATTENDANCE_FROM_API[r.status], in: r.checkIn || null }; });
   // Anyone without a record today reads as absent rather than crashing the render layer.
   employees.forEach(e=>{ if(!attendanceToday[e.id]) attendanceToday[e.id] = { status:"absent", in:null }; });
+  attendanceByDate[TODAY] = attendanceToday; // same object — HR Attendance's date picker defaults to today with no extra fetch
+}
+// HR Attendance's "pick a date" control — date -> {empCode: {status, in}}, fetched on demand per date.
+let selectedAttendanceDate = TODAY;
+let attendanceByDate = {};
+async function loadAttendanceForDate(date){
+  const { records } = await apiJson(`/api/hr/attendance?date=${date}`);
+  const map = {};
+  records.forEach(r=>{ map[employeeCodeByDbId[r.employee.id] || r.employee.id] = { status: ATTENDANCE_FROM_API[r.status], in: r.checkIn || null }; });
+  employees.forEach(e=>{ if(!map[e.id]) map[e.id] = { status:"absent", in:null }; });
+  attendanceByDate[date] = map;
+}
+async function setAttendanceDate(date){
+  selectedAttendanceDate = date;
+  if(!attendanceByDate[date]) await loadAttendanceForDate(date).catch(()=>{ toast("Couldn't load attendance for that date"); });
+  render();
 }
 // Month -> {empCode: {leave, wfh}} — company-wide ON_LEAVE/WFH day counts from
 // real Attendance, for HR > Leave Requests' "Leave & WFH this month" panel.
@@ -2112,13 +2128,16 @@ function openEmployeeArchive(){
 
 let selectedAttendanceEmp = null;
 function setAttendanceEmp(id){ selectedAttendanceEmp=id; render(); }
-async function cycleAttendance(id){
+async function cycleAttendance(id, date){
+  date = date || selectedAttendanceDate;
   const order=["present","late","half","wfh","absent","leave"];
-  const cur=attendanceToday[id];
+  const dayMap = attendanceByDate[date];
+  if(!dayMap) return;
+  const cur=dayMap[id];
   const next = order[(order.indexOf(cur.status)+1)%order.length];
   cur.status = next; render(); // optimistic — snappy click feedback
   try{
-    await apiJson("/api/hr/attendance", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId: employeeDbIdByCode[id], date: TODAY, status: ATTENDANCE_TO_API[next] }) });
+    await apiJson("/api/hr/attendance", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId: employeeDbIdByCode[id], date, status: ATTENDANCE_TO_API[next] }) });
   }catch(err){
     cur.status = order[(order.indexOf(next)-1+order.length)%order.length]; // revert on failure
     toast(err.message || "Couldn't update attendance"); render();
@@ -2179,7 +2198,10 @@ function openAttendanceHistory(empId){
     <div class="modal-foot"><div></div><button class="btn ghost" onclick="closeModal()">Close</button></div>`);
 }
 function hrAttendance(){
-  const rows = employees.map(e=>({emp:e, a:attendanceToday[e.id]}));
+  const date = selectedAttendanceDate;
+  const isToday = date===TODAY;
+  const dayMap = attendanceByDate[date] || {};
+  const rows = employees.map(e=>({emp:e, a:dayMap[e.id] || {status:"absent", in:null}}));
   const counts = {present:0,late:0,half:0,absent:0,leave:0,wfh:0};
   rows.forEach(r=>counts[r.a.status]++);
   const selected = byId(selectedAttendanceEmp) || employees[0];
@@ -2187,6 +2209,14 @@ function hrAttendance(){
   const mtdWorkingDays = workingDaysMTD();
   const present = monthPresentDays[selected.id] ?? mtdWorkingDays;
   return `
+  <div class="toolbar">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <label class="field-label" style="margin:0;">Date</label>
+      <input class="field-input" style="width:auto;" type="date" value="${date}" max="${TODAY}" onchange="setAttendanceDate(this.value)">
+      ${!isToday ? `<button class="btn btn-sm ghost" onclick="setAttendanceDate('${TODAY}')">Back to today</button>` : ""}
+    </div>
+    <div></div>
+  </div>
   <div class="kpi-grid cols-5">
     <div class="kpi-card"><div class="kpi-label">Present</div><div class="kpi-value mono">${counts.present}</div></div>
     <div class="kpi-card"><div class="kpi-label">Late / Half Day</div><div class="kpi-value mono warn">${counts.late+counts.half}</div></div>
@@ -2196,9 +2226,9 @@ function hrAttendance(){
   </div>
   <div class="grid-2">
     <div class="panel">
-      <div class="panel-head"><h3>Today's roster</h3><div class="sub">${employees.length} team members</div></div>
+      <div class="panel-head"><h3>${isToday?"Today's roster":fmtDate(date)+"'s roster"}</h3><div class="sub">${employees.length} team members${isToday?"":" · click a status to correct it for this date"}</div></div>
       <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>Department</th><th>Check-in</th><th>Status</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr class="row-click" onclick="openAttendanceHistory('${r.emp.id}')"><td>${personCell(r.emp)}</td><td class="muted">${esc(r.emp.dept)}</td><td class="num mono muted">${r.a.in||"—"}</td><td><button class="pill ${statusKind(attendanceLabel(r.a.status))}" onclick="event.stopPropagation();cycleAttendance('${r.emp.id}')">${attendanceLabel(r.a.status)}</button></td></tr>`).join("")}</tbody>
+        <tbody>${rows.map(r=>`<tr class="row-click" onclick="openAttendanceHistory('${r.emp.id}')"><td>${personCell(r.emp)}</td><td class="muted">${esc(r.emp.dept)}</td><td class="num mono muted">${r.a.in||"—"}</td><td><button class="pill ${statusKind(attendanceLabel(r.a.status))}" onclick="event.stopPropagation();cycleAttendance('${r.emp.id}','${date}')">${attendanceLabel(r.a.status)}</button></td></tr>`).join("")}</tbody>
       </table></div>
     </div>
     <div class="panel">
