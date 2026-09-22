@@ -323,6 +323,39 @@ function workingDaysInMonth(monthStr){ // "2026-09"
 }
 function workingDaysMTD(){ return workingDaysInRange(TODAY.slice(0,7)+"-01", TODAY); }
 
+// Loss of Pay days for an employee, for a given payroll month — mirrors the server's computeLopDays
+// (leaveBalance.ts): ON_LEAVE attendance days that month, beyond hrPolicy.paidLeavesPerMonth. Reads
+// attendanceMonthSummary, the same counts endpoint that service reads from, so a preview shown here
+// before an employee is even added to payroll lines up with what the server will actually deduct.
+function lopDaysFor(empId, month){
+  const counts = attendanceMonthSummary[month] && attendanceMonthSummary[month][empId];
+  return Math.max(0, (counts?.leave||0) - hrPolicy.paidLeavesPerMonth);
+}
+// WFH days beyond the monthly paid-WFH allowance — mirrors computeWfhExcessDays, paid at 75% (a 25% cut)
+// rather than a full Loss of Pay.
+function wfhExcessDaysFor(empId, month){
+  const counts = attendanceMonthSummary[month] && attendanceMonthSummary[month][empId];
+  return Math.max(0, (counts?.wfh||0) - hrPolicy.paidWfhPerMonth);
+}
+// Salary for a month is disbursed on the 5th of the following month, so the most recently CLOSED
+// month (the one before the current calendar month) is always fully earned — this is that month,
+// regardless of which payroll month HR happens to be adding entries for right now.
+function closedPayrollMonth(){
+  const [y,m] = TODAY.slice(0,7).split('-').map(Number);
+  const d = new Date(y, m-1, 1); d.setMonth(d.getMonth()-1);
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,'0');
+}
+// What an employee has actually earned-and-not-yet-been-paid: the balance on their most recently
+// closed month's payroll entry, minus anything they already have a Pending withdrawal request in for.
+function earnedUnpaidFor(emp){
+  const month = closedPayrollMonth();
+  const rec = payroll.history[month] && payroll.history[month].entries[emp.id];
+  if(!rec) return {month, net:0, paid:0, balance:0, requestable:0};
+  const c = computePayrollRow(emp, month);
+  const pendingRequested = withdrawalRequests.filter(w=>w.empId===emp.id && w.month===month && w.status==='Pending').reduce((s,w)=>s+w.amount,0);
+  return {month, net:c.net, paid:c.paid, balance:c.balance, requestable: Math.max(0, c.balance-pendingRequested)};
+}
+
 // ---- HR calendar: holidays (click a day to mark/remove) plus birthdays & work anniversaries ----
 let hrCalendarMonth = TODAY.slice(0,7);
 function setHrCalendarMonth(delta){
@@ -3286,6 +3319,7 @@ async function setPayrollMonth(m){
   payroll.selectedMonth=m;
   const jobs = [];
   if(!payroll.history[m] && (isHRRole(currentUser) || (currentUser && currentUser.isAdmin))) jobs.push(loadPayrollMonth(m));
+  if(!attendanceMonthSummary[m] && (isHRRole(currentUser) || (currentUser && currentUser.isAdmin))) jobs.push(loadAttendanceMonthSummary(m));
   if(!financeReportsCache.pl[m] && isFinanceAdminUser(currentUser)) jobs.push(loadFinanceReports(m));
   await Promise.all(jobs);
   render();
@@ -3304,18 +3338,43 @@ async function decideAdvance(id,decision){
     toast(decision==="Recovering"?"Advance approved":"Advance rejected"); render();
   }catch(err){ toast(err.message || "Couldn't update advance"); }
 }
-function openAddPayrollEntry(id){
+async function openAddPayrollEntry(id){
   const e = byId(id); const month = payroll.selectedMonth;
+  if(!attendanceMonthSummary[month]) await loadAttendanceMonthSummary(month).catch(()=>{});
   const existing = payroll.history[month].entries[id];
+  const startGross = existing ? existing.gross : e.salary;
+
+  // Context so HR isn't setting this month's gross blind — last closed month's attendance, what's
+  // already been paid out against an advance, what's still owed from the last closed payroll month,
+  // and the LOP/WFH pay-cut this employee's excess leave already implies at the proposed gross.
+  const closedMonth = closedPayrollMonth();
+  const lastMonthAttendance = attendanceHistoryFor(id).find(mo=>`${mo.y}-${String(mo.m).padStart(2,'0')}`===closedMonth);
+  const empAdvances = advances.filter(a=>a.empId===id);
+  const advPaidTotal = empAdvances.reduce((s,a)=>s+(a.amount-a.balance),0);
+  const advOutstanding = empAdvances.filter(a=>a.status==="Approved").reduce((s,a)=>s+a.balance,0);
+  const eu = earnedUnpaidFor(e);
+  const lopDays = lopDaysFor(id, month);
+  const monthWorkingDays = workingDaysInMonth(month);
+  const perDayRateForContext = monthWorkingDays ? startGross/monthWorkingDays : 0;
+  const lopDeduction = Math.round(perDayRateForContext * lopDays);
+  const wfhExcessDays = wfhExcessDaysFor(id, month);
+  const wfhDeduction = Math.round(perDayRateForContext * 0.25 * wfhExcessDays);
+
   showModal(`
     <div class="modal-head"><h3>${existing?"Edit":"Add to"} payroll — ${MONTH_LABEL[month]}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-add-payroll-entry"><div class="modal-body">
       <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
-      <div class="field-row">
+      <div class="section-label">Before you set this month's pay</div>
+      <div class="calc-line"><span>Attendance — ${esc(MONTH_LABEL[closedMonth]||closedMonth)}</span><span class="mono">${lastMonthAttendance ? `${lastMonthAttendance.present}/${lastMonthAttendance.workingDays} present${lastMonthAttendance.absentDays?`, ${lastMonthAttendance.absentDays} absent`:""}` : "no record"}</span></div>
+      <div class="calc-line"><span>Advance salary paid to date</span><span class="mono">${advPaidTotal>0?inr(advPaidTotal):"—"}${advOutstanding>0?` <span class="faint" style="font-size:11.5px;">(${inr(advOutstanding)} still owed)</span>`:""}</span></div>
+      <div class="calc-line"><span>Balance payable — ${esc(MONTH_LABEL[eu.month]||eu.month)}</span><span class="mono ${eu.balance>0?'warn':''}">${eu.balance>0?inr(eu.balance):"settled"}</span></div>
+      ${lopDays>0 ? `<div class="calc-line"><span>Leave beyond ${hrPolicy.paidLeavesPerMonth}/month allowance</span><span class="mono" style="color:var(--neg);">${lopDays} day${lopDays===1?"":"s"} · est. −${inr(lopDeduction)} LOP</span></div>` : `<div class="calc-line"><span>Leave beyond ${hrPolicy.paidLeavesPerMonth}/month allowance</span><span class="mono faint">none</span></div>`}
+      ${wfhExcessDays>0 ? `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance</span><span class="mono" style="color:var(--neg);">${wfhExcessDays} day${wfhExcessDays===1?"":"s"} · est. −${inr(wfhDeduction)} (paid at 75%)</span></div>` : `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance</span><span class="mono faint">none</span></div>`}
+      <div class="field-row" style="margin-top:10px;">
         <div><label class="field-label">Master monthly gross</label><div class="mono">${inr(e.salary)}</div></div>
-        <div><label class="field-label">Gross for ${MONTH_LABEL[month]} (₹)</label><input class="field-input" type="number" name="gross" min="0" step="500" required value="${existing?existing.gross:e.salary}"></div>
+        <div><label class="field-label">Gross for ${MONTH_LABEL[month]} (₹)</label><input class="field-input" type="number" name="gross" min="0" step="500" required value="${startGross}"></div>
       </div>
-      <div class="subtext">Adjust this if the month's pay differs from the master salary — unpaid leave deductions, a mid-month joiner, or a pending salary revision. Once added, this employee's figures appear in the payroll list below and can be paid in full or in parts.</div>
+      <div class="subtext">Adjust this if the month's pay differs from the master salary — unpaid leave deductions, a mid-month joiner, or a pending salary revision. Loss of Pay for excess leave and the 75%-pay cut for excess WFH are both applied automatically once added. Once added, this employee's figures appear in the payroll list below and can be paid in full or in parts.</div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${existing?"Save":"Add to payroll"}</button></div></div>
     </form>`);
