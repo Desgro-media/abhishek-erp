@@ -10,8 +10,16 @@ async function nextLeadCode(): Promise<string> {
   return `MLD-${String(lastNum + 1).padStart(2, "0")}`;
 }
 
+// A plain Sales caller sees their own claimed leads plus the shared Open
+// (unclaimed) queue they can claim from — same "narrow self-service slice"
+// listClients/listQuotes already give a non-admin caller; ADMIN sees
+// everyone's, same as those.
 export const listLeads: RequestHandler = asyncHandler(async (req, res) => {
-  const leads = await prisma.lead.findMany({ where: { status: req.query.status as any }, orderBy: { createdAt: "desc" } });
+  const admin = req.user?.roles?.includes("ADMIN") ?? false;
+  const leads = await prisma.lead.findMany({
+    where: { status: req.query.status as any, ...(admin ? {} : { OR: [{ leadOwner: req.user!.name }, { leadOwner: null }] }) },
+    orderBy: { createdAt: "desc" },
+  });
   res.json({ leads });
 });
 

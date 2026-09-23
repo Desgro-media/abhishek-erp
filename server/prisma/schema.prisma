@@ -177,6 +177,7 @@ enum PositionStatus {
 
 enum CandidateStage {
   APPLIED
+  SHORTLISTED
   INTERVIEW
   OFFER
   HIRED
@@ -468,14 +469,6 @@ enum PayableCategory {
   VENDOR
 }
 
-enum ExpenseCategory {
-  SOFTWARE
-  EQUIPMENT
-  TRAVEL
-  UTILITIES
-  MISC
-}
-
 enum BankTxnType {
   CREDIT
   DEBIT
@@ -615,19 +608,26 @@ model PayablePayment {
 }
 
 model Expense {
-  id          String          @id @default(uuid())
-  category    ExpenseCategory
-  description String
-  amount      Decimal         @db.Decimal(12, 2)
-  date        DateTime        @db.Date
-  accountId   String          @map("account_id")
-  account     BankAccount     @relation(fields: [accountId], references: [id])
+  id           String         @id @default(uuid())
+  // FK into the same Chart of Accounts used by journal entries, instead of
+  // a fixed enum — so the category list an expense can be logged against
+  // always matches whatever Expense/Liability accounts Settings > Chart of
+  // Accounts actually has, and P&L can total expenses straight off
+  // coaAccount.name instead of a separately-maintained label mapping.
+  coaAccountId String         @map("coa_account_id")
+  coaAccount   ChartOfAccount @relation(fields: [coaAccountId], references: [id])
+  description  String
+  amount       Decimal        @db.Decimal(12, 2)
+  date         DateTime       @db.Date
+  accountId    String         @map("account_id")
+  account      BankAccount    @relation(fields: [accountId], references: [id])
   // Untagged (null) expenses pool into shared overhead in department
   // profitability — see deptProfitability() in app.js.
-  dept        String?
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
+  dept         String?
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
 
+  @@index([coaAccountId])
   @@map("expenses")
 }
 
@@ -710,6 +710,7 @@ model ChartOfAccount {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   journalLines JournalLine[]
+  expenses     Expense[]
 
   @@map("chart_of_accounts")
 }

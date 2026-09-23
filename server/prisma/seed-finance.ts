@@ -85,8 +85,8 @@ export async function seedFinance(clientIdByCode: Map<string, string>) {
   await prisma.payable.create({ data: { category: "VENDOR", payee: "Freelance video editor — September batch", amount: 12000, dueAt: new Date("2026-09-20") } });
   console.log("Seeded 3 payables (rent settled, one commission, one vendor).");
 
-  const expense1 = await prisma.expense.create({ data: { category: "SOFTWARE", description: "Canva Pro + Adobe CC renewal", amount: 18500, date: new Date("2026-09-03"), accountId: bank1.id, dept: null } });
-  const expense2 = await prisma.expense.create({ data: { category: "TRAVEL", description: "Client site visit — Kochi", amount: 6200, date: new Date("2026-09-10"), accountId: bank3.id, dept: "Marketing Consultation" } });
+  const expense1 = await prisma.expense.create({ data: { coaAccountId: coaByName.get("Software")!, description: "Canva Pro + Adobe CC renewal", amount: 18500, date: new Date("2026-09-03"), accountId: bank1.id, dept: null } });
+  const expense2 = await prisma.expense.create({ data: { coaAccountId: coaByName.get("Travel")!, description: "Client site visit — Kochi", amount: 6200, date: new Date("2026-09-10"), accountId: bank3.id, dept: "Marketing Consultation" } });
   console.log("Seeded 2 expenses.");
 
   await prisma.$transaction(async (tx) => {
