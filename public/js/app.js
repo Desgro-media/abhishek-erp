@@ -671,7 +671,7 @@ function mapPayable(p){
   };
 }
 function mapExpense(e){
-  return { id:e.id, category:TITLECASE_FROM_API(e.category), description:e.description, amount:Number(e.amount), date:isoDate(e.date), accountId:e.accountId, dept:e.dept||"" };
+  return { id:e.id, category:e.coaAccount.name, coaAccountId:e.coaAccountId, description:e.description, amount:Number(e.amount), date:isoDate(e.date), accountId:e.accountId, dept:e.dept||"" };
 }
 function mapBankAccount(b){
   return { id:b.id, name:b.name, bank:b.bank, number:b.number, opening:Number(b.opening), openedOn:isoDate(b.openedAt), balance:Number(b.balance) };
@@ -1396,6 +1396,21 @@ function journalAccountOptions(selected){
     chartOfAccounts.filter(c=>c.parent===m.name).forEach(k=>coaOpts.push(`<option value="coa:${k._dbId}" ${selected==='coa:'+k._dbId?'selected':''}>&nbsp;&nbsp;↳ ${esc(k.name)}</option>`));
   });
   return bankOpts.concat(coaOpts).join("");
+}
+// Category options for logging an expense — every Chart-of-Accounts main
+// account classified as Expense or Liability (with its sub-accounts
+// indented beneath), so a logged expense always lands on a real COA account
+// instead of the old fixed 5-option list that could drift out of sync with
+// whatever Settings > Chart of Accounts actually has. Value is the account
+// _dbId (resolved back to a name via coaDbIdByName's inverse at submit) so
+// the option list matches journalAccountOptions' id-based selection.
+function expenseCoaOptions(selectedId){
+  const opts = [];
+  chartOfAccounts.filter(c=>!c.parent && (c.type==="Expense"||c.type==="Liability")).forEach(m=>{
+    opts.push(`<option value="${m._dbId}" ${selectedId===m._dbId?'selected':''}>${esc(m.name)}</option>`);
+    chartOfAccounts.filter(c=>c.parent===m.name).forEach(k=>opts.push(`<option value="${k._dbId}" ${selectedId===k._dbId?'selected':''}>&nbsp;&nbsp;↳ ${esc(k.name)}</option>`));
+  });
+  return opts.join("");
 }
 
 /* ===================== ACCOUNTS — REPORTS (server-computed) =====================
@@ -4929,7 +4944,7 @@ function openAddExpense(){
     <div class="modal-head"><h3>Log expense</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-add-expense"><div class="modal-body">
       <div class="field-row">
-        <div><label class="field-label">Category</label><select class="field-input" name="category"><option>Software</option><option>Equipment</option><option>Travel</option><option>Utilities</option><option>Misc</option></select></div>
+        <div><label class="field-label">Category</label><select class="field-input" name="coaAccountId">${expenseCoaOptions()}</select></div>
         <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="0" required placeholder="5000"></div>
       </div>
       <div><label class="field-label">Description</label><input class="field-input" name="description" required placeholder="What was this for?"></div>
@@ -4944,9 +4959,9 @@ function openAddExpense(){
   document.getElementById("f-add-expense").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    const accountId = f.get("accountId"), date = f.get("date"), category = f.get("category"), description = f.get("description"), amount = Number(f.get("amount"));
+    const accountId = f.get("accountId"), date = f.get("date"), coaAccountId = f.get("coaAccountId"), description = f.get("description"), amount = Number(f.get("amount"));
     try{
-      await apiJson("/api/finance/expenses", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ category:TITLECASE_TO_API(category), description, amount, date, accountId, dept:f.get("dept")||undefined }) });
+      await apiJson("/api/finance/expenses", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ coaAccountId, description, amount, date, accountId, dept:f.get("dept")||undefined }) });
       await Promise.all([loadExpenses(), loadBankAccounts()]);
       toast("Expense logged"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't log expense"); }
@@ -4958,7 +4973,7 @@ function openEditExpense(id){
     <div class="modal-head"><h3>Edit expense</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-edit-expense"><div class="modal-body">
       <div class="field-row">
-        <div><label class="field-label">Category</label><select class="field-input" name="category">${["Software","Equipment","Travel","Utilities","Misc"].map(c=>`<option ${c===e.category?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div><label class="field-label">Category</label><select class="field-input" name="coaAccountId">${expenseCoaOptions(e.coaAccountId)}</select></div>
         <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="0" required value="${e.amount}"></div>
       </div>
       <div><label class="field-label">Description</label><input class="field-input" name="description" required value="${esc(e.description)}"></div>
@@ -4973,9 +4988,9 @@ function openEditExpense(id){
   document.getElementById("f-edit-expense").addEventListener("submit", async ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
-    const accountId = f.get("accountId"), date = f.get("date"), category = f.get("category"), description = f.get("description"), amount = Number(f.get("amount"));
+    const accountId = f.get("accountId"), date = f.get("date"), coaAccountId = f.get("coaAccountId"), description = f.get("description"), amount = Number(f.get("amount"));
     try{
-      await apiJson(`/api/finance/expenses/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ category:TITLECASE_TO_API(category), description, amount, date, accountId, dept:f.get("dept")||undefined }) });
+      await apiJson(`/api/finance/expenses/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ coaAccountId, description, amount, date, accountId, dept:f.get("dept")||undefined }) });
       await Promise.all([loadExpenses(), loadBankAccounts()]);
       toast("Expense updated"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't update expense"); }

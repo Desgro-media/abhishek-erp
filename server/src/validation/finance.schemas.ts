@@ -58,7 +58,7 @@ export const payablePaymentSchema = z.object({
 });
 
 export const expenseCreateSchema = z.object({
-  category: z.enum(["SOFTWARE", "EQUIPMENT", "TRAVEL", "UTILITIES", "MISC"]),
+  coaAccountId: z.string().uuid(),
   description: z.string().min(1),
   amount: z.number().positive(),
   date: dateStr,

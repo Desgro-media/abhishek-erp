@@ -5,3 +5,9 @@ server/dist/
 *.log
 .kilo/
 *.tsbuildinfo
+
+# Standalone single-file UI reference/mockup builds (fake in-memory data,
+# not served by the app) — kept locally as design reference, not tracked.
+/desgro-erp*.html
+/desgro-hr*.html
+/desgro-sales*.html

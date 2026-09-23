@@ -7,7 +7,8 @@ import { expenseCreateSchema, expenseUpdateSchema } from "../../validation/finan
 
 export const listExpenses: RequestHandler = asyncHandler(async (req, res) => {
   const expenses = await prisma.expense.findMany({
-    where: { category: req.query.category as any, dept: (req.query.dept as string) || undefined },
+    where: { coaAccountId: (req.query.coaAccountId as string) || undefined, dept: (req.query.dept as string) || undefined },
+    include: { coaAccount: true },
     orderBy: { date: "desc" },
   });
   res.json({ expenses });
@@ -20,7 +21,8 @@ export const createExpense: RequestHandler = asyncHandler(async (req, res) => {
 
   const expense = await prisma.$transaction(async (tx) => {
     const e = await tx.expense.create({
-      data: { category: d.category, description: d.description, amount: d.amount, date: new Date(d.date), accountId: d.accountId, dept: d.dept || null },
+      data: { coaAccountId: d.coaAccountId, description: d.description, amount: d.amount, date: new Date(d.date), accountId: d.accountId, dept: d.dept || null },
+      include: { coaAccount: true },
     });
     await recordBankTxn(tx, { accountId: d.accountId, date: new Date(d.date), type: "DEBIT", amount: d.amount, note: d.description, refType: "EXPENSE", refId: e.id });
     return e;
@@ -46,7 +48,8 @@ export const updateExpense: RequestHandler = asyncHandler(async (req, res) => {
   const expense = await prisma.$transaction(async (tx) => {
     const e = await tx.expense.update({
       where: { id: req.params.id },
-      data: { category: d.category, description: d.description, amount: d.amount, date: d.date ? new Date(d.date) : undefined, accountId: d.accountId, dept: d.dept },
+      data: { coaAccountId: d.coaAccountId, description: d.description, amount: d.amount, date: d.date ? new Date(d.date) : undefined, accountId: d.accountId, dept: d.dept },
+      include: { coaAccount: true },
     });
     const txn = await tx.bankTransaction.findFirst({ where: { refType: "EXPENSE", refId: e.id } });
     if (txn) {

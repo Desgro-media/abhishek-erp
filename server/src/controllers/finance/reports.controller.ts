@@ -92,7 +92,7 @@ export const profitAndLoss: RequestHandler = asyncHandler(async (req, res) => {
   const payrollCost = (await Promise.all(nonSalesEmployees.map((e) => employeeMonthlyCost(e.id, Number(e.salary), month)))).reduce((a, b) => a + b, 0);
 
   const payables = await prisma.payable.findMany({ where: { dueAt: { gte: start, lte: end }, category: { not: "SALARY" } } });
-  const expenses = await prisma.expense.findMany({ where: { date: { gte: start, lte: end } } });
+  const expenses = await prisma.expense.findMany({ where: { date: { gte: start, lte: end } }, include: { coaAccount: true } });
   const expenseAccounts = await prisma.chartOfAccount.findMany({ where: { type: "EXPENSE" } });
 
   const pool = new Map<string, number>();
@@ -108,7 +108,7 @@ export const profitAndLoss: RequestHandler = asyncHandler(async (req, res) => {
     addDetail(cat, { desc: p.payee, amount: Number(p.amount), date: p.dueAt });
   }
   for (const e of expenses) {
-    const cat = categoryLabel(e.category);
+    const cat = e.coaAccount.name;
     pool.set(cat, (pool.get(cat) ?? 0) + Number(e.amount));
     addDetail(cat, { desc: e.description, amount: Number(e.amount), date: e.date });
   }
