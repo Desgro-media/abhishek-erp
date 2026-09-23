@@ -1686,7 +1686,8 @@ const TOPBAR_TITLES = {
   accounts: {
     overview:["Accounts Overview","Revenue, receivables and payables"],
     invoices:["Invoices", ()=>invoices.filter(i=>invoiceStatus(i)!=="Paid").length+" awaiting payment"],
-    requests:["Payment Requests", ()=>pendingPaymentRequests().length+" awaiting Finance"],
+    receipts:["Payment Receipts", ()=>pendingSalesPayments().length+" pushed by Sales, awaiting confirmation"],
+    requests:["Payment Requests", ()=>(pendingAdvanceDisbursements.length+pendingPaymentRequests().length)+" awaiting Finance"],
     payroll:["Payroll", ()=>payroll.history[payroll.selectedMonth] ? MONTH_LABEL[payroll.selectedMonth]+" · "+payrollMonthStatus(payroll.selectedMonth) : MONTH_LABEL[payroll.selectedMonth]],
     payables:["Payables", ()=>inr(payables.reduce((s,p)=>s+payableBalance(p),0))+" outstanding"],
     expenses:["Expenses", ()=>expenses.length+" logged this month"],
