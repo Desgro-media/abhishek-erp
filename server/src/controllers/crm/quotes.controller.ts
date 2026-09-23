@@ -11,6 +11,7 @@ import {
   quoteUpdateSchema,
   quotePendingPaymentSchema,
   quoteApprovalSchema,
+  quoteConvertSchema,
 } from "../../validation/crm.schemas";
 
 const INCLUDE = { items: true, pendingPayments: true, client: true, lead: true } as const;
@@ -88,6 +89,64 @@ export const markQuoteLost: RequestHandler = asyncHandler(async (req, res) => {
   if (!quote) return res.status(404).json({ error: "Quote not found" });
   await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_LOST", entityType: "Quote", entityId: quote.id });
   res.json({ quote });
+});
+
+// Alternative to the pay-first flow below (submitQuotePendingPayment ->
+// Finance's approveQuotePendingPayment) — invoices a sent quote directly,
+// with no payment required yet. For Postpaid-style engagements where
+// billing happens before collection. Payments against the resulting
+// invoice are then recorded the normal way, through the Invoices module.
+export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = quoteConvertSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const d = parsed.data;
+
+  const quote = await prisma.quote.findUnique({ where: { id: req.params.id }, include: { items: true, lead: true } });
+  if (!quote) return res.status(404).json({ error: "Quote not found" });
+  if (quote.status !== "SENT") return res.status(409).json({ error: "Only a sent quote can be converted to an invoice this way" });
+
+  const result = await prisma.$transaction(async (tx) => {
+    let clientId = quote.clientId;
+
+    // Same lead-to-client promotion as approveQuotePendingPayment, just
+    // triggered by a direct conversion instead of a first approved payment.
+    let convertedClientName: string | null = null;
+    if (!clientId && quote.leadId && quote.lead) {
+      const existing = await tx.client.findFirst({ where: { name: { equals: quote.lead.name, mode: "insensitive" } } });
+      if (existing) {
+        clientId = existing.id;
+      } else {
+        const last = await tx.client.findFirst({ orderBy: { clientCode: "desc" } });
+        const lastNum = last ? Number(last.clientCode.replace("CLI-", "")) : 0;
+        const services = [...new Set([quote.lead.serviceInterested, ...quote.items.map((i) => i.dept)])];
+        const newClient = await tx.client.create({
+          data: {
+            clientCode: `CLI-${String(lastNum + 1).padStart(2, "0")}`,
+            name: quote.lead.name, industry: "—", city: "—", services,
+            status: "ACTIVE", onboardedAt: new Date(d.issuedAt), accountManager: quote.lead.leadOwner, salesPerson: quote.lead.leadOwner,
+          },
+        });
+        clientId = newClient.id;
+        convertedClientName = quote.lead.name;
+      }
+      await tx.lead.update({ where: { id: quote.leadId }, data: { status: "CONVERTED", convertedClientId: clientId } });
+      await tx.quote.update({ where: { id: quote.id }, data: { clientId } });
+    }
+
+    const invoice = await tx.invoice.create({
+      data: {
+        clientId: clientId!, invoiceNo: await nextAutoInvoiceNo(),
+        issuedAt: new Date(d.issuedAt), dueAt: new Date(d.dueAt),
+        items: { create: quote.items.map((i) => ({ dept: i.dept, amount: i.amount })) },
+      },
+    });
+    await tx.quote.update({ where: { id: quote.id }, data: { invoiceId: invoice.id, status: "INVOICED" } });
+
+    return { invoiceId: invoice.id, invoiceNo: invoice.invoiceNo, clientId, convertedClientName };
+  });
+
+  await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_CONVERTED_TO_INVOICE", entityType: "Quote", entityId: quote.id, afterData: result, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.status(201).json(result);
 });
 
 // Sales-side: log a payment the client made against this quote and push it

@@ -24,6 +24,7 @@ router.patch("/quotes/:id", quotes.updateQuote);
 router.delete("/quotes/:id", quotes.deleteQuote);
 router.post("/quotes/:id/send", quotes.sendQuote);
 router.post("/quotes/:id/lost", quotes.markQuoteLost);
+router.post("/quotes/:id/convert-to-invoice", quotes.convertQuoteToInvoice);
 router.post("/quotes/:id/pending-payments", quotes.submitQuotePendingPayment);
 router.delete("/quotes/:id/pending-payments/:pendingId", quotes.deleteQuotePendingPayment);
 router.post("/quotes/:id/pending-payments/:pendingId/approve", quotes.approveQuotePendingPayment);

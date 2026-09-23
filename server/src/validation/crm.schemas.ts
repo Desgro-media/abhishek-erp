@@ -32,6 +32,8 @@ export const leadCreateSchema = z.object({
 });
 export const leadUpdateSchema = leadCreateSchema.partial().extend({
   status: z.enum(["NEW", "CONTACTED", "QUALIFIED", "CONVERTED", "LOST"]).optional(),
+  // Explicit null (not just omission) puts a lead back in the Open queue.
+  leadOwner: z.string().nullable().optional(),
 });
 
 export const quoteItemSchema = z.object({ dept: z.string().min(1), amount: z.number().positive() });
@@ -59,6 +61,10 @@ export const quoteApprovalSchema = z.object({
   accountId: z.string().uuid(),
   date: dateStr.optional(),
   invoiceNo: z.string().optional(), // required only when this approval creates the first invoice
+});
+export const quoteConvertSchema = z.object({
+  issuedAt: dateStr,
+  dueAt: dateStr,
 });
 
 export const taskCreateSchema = z.object({

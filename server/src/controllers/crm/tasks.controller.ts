@@ -4,9 +4,16 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { taskCreateSchema, taskUpdateSchema } from "../../validation/crm.schemas";
 
+// Same "narrow self-service slice" as listClients — a plain Sales caller
+// only ever sees tasks on their own book of clients, ADMIN sees everyone's.
 export const listTasks: RequestHandler = asyncHandler(async (req, res) => {
+  const admin = req.user?.roles?.includes("ADMIN") ?? false;
   const tasks = await prisma.clientTask.findMany({
-    where: { clientId: (req.query.clientId as string) || undefined, assignedTo: (req.query.assignedTo as string) || undefined },
+    where: {
+      clientId: (req.query.clientId as string) || undefined,
+      assignedTo: (req.query.assignedTo as string) || undefined,
+      client: admin ? undefined : { salesPerson: req.user!.name },
+    },
     include: { attachments: true, client: { select: { id: true, name: true } } },
     orderBy: { dueAt: "asc" },
   });

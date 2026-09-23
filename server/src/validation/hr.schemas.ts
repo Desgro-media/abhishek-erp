@@ -126,7 +126,7 @@ export const candidateCreateSchema = z.object({
 });
 
 export const candidateUpdateSchema = z.object({
-  stage: z.enum(["APPLIED", "INTERVIEW", "OFFER", "HIRED", "REJECTED"]).optional(),
+  stage: z.enum(["APPLIED", "SHORTLISTED", "INTERVIEW", "OFFER", "HIRED", "REJECTED"]).optional(),
   name: z.string().min(1).optional(),
   phone: z.string().optional(),
   email: z.string().email().optional(),

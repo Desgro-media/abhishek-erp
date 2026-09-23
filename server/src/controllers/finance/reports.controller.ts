@@ -4,6 +4,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { getAccountBalance } from "../../services/finance/bankLedger";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
+import { SALES_COMMISSION_RATE } from "../../services/finance/commission";
 
 // Mirrors app.js's DEPARTMENTS/SERVICE_DEPARTMENTS/OVERHEAD_DEPTS exactly —
 // duplicated here (not imported, there's nothing to import from) because
@@ -27,9 +28,17 @@ async function employeeMonthlyCost(employeeId: string, salary: number, month: st
 }
 
 // Read-only, HR/Admin-or-Finance-Admin — see routes. Overhead split by
-// headcount across service departments; revenue is lifetime (every invoice
-// on record), costs are month-scoped — an explicit, known asymmetry in the
-// original dataset, preserved rather than silently "fixed" here.
+// headcount across service departments, both month-scoped.
+//
+// Revenue is real money in the door, not the amount billed — only invoice
+// payments Finance has approved (InvoicePayment rows), for payments
+// received THIS month, split across that invoice's department-tagged line
+// items in proportion to each item's share of the invoice total. An
+// invoice with nothing approved yet contributes zero. Sales earns a flat
+// SALES_COMMISSION_RATE on every payment approved, company-wide, regardless
+// of department — deducted straight from revenue here (not a separate cost
+// line) so a department's profit/margin is calculated from its real,
+// commission-net revenue.
 export const deptProfitability: RequestHandler = asyncHandler(async (req, res) => {
   const month = req.query.month as string;
   if (!month) return res.status(400).json({ error: "month (YYYY-MM) is required" });
@@ -42,33 +51,54 @@ export const deptProfitability: RequestHandler = asyncHandler(async (req, res) =
   const rentPayables = await prisma.payable.findMany({ where: { category: "RENT" } });
   const rentTotal = sumAmounts(rentPayables);
 
-  const invoices = await prisma.invoice.findMany({ include: { items: true } });
-  const revenueByDept = new Map<string, number>();
-  for (const inv of invoices) for (const item of inv.items) revenueByDept.set(item.dept, (revenueByDept.get(item.dept) ?? 0) + Number(item.amount));
+  const invoices = await prisma.invoice.findMany({ include: { items: true, payments: true } });
+  const grossRevenueByDept = new Map<string, number>();
+  for (const inv of invoices) {
+    const total = invoiceTotal(inv.items);
+    if (total <= 0) continue;
+    for (const p of inv.payments) {
+      if (isoMonth(p.paidDate) !== month) continue;
+      for (const item of inv.items) {
+        grossRevenueByDept.set(item.dept, (grossRevenueByDept.get(item.dept) ?? 0) + Number(p.amount) * (Number(item.amount) / total));
+      }
+    }
+  }
 
-  const directCostByDept = new Map<string, number>();
-  for (const c of costs) directCostByDept.set(c.dept, (directCostByDept.get(c.dept) ?? 0) + c.cost);
-  for (const e of expenses) if (e.dept) directCostByDept.set(e.dept, (directCostByDept.get(e.dept) ?? 0) + Number(e.amount));
+  const directPayrollByDept = new Map<string, number>();
+  for (const c of costs) directPayrollByDept.set(c.dept, (directPayrollByDept.get(c.dept) ?? 0) + c.cost);
+  const directExpenseByDept = new Map<string, number>();
+  for (const e of expenses) if (e.dept) directExpenseByDept.set(e.dept, (directExpenseByDept.get(e.dept) ?? 0) + Number(e.amount));
 
-  let overheadPool = rentTotal;
-  for (const c of costs) if (OVERHEAD_DEPTS.includes(c.dept)) overheadPool += c.cost;
-  for (const e of expenses) if (!e.dept) overheadPool += Number(e.amount);
+  const overheadHeadcount = employees.filter((e) => OVERHEAD_DEPTS.includes(e.dept)).length;
+  const overheadPayroll = costs.filter((c) => OVERHEAD_DEPTS.includes(c.dept)).reduce((s, c) => s + c.cost, 0);
+  const sharedExpenses = expenses.filter((e) => !e.dept).reduce((s, e) => s + Number(e.amount), 0);
+  const overheadPool = overheadPayroll + rentTotal + sharedExpenses;
 
   const serviceDeptHeadcount = new Map<string, number>();
   for (const e of employees) if (SERVICE_DEPARTMENTS.includes(e.dept)) serviceDeptHeadcount.set(e.dept, (serviceDeptHeadcount.get(e.dept) ?? 0) + 1);
   const totalServiceHeadcount = [...serviceDeptHeadcount.values()].reduce((a, b) => a + b, 0) || 1;
+  const perHeadOverhead = overheadPool / totalServiceHeadcount;
 
   const rows = SERVICE_DEPARTMENTS.map((dept) => {
-    const revenue = revenueByDept.get(dept) ?? 0;
-    const directCost = directCostByDept.get(dept) ?? 0;
     const headcount = serviceDeptHeadcount.get(dept) ?? 0;
-    const overheadShare = overheadPool * (headcount / totalServiceHeadcount);
-    const totalCost = directCost + overheadShare;
-    return { dept, revenue, directCost, overheadShare, totalCost, profit: revenue - totalCost, headcount };
+    const grossRevenue = grossRevenueByDept.get(dept) ?? 0;
+    const commission = Math.round(grossRevenue * SALES_COMMISSION_RATE);
+    const revenue = grossRevenue - commission;
+    const directPayroll = directPayrollByDept.get(dept) ?? 0;
+    const directExpense = directExpenseByDept.get(dept) ?? 0;
+    const overheadShare = Math.round(perHeadOverhead * headcount);
+    const totalCost = directPayroll + directExpense + overheadShare;
+    const profit = revenue - totalCost;
+    const margin = revenue ? (profit / revenue) * 100 : null;
+    return { dept, headcount, grossRevenue, commission, revenue, directPayroll, directExpense, overheadShare, totalCost, profit, margin };
   });
 
-  res.json({ month, overheadPool, rows });
+  res.json({ month, overheadPayroll, overheadHeadcount, rent: rentTotal, sharedExpenses, overheadPool, totalHeadcount: totalServiceHeadcount, perHeadOverhead, rows });
 });
+
+function isoMonth(d: Date): string {
+  return d.toISOString().slice(0, 7);
+}
 
 // Accrual basis: income when invoiced, expenses when incurred.
 export const profitAndLoss: RequestHandler = asyncHandler(async (req, res) => {

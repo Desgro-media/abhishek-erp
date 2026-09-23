@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "CandidateStage" ADD VALUE 'SHORTLISTED' BEFORE 'INTERVIEW';

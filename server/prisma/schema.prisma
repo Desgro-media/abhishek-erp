@@ -177,6 +177,7 @@ enum PositionStatus {
 
 enum CandidateStage {
   APPLIED
+  SHORTLISTED
   INTERVIEW
   OFFER
   HIRED
