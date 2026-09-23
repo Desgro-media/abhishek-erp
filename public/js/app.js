@@ -231,8 +231,9 @@ async function loadAttendanceToday(){
   const { records } = await apiJson(`/api/hr/attendance?date=${TODAY}`);
   attendanceToday = {};
   records.forEach(r=>{ attendanceToday[employeeCodeByDbId[r.employee.id] || r.employee.id] = { status: ATTENDANCE_FROM_API[r.status], in: r.checkIn || null }; });
-  // Anyone without a record today reads as absent rather than crashing the render layer.
-  employees.forEach(e=>{ if(!attendanceToday[e.id]) attendanceToday[e.id] = { status:"absent", in:null }; });
+  // Anyone without a record today reads as present by default — exceptions (absent/leave/etc.)
+  // get marked, not confirmations of everyone showing up.
+  employees.forEach(e=>{ if(!attendanceToday[e.id]) attendanceToday[e.id] = { status:"present", in:null }; });
   attendanceByDate[TODAY] = attendanceToday; // same object — HR Attendance's date picker defaults to today with no extra fetch
 }
 // HR Attendance's "pick a date" control — date -> {empCode: {status, in}}, fetched on demand per date.
@@ -242,7 +243,7 @@ async function loadAttendanceForDate(date){
   const { records } = await apiJson(`/api/hr/attendance?date=${date}`);
   const map = {};
   records.forEach(r=>{ map[employeeCodeByDbId[r.employee.id] || r.employee.id] = { status: ATTENDANCE_FROM_API[r.status], in: r.checkIn || null }; });
-  employees.forEach(e=>{ if(!map[e.id]) map[e.id] = { status:"absent", in:null }; });
+  employees.forEach(e=>{ if(!map[e.id]) map[e.id] = { status:"present", in:null }; });
   attendanceByDate[date] = map;
 }
 async function setAttendanceDate(date){
@@ -2312,7 +2313,7 @@ function hrAttendance(){
   const date = selectedAttendanceDate;
   const isToday = date===TODAY;
   const dayMap = attendanceByDate[date] || {};
-  const rows = employees.map(e=>({emp:e, a:dayMap[e.id] || {status:"absent", in:null}}));
+  const rows = employees.map(e=>({emp:e, a:dayMap[e.id] || {status:"present", in:null}}));
   const counts = {present:0,late:0,half:0,absent:0,leave:0,wfh:0};
   rows.forEach(r=>counts[r.a.status]++);
   const selected = byId(selectedAttendanceEmp) || employees[0];
