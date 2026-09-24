@@ -3,6 +3,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { isFinanceAdmin } from "../../middleware/financeAccess";
+import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { getSalesPolicy, monthlyApprovedSales, bonusForTotal } from "../../services/finance/salesTarget";
 import { salesPolicyUpdateSchema } from "../../validation/finance.schemas";
 
@@ -44,7 +45,7 @@ export const updateSalesPolicy: RequestHandler = asyncHandler(async (req, res) =
 export const listSalesTargets: RequestHandler = asyncHandler(async (req, res) => {
   const month = (req.query.month as string) || new Date().toISOString().slice(0, 7);
   const { monthlyTarget, bonusRate } = await getSalesPolicy();
-  const admin = isFinanceAdmin(req.user?.roles);
+  const admin = isFinanceAdmin(req.user?.roles) || seesWholeSalesTeam(req.user?.roles);
 
   const names = admin
     ? (await prisma.employee.findMany({ where: { dept: "Sales", employmentStatus: { not: "LEFT" } }, select: { name: true } })).map((e) => e.name)

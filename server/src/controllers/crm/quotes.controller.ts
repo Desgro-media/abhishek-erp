@@ -1,6 +1,7 @@
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
+import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
 import { createCommissionPayable } from "../../services/finance/commission";
@@ -26,11 +27,11 @@ async function nextAutoInvoiceNo(): Promise<string> {
   return `DG-${new Date().getFullYear()}-${1000 + count + 1}`;
 }
 
-// Mounted behind requireCrmUser (ADMIN or SALES). A plain Sales caller only
+// Mounted behind requireCrmUser (ADMIN, SALES_HEAD or SALES). A plain Sales caller only
 // ever sees the quotes they personally prepared (createdBy) — same
-// "narrow self-service slice" as listClients/listInvoices — ADMIN sees everyone's.
+// "narrow self-service slice" as listClients/listInvoices — ADMIN and the Sales Head see everyone's.
 export const listQuotes: RequestHandler = asyncHandler(async (req, res) => {
-  const admin = req.user?.roles?.includes("ADMIN") ?? false;
+  const admin = seesWholeSalesTeam(req.user?.roles);
   const quotes = await prisma.quote.findMany({
     where: admin ? undefined : { createdBy: req.user!.name },
     include: INCLUDE,

@@ -4,6 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
 import { isFinanceAdmin } from "../../middleware/financeAccess";
+import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { sumAmounts, invoiceTotal, invoicePaidAsOf, invoiceStatus } from "../../services/finance/calc";
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
@@ -30,7 +31,7 @@ export const listInvoices: RequestHandler = asyncHandler(async (req, res) => {
   const invoices = await prisma.invoice.findMany({
     where: {
       clientId: (req.query.clientId as string) || undefined,
-      client: isFinanceAdmin(req.user?.roles) ? undefined : { salesPerson: req.user!.name },
+      client: isFinanceAdmin(req.user?.roles) || seesWholeSalesTeam(req.user?.roles) ? undefined : { salesPerson: req.user!.name },
     },
     include: INCLUDE,
     orderBy: { issuedAt: "desc" },
@@ -41,7 +42,7 @@ export const listInvoices: RequestHandler = asyncHandler(async (req, res) => {
 export const getInvoice: RequestHandler = asyncHandler(async (req, res) => {
   const invoice = await prisma.invoice.findUnique({ where: { id: req.params.id }, include: { ...INCLUDE, client: true } });
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
-  if (!isFinanceAdmin(req.user?.roles) && invoice.client.salesPerson !== req.user!.name) {
+  if (!isFinanceAdmin(req.user?.roles) && !seesWholeSalesTeam(req.user?.roles) && invoice.client.salesPerson !== req.user!.name) {
     return res.status(403).json({ error: "Forbidden — not your client" });
   }
   res.json({ invoice: withComputed(invoice) });
