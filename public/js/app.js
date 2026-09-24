@@ -1556,8 +1556,10 @@ function isSalesRole(emp){ return !!(emp && (emp.roles ? (emp.roles.includes('SA
 // them every lead/client/quote/invoice (not just their own book), so the "My …" labels and the
 // own-leads-only filters below don't apply to them.
 function isSalesHeadRole(emp){ return !!(emp && emp.roles && emp.roles.includes('SALES_HEAD')); }
-// A plain Sales rep — Sales, but not the head — sees only their own book.
-function isSalesRepRole(emp){ return isSalesRole(emp) && !isSalesHeadRole(emp); }
+// A plain Sales rep — Sales, but not the head and not Leadership/Admin (a COO who also holds the Sales
+// role still gets everyone's data from the server, so the own-book filters must not hide it) — sees only
+// their own book.
+function isSalesRepRole(emp){ return isSalesRole(emp) && !isSalesHeadRole(emp) && !isLeadershipRole(emp); }
 // Everyone else (marketing/production/design/dev/account-management — the people who work on DesGro's
 // own client delivery) gets the restricted "Staff" view: My Workspace + Clients + Marketing and Sales,
 // with no payment/financial detail and no Accounts/HR.
