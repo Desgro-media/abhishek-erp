@@ -7,7 +7,14 @@ import { RequestHandler } from "express";
 // See ACCESS MODEL in the project brief.
 export function isCrmUser(roles: string[] | undefined): boolean {
   const r = roles ?? [];
-  return r.includes("ADMIN") || r.includes("SALES");
+  return r.includes("ADMIN") || r.includes("SALES") || r.includes("SALES_HEAD");
+}
+// The Sales Head oversees the whole sales team, so — like Admin — they see every
+// lead/client/quote/task rather than just their own book. Plain Sales stay scoped
+// to their own name.
+export function seesWholeSalesTeam(roles: string[] | undefined): boolean {
+  const r = roles ?? [];
+  return r.includes("ADMIN") || r.includes("SALES_HEAD");
 }
 export function isContentUser(roles: string[] | undefined): boolean {
   const r = roles ?? [];

@@ -19,7 +19,7 @@ export const employeeCreateSchema = z.object({
   grantAccess: z
     .object({
       password: z.string().min(8),
-      roles: z.array(z.enum(["ADMIN", "HR", "FINANCE", "SALES", "CONTENT", "EMPLOYEE"])).default(["EMPLOYEE"]),
+      roles: z.array(z.enum(["ADMIN", "HR", "FINANCE", "SALES", "SALES_HEAD", "CONTENT", "EMPLOYEE"])).default(["EMPLOYEE"]),
     })
     .optional(),
 });
@@ -51,7 +51,7 @@ export const confirmDepartureSchema = z.object({
 // login's password never silently changes their roles.
 export const grantAccessSchema = z.object({
   password: z.string().min(8),
-  roles: z.array(z.enum(["ADMIN", "HR", "FINANCE", "SALES", "CONTENT", "EMPLOYEE"])).default(["EMPLOYEE"]),
+  roles: z.array(z.enum(["ADMIN", "HR", "FINANCE", "SALES", "SALES_HEAD", "CONTENT", "EMPLOYEE"])).default(["EMPLOYEE"]),
 });
 
 export const salaryRevisionSchema = z.object({

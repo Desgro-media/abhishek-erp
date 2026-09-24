@@ -1467,7 +1467,7 @@ async function loadFinanceModule(){
     await Promise.all([loadBankAccounts(), loadChartOfAccounts()]);
     await Promise.all([loadInvoices(), loadPayables(), loadExpenses(), loadJournalEntries(), loadCommissionWithdrawals(), loadPendingAdvanceDisbursements(), loadSalesPolicy(), loadSalesTargets()]);
     await loadFinanceReports(payroll.selectedMonth);
-  } else if(roles.includes('SALES')){
+  } else if(roles.includes('SALES') || roles.includes('SALES_HEAD')){
     // Sales' narrow slice: their own invoices, their own Commission/Sales
     // Bonus payables (server now scopes listPayables to just those two
     // categories + their own name for a non-admin caller — previously this
@@ -1551,7 +1551,13 @@ function isLeadershipRole(emp){ return !!(emp && (emp.isAdmin || /\b(CEO|COO|CMO
 // there (unlike Staff) since that's their day-to-day. No Dashboard, HR or Accounts.
 // Same real-roles preference as isHRRole above — an Employee's display dept and their User.roles
 // grant are independently editable and can otherwise drift out of sync.
-function isSalesRole(emp){ return !!(emp && (emp.roles ? emp.roles.includes('SALES') : emp.dept==='Sales')); }
+function isSalesRole(emp){ return !!(emp && (emp.roles ? (emp.roles.includes('SALES') || emp.roles.includes('SALES_HEAD')) : emp.dept==='Sales')); }
+// The one Sales Head oversees the whole team: same restricted sidebar as Sales, but the server hands
+// them every lead/client/quote/invoice (not just their own book), so the "My …" labels and the
+// own-leads-only filters below don't apply to them.
+function isSalesHeadRole(emp){ return !!(emp && emp.roles && emp.roles.includes('SALES_HEAD')); }
+// A plain Sales rep — Sales, but not the head — sees only their own book.
+function isSalesRepRole(emp){ return isSalesRole(emp) && !isSalesHeadRole(emp); }
 // Everyone else (marketing/production/design/dev/account-management — the people who work on DesGro's
 // own client delivery) gets the restricted "Staff" view: My Workspace + Clients + Marketing and Sales,
 // with no payment/financial detail and no Accounts/HR.
@@ -2958,7 +2964,7 @@ function openAddEmployee(){
       </div>
       <div id="grant-role-row" hidden>
         <label class="field-label">Module roles (base Employee always included)</label>
-        <div class="check-row">${["ADMIN","HR","FINANCE","SALES","CONTENT"].map(r=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${r}">${r.charAt(0)+r.slice(1).toLowerCase()}</label>`).join("")}</div>
+        <div class="check-row">${["ADMIN","HR","FINANCE","SALES","SALES_HEAD","CONTENT"].map(r=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${r}">${r.charAt(0)+r.slice(1).toLowerCase().replace("_"," ")}</label>`).join("")}</div>
       </div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Add employee</button></div></div>
@@ -3041,7 +3047,7 @@ function openGrantAccess(id){
       <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${e.hasErpAccess ? "Their login is "+esc(e.email)+" — this sets a new password, it doesn't change their existing module roles." : "Their login will be "+esc(e.email)+" — set a password and pick which module roles they need. The base Employee role (their own attendance/leave/payslips) is always included."}</div></div>
       <div><label class="field-label">${e.hasErpAccess?"New password":"Set password"}</label><input class="field-input" type="password" name="password" required minlength="8" placeholder="At least 8 characters"></div>
-      ${e.hasErpAccess ? "" : `<div><label class="field-label">Module roles (base Employee always included)</label><div class="check-row">${["ADMIN","HR","FINANCE","SALES","CONTENT"].map(r=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${r}">${r.charAt(0)+r.slice(1).toLowerCase()}</label>`).join("")}</div></div>`}
+      ${e.hasErpAccess ? "" : `<div><label class="field-label">Module roles (base Employee always included)</label><div class="check-row">${["ADMIN","HR","FINANCE","SALES","SALES_HEAD","CONTENT"].map(r=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${r}">${r.charAt(0)+r.slice(1).toLowerCase().replace("_"," ")}</label>`).join("")}</div></div>`}
     </div>
     <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><button type="submit" class="btn primary">${e.hasErpAccess?"Reset password":"Grant access"}</button></div>
     </form>`);
@@ -3692,7 +3698,7 @@ function clientPaymentDue(clientId){ return invoices.filter(i=>i.clientId===clie
 function clientsAll(){
   // The server already scopes `clients` to just this Sales caller's own book when they're a plain
   // Sales role (see listClients) — this just labels the view to match what's actually being shown.
-  const isSalesViewer = isSalesRole(currentUser);
+  const isSalesViewer = isSalesRepRole(currentUser);
   const filtered = clients.filter(c=>clientsMonthFilter==='All' || c.onboarded.slice(0,7)===clientsMonthFilter);
   const hidePayment = isStaffRole(currentUser);
   return `
@@ -3820,7 +3826,7 @@ function mktLeads(){
   // scopes marketingLeads for a Sales caller to their own + Open — see
   // listLeads). They still see the shared Open leads queue below to claim
   // from. Anyone else (Leadership, Marketing/Staff, Admin) sees everyone's.
-  const isSalesViewer = !!(currentUser && isSalesRole(currentUser));
+  const isSalesViewer = isSalesRepRole(currentUser);
   const pipelineSource = isSalesViewer ? marketingLeads.filter(l=>l.leadOwner===currentUser.name) : marketingLeads;
   const filtered = pipelineSource.filter(l=>matchesDateFilter(l.createdDate, leadsMonthFilter));
   const sorted = filtered.slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
@@ -3829,7 +3835,7 @@ function mktLeads(){
   // out of sight. Shared across everyone, Sales included — it's the queue
   // they claim from.
   const openLeads = marketingLeads.filter(l=>!l.leadOwner).slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
-  const canClaim = isSalesViewer;
+  const canClaim = isSalesRole(currentUser);
   return `
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
   ${openLeads.length ? `
@@ -3890,7 +3896,7 @@ function partyOptions(selectedValue){
   // no picking an unclaimed Open lead nobody's accountable for yet (they
   // still see clients scoped the same way, but that's already handled by
   // the server — see listClients).
-  const isSalesCreator = !!(currentUser && isSalesRole(currentUser));
+  const isSalesCreator = isSalesRepRole(currentUser);
   const leadPool = isSalesCreator ? marketingLeads.filter(l=>l.leadOwner===currentUser.name) : marketingLeads;
   const clientOpts = clients.map(c=>`<option value="client:${c.id}" ${selectedValue==='client:'+c.id?'selected':''}>${esc(c.name)}</option>`).join('');
   const leadOpts = leadPool.map(l=>`<option value="lead:${l.id}" ${selectedValue==='lead:'+l.id?'selected':''}>${esc(l.name)} — lead</option>`).join('');
@@ -3914,7 +3920,7 @@ function updateQuoteTotal(){
 function mktQuotes(){
   // Same story as clientsAll(): the server already scopes `quotes` to just this Sales caller's own
   // (createdBy===them) when they're a plain Sales role (see listQuotes) — this just labels it.
-  const isSalesViewer = isSalesRole(currentUser);
+  const isSalesViewer = isSalesRepRole(currentUser);
   const filtered = quotes.filter(q=>matchesDateFilter(q.createdDate, quotesMonthFilter));
   const sorted = filtered.slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   return `
@@ -5463,7 +5469,7 @@ function authUserToPreviewEmployee(u){
   const roles = u.roles || [];
   const isAdmin = roles.includes('ADMIN');
   const isHR = roles.includes('HR');
-  const isSales = roles.includes('SALES');
+  const isSales = roles.includes('SALES') || roles.includes('SALES_HEAD');
   return {
     id: u.id,
     name: u.name,
@@ -5503,7 +5509,7 @@ Auth.init().then(async (authUser) => {
   applyCurrentUser(emp);
   const crmContentJobs = [];
   const roles = emp.roles || [];
-  if(emp.isAdmin || roles.includes('SALES')) crmContentJobs.push(loadCrmModule());
+  if(emp.isAdmin || roles.includes('SALES') || roles.includes('SALES_HEAD')) crmContentJobs.push(loadCrmModule());
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.

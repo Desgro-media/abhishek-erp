@@ -51,7 +51,7 @@ export const listEmployees: RequestHandler = asyncHandler(async (req, res) => {
 // that can't call listEmployees above.
 export const listEmployeeDirectory: RequestHandler = asyncHandler(async (req, res) => {
   const roles = req.user?.roles ?? [];
-  if (!roles.includes("ADMIN") && !roles.includes("HR") && !roles.includes("SALES")) {
+  if (!roles.includes("ADMIN") && !roles.includes("HR") && !roles.includes("SALES") && !roles.includes("SALES_HEAD")) {
     return res.status(403).json({ error: "Forbidden" });
   }
   const employees = await prisma.employee.findMany({

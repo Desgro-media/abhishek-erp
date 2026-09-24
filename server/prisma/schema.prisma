@@ -27,6 +27,7 @@ enum Role {
   HR
   FINANCE
   SALES
+  SALES_HEAD
   CONTENT
   EMPLOYEE
 }

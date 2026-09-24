@@ -19,6 +19,6 @@ export const requireFinanceAdmin: RequestHandler = (req, res, next) => {
 // act for/see anyone.
 export const requireFinanceAdminOrSales: RequestHandler = (req, res, next) => {
   const roles = req.user?.roles ?? [];
-  if (isFinanceAdmin(roles) || roles.includes("SALES")) return next();
+  if (isFinanceAdmin(roles) || roles.includes("SALES") || roles.includes("SALES_HEAD")) return next();
   return res.status(403).json({ error: "Forbidden — Finance/Admin or Sales access required" });
 };
