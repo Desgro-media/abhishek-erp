@@ -110,7 +110,7 @@ export const createEmployee: RequestHandler = asyncHandler(async (req, res) => {
     const user = await prisma.user.create({
       data: {
         name: d.name,
-        email: d.email,
+        email: d.email.toLowerCase(),
         passwordHash,
         roles: d.grantAccess.roles,
         employeeId: employee.id,
@@ -233,7 +233,7 @@ export const grantAccess: RequestHandler = asyncHandler(async (req, res) => {
     await prisma.user.update({ where: { id: employee.user!.id }, data: { passwordHash } });
   } else {
     await prisma.user.create({
-      data: { name: employee.name, email: employee.email, passwordHash, roles: d.roles, employeeId: employee.id },
+      data: { name: employee.name, email: employee.email.toLowerCase(), passwordHash, roles: d.roles, employeeId: employee.id },
     });
   }
 

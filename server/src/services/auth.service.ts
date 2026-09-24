@@ -25,7 +25,8 @@ export async function login(email: string, password: string, req: Request) {
   const ua = req.headers["user-agent"] ?? null;
   const normalizedEmail = email.toLowerCase().trim();
 
-  const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  // Case-insensitive: emails saved with capitals (e.g. typed "Name@x.com" when HR granted access) must still match.
+  const user = await prisma.user.findFirst({ where: { email: { equals: normalizedEmail, mode: "insensitive" } } });
 
   // Same generic message whether the account doesn't exist or the password
   // is wrong — don't let login responses confirm which emails have accounts.
