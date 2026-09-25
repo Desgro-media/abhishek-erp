@@ -4,6 +4,7 @@ import { requireFinanceAdmin, requireFinanceAdminOrSales } from "../middleware/f
 import * as bank from "../controllers/finance/bankAccounts.controller";
 import * as invoices from "../controllers/finance/invoices.controller";
 import * as payables from "../controllers/finance/payables.controller";
+import * as paymentReceipts from "../controllers/finance/paymentReceipts.controller";
 import * as expenses from "../controllers/finance/expenses.controller";
 import * as coa from "../controllers/finance/coa.controller";
 import * as journal from "../controllers/finance/journal.controller";
@@ -36,6 +37,9 @@ router.post("/invoices/:id/payments", requireFinanceAdmin, invoices.recordInvoic
 router.post("/invoices/:id/pending-payments", requireFinanceAdminOrSales, invoices.submitPendingPayment);
 router.delete("/invoices/:id/pending-payments/:pendingId", requireFinanceAdminOrSales, invoices.deletePendingPayment);
 router.post("/invoices/:id/pending-payments/:pendingId/approve", requireFinanceAdmin, invoices.approvePendingPayment);
+
+// Payment Receipts history — every confirmed payment (Sales-pushed or Direct), Finance/Admin only.
+router.get("/payment-receipts/approved", requireFinanceAdmin, paymentReceipts.listApprovedReceipts);
 
 // Payables — writes are Finance/Admin only; reads also let Sales through
 // (the controller itself scopes a Sales caller to just their own

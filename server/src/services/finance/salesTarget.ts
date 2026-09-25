@@ -59,7 +59,7 @@ export function bonusForTotal(total: number, target: number, bonusRate: number):
 // approvals this month.
 export async function createSalesBonusIfCrossed(
   tx: Prisma.TransactionClient,
-  params: { salesPerson: string; paymentAmount: number; date: Date }
+  params: { salesPerson: string; paymentAmount: number; date: Date; sourcePaymentId: string }
 ) {
   const { monthlyTarget, bonusRate } = await getSalesPolicy();
   const month = params.date.toISOString().slice(0, 7);
@@ -78,6 +78,7 @@ export async function createSalesBonusIfCrossed(
       salesPerson: params.salesPerson,
       amount: roundedDelta,
       dueAt: params.date,
+      sourcePaymentId: params.sourcePaymentId,
     },
   });
 }

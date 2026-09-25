@@ -1626,7 +1626,7 @@ const TAB_REFRESH = {
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
-  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null],
+  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():null],
   "accounts/overview":[()=>isFinanceAdminUser(currentUser)?refreshFinanceReports():null],
 };
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
@@ -4574,7 +4574,48 @@ function pendingSalesPayments(){
   quotes.forEach(q=>{ (q.payments||[]).forEach((p,idx)=>{ if(!p.approved) rows.push({source:'quote', q, p, idx}); }); });
   return rows.sort((a,b)=>(b.p.date||'').localeCompare(a.p.date||''));
 }
+// Payment Receipts has two views: Pending (what Sales pushed and Finance hasn't confirmed yet — the
+// queue above) and Approved (history of every confirmed payment, so a row doesn't just vanish once
+// approved). Approved comes from its own endpoint, which joins pusher / approver / bank / commission
+// server-side — see server/src/controllers/finance/paymentReceipts.controller.ts.
+let receiptsTab = "pending";
+let approvedReceipts = [], approvedReceiptsTotal = 0, approvedReceiptsLoaded = false;
+async function loadApprovedReceipts(){
+  const d = await apiJson("/api/finance/payment-receipts/approved?limit=200");
+  approvedReceipts = d.receipts; approvedReceiptsTotal = d.total; approvedReceiptsLoaded = true;
+}
+function setReceiptsTab(t){
+  receiptsTab = t; render();
+  if(t==='approved') loadApprovedReceipts().then(()=>{ if(receiptsTab==='approved') render(); }).catch(err=>toast(err.message || "Couldn't load approved payments"));
+}
+const fmtDateTime = iso => iso ? new Date(iso).toLocaleString("en-IN",{day:"numeric",month:"short",year:"numeric",hour:"numeric",minute:"2-digit"}) : "—";
+function acctApprovedReceipts(){
+  const rows = approvedReceipts;
+  const dash = '<span class="faint">—</span>';
+  return `
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Every payment Finance has confirmed, newest first — pushed by Sales (against a quote or an invoice) or recorded straight on the invoice by Finance (<b>Direct</b>, no Sales person and so no commission). The commission shown is what that payment generated, linked to it directly, so editing or splitting a commission in Accounts &gt; Commissions updates it here too.</div></div>
+  <div class="panel">
+    <div class="panel-head"><h3>Approved payments</h3><div class="sub">${approvedReceiptsLoaded?`${approvedReceiptsTotal} confirmed payment${approvedReceiptsTotal===1?'':'s'}${approvedReceiptsTotal>rows.length?' · showing the latest '+rows.length:''}`:'Loading…'}</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">Amount</th><th>Pushed by</th><th>Approved by</th><th>Bank account</th><th>Commission</th></tr></thead>
+      <tbody>${rows.length?rows.map(r=>`<tr>
+        <td class="mono">${esc(r.invoiceNo)}<div class="subtext">${r.source==='Direct'?pill('Direct','neutral'):r.source==='Quote'?'Quote '+esc(r.quoteCode||''):'Invoice'}</div></td>
+        <td class="muted">${esc(r.clientName)}</td>
+        <td class="num mono">${inr(r.amount)}<div class="subtext" style="white-space:nowrap;">paid ${fmtDateShort(isoDate(r.paidDate))}</div></td>
+        <td class="muted">${r.pushedBy?esc(r.pushedBy):dash}</td>
+        <td class="muted">${r.approvedBy?esc(r.approvedBy):dash}<div class="subtext" style="white-space:nowrap;">${fmtDateTime(r.approvedAt)}</div></td>
+        <td class="muted">${esc(r.bankAccount.name)}</td>
+        <td>${r.commissions.length?r.commissions.map(c=>`<div class="mono">${inr(c.amount)} <span class="faint" style="font-family:inherit;">→ ${esc(c.salesPerson||'—')}</span></div>`).join(''):dash}</td>
+      </tr>`).join(""):`<tr><td colspan="7"><div class="empty">${approvedReceiptsLoaded?'No payments confirmed yet.':'Loading…'}</div></td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+}
 function acctPaymentReceipts(){
+  const pending = pendingSalesPayments().length;
+  const tab = (id, label, n) => `<button class="chip ${receiptsTab===id?'active':''}" onclick="setReceiptsTab('${id}')">${label}${n?' · '+n:''}</button>`;
+  return `<div class="filter-group" style="margin-bottom:14px;">${tab('pending','Pending',pending)}${tab('approved','Approved',approvedReceiptsLoaded?approvedReceiptsTotal:0)}</div>`
+    + (receiptsTab==='approved' ? acctApprovedReceipts() : acctPendingReceipts());
+}
+function acctPendingReceipts(){
   const rows = pendingSalesPayments();
   return `
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Sales pushes a payment here the moment a client pays — even a partial one — whether it's against a quote or an existing invoice. Confirm which account the money actually landed in before approving; that's what creates (or tops up) the invoice and posts it to the bank ledger. Approving a lead's first payment also turns them into a client automatically.</div></div>
@@ -4854,7 +4895,7 @@ function openRecordInvoicePayment(id){
     const note = f.get("note").trim() || (amount>=bal?"Full settlement":"Partial payment");
     try{
       await apiJson(`/api/finance/invoices/${id}/payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, paidDate:date, accountId, note }) });
-      await Promise.all([loadInvoices(), loadBankAccounts(), refreshFinanceReports()]);
+      await Promise.all([loadInvoices(), loadBankAccounts(), refreshFinanceReports(), loadApprovedReceipts()]);
       toast("Payment recorded"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't record payment"); }
   });
@@ -4916,7 +4957,7 @@ function openApproveInvoicePayment(id, idx){
     const accountId = f.get("accountId"), date = f.get("date");
     try{
       await apiJson(`/api/finance/invoices/${id}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
-      await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports()]);
+      await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports(), loadApprovedReceipts()]);
       const updated = invoices.find(x=>x.id===id);
       const commissionAmount = payment.salesPerson ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
       toast("Payment approved"+(invoiceBalance(updated)<=0?" — invoice fully settled":" — "+inr(invoiceBalance(updated))+" still outstanding")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+payment.salesPerson:"")); closeModal(); render();
@@ -5212,7 +5253,7 @@ function openApproveQuotePayment(quoteId, idx){
       const wasLead = !q.clientId && q.leadId;
       const leadName = wasLead ? (leadById(q.leadId)||{}).name : null;
       const result = await apiJson(`/api/crm/quotes/${quoteId}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
-      await Promise.all([loadQuotes(), loadClients(), loadLeads(), loadInvoices(), loadPayables(), loadBankAccounts(), refreshFinanceReports()]);
+      await Promise.all([loadQuotes(), loadClients(), loadLeads(), loadInvoices(), loadPayables(), loadBankAccounts(), refreshFinanceReports(), loadApprovedReceipts()]);
       const commissionAmount = q.createdBy ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
       toast("Payment approved"+(result.balance<=0?" — quote fully invoiced":" — "+inr(result.balance)+" still outstanding")+(wasLead?" · "+leadName+" is now a client":"")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+q.createdBy:""));
       closeModal(); render();
