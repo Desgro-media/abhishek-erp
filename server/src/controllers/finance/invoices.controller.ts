@@ -214,7 +214,12 @@ export const deleteInvoice: RequestHandler = asyncHandler(async (req, res) => {
     return res.status(409).json({ error: "Can't delete an invoice with recorded payments — the payment ledger is append-only." });
   }
 
-  await prisma.invoice.delete({ where: { id: invoice.id } });
+  await prisma.$transaction(async (tx) => {
+    // A quote converted straight to this invoice (no payment yet) would otherwise be left marked
+    // Invoiced with nothing behind it and no way to convert again — put it back to Sent.
+    await tx.quote.updateMany({ where: { invoiceId: invoice.id }, data: { invoiceId: null, status: "SENT" } });
+    await tx.invoice.delete({ where: { id: invoice.id } });
+  });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_DELETE", entityType: "Invoice", entityId: invoice.id, beforeData: { invoiceNo: invoice.invoiceNo }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(204).send();

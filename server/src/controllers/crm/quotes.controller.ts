@@ -18,14 +18,23 @@ import {
 
 const INCLUDE = { items: true, pendingPayments: true, client: true, lead: true } as const;
 
+// A plain Sales rep only ever touches quotes they prepared (same scoping as listQuotes); Admin / Sales Head any.
+const notYourQuote = (req: { user?: { roles?: string[]; name: string } }, quote: { createdBy: string | null }) =>
+  !seesWholeSalesTeam(req.user?.roles) && quote.createdBy !== req.user!.name;
+
 async function nextQuoteCode(): Promise<string> {
   const last = await prisma.quote.findFirst({ orderBy: { quoteCode: "desc" } });
   const lastNum = last ? Number(last.quoteCode.replace("QUO-", "")) : 0;
   return `QUO-${String(lastNum + 1).padStart(2, "0")}`;
 }
+// Highest existing number for the year + 1 — NOT count + 1. Deleting an invoice (or numbering one by hand)
+// leaves gaps, so a count-based number eventually lands on one that's already taken and the unique
+// constraint turns the convert/approve into a 500.
 async function nextAutoInvoiceNo(): Promise<string> {
-  const count = await prisma.invoice.count();
-  return `DG-${new Date().getFullYear()}-${1000 + count + 1}`;
+  const prefix = `DG-${new Date().getFullYear()}-`;
+  const existing = await prisma.invoice.findMany({ where: { invoiceNo: { startsWith: prefix } }, select: { invoiceNo: true } });
+  const highest = existing.reduce((m, i) => Math.max(m, Number(i.invoiceNo.slice(prefix.length)) || 0), 1000);
+  return `${prefix}${highest + 1}`;
 }
 
 // Mounted behind requireCrmUser (ADMIN, SALES_HEAD or SALES). A plain Sales caller only
@@ -60,10 +69,16 @@ export const updateQuote: RequestHandler = asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
-  const before = await prisma.quote.findUnique({ where: { id: req.params.id } });
+  const before = await prisma.quote.findUnique({ where: { id: req.params.id }, include: { _count: { select: { pendingPayments: true } } } });
   if (!before) return res.status(404).json({ error: "Quote not found" });
+  if (notYourQuote(req, before)) return res.status(403).json({ error: "Forbidden — not your quote" });
   if (before.status === "INVOICED" || before.status === "LOST") {
     return res.status(409).json({ error: `Can't edit a quote that's already ${before.status.toLowerCase()}` });
+  }
+  // Payments already pushed to Finance were measured against this total — changing what was quoted
+  // underneath them could leave them exceeding it.
+  if (before._count.pendingPayments > 0) {
+    return res.status(409).json({ error: "Can't edit a quote that already has payments recorded against it" });
   }
 
   const quote = await prisma.$transaction(async (tx) => {
@@ -292,6 +307,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
 export const deleteQuote: RequestHandler = asyncHandler(async (req, res) => {
   const quote = await prisma.quote.findUnique({ where: { id: req.params.id } });
   if (!quote) return res.status(404).json({ error: "Quote not found" });
+  if (notYourQuote(req, quote)) return res.status(403).json({ error: "Forbidden — not your quote" });
   if (quote.invoiceId) {
     return res.status(409).json({ error: "Can't delete a quote that's already been invoiced — its payment ledger is append-only." });
   }

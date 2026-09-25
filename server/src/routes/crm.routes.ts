@@ -21,10 +21,12 @@ router.get("/clients", clients.listClients);
 router.get("/clients/:id", clients.getClient);
 router.post("/clients", clients.createClient);
 router.patch("/clients/:id", clients.updateClient);
+router.delete("/clients/:id", clients.deleteClient);
 
 router.get("/leads", leads.listLeads);
 router.post("/leads", leads.createLead);
 router.patch("/leads/:id", leads.updateLead);
+router.delete("/leads/:id", leads.deleteLead);
 
 router.get("/quotes", quotes.listQuotes);
 router.post("/quotes", quotes.createQuote);

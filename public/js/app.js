@@ -3718,11 +3718,13 @@ function clientsAll(){
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Onboarded</span><select class="select-sm" onchange="setClientsMonthFilter(this.value)">${monthFilterOptions(clients.map(c=>c.onboarded), clientsMonthFilter)}</select></div><button class="btn primary" onclick="openAddClient()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add client</button></div>
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My clients':'Clients'}</h3><div class="sub">${filtered.length} of ${clients.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th>${hidePayment?'':'<th class="num">Payment Due</th>'}<th>Status</th></tr></thead>
-      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?5:6}"><div class="empty">${isSalesViewer?'No clients assigned to you yet.':'No clients onboarded that month.'}</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th>${hidePayment?'':'<th class="num">Payment Due</th>'}<th>Status</th><th></th></tr></thead>
+      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openEditClient('${c.id}')" title="Edit client"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${canDeleteClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openConfirmDelete('client','${c.id}')" title="Delete client"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?6:7}"><div class="empty">${isSalesViewer?'No clients assigned to you yet.':'No clients onboarded that month.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
+// Mirrors deleteClient() server-side: only Admin / Sales Head may delete (a Sales rep can still edit).
+function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
 function openClientDetail(id){ nav.detail = {type:'client', id}; render(); }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
@@ -3873,7 +3875,10 @@ function mktLeads(){
 function leadOwnerActionsCell(l){
   const canClaim = !l.leadOwner && currentUser && isSalesRole(currentUser);
   const assignBtn = canClaim ? `<button class="btn btn-sm primary" onclick="assignLeadToMe('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Assign to me</button>` : '';
-  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></div>`;
+  // Mirrors deleteLead() server-side: Admin / Sales Head delete any; a Sales rep only their own claimed leads.
+  const canDelete = currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD') || (l.leadOwner && l.leadOwner===currentUser.name));
+  const delBtn = canDelete ? `<button class="btn btn-sm ghost" onclick="openConfirmDelete('lead','${l.id}')" title="Delete lead"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>` : '';
+  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
 }
 async function assignLeadToMe(id){
   if(!currentUser) return;
@@ -3892,17 +3897,20 @@ function salesTeamOptions(){
 }
 function quoteActionsMkt(q){
   const downloadBtn = `<button class="btn btn-sm ghost" onclick="downloadQuote('${q.id}')" title="Download quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>`;
-  if(q.status==="Draft") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="sendQuote('${q.id}')">Send to client</button><button class="btn btn-sm ghost" onclick="openEditQuote('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}</div>`;
-  if(q.status==="Sent") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openConvertQuoteToInvoice('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Convert to invoice</button><button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button><button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}</div>`;
+  const editBtn = `<button class="btn btn-sm ghost" onclick="openEditQuote('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`;
+  // The server refuses to delete once a quote has been invoiced (append-only ledger) — don't offer it then.
+  const delBtn = q.invoiceId ? '' : `<button class="btn btn-sm ghost" onclick="openConfirmDelete('quote','${q.id}')" title="Delete quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`;
+  if(q.status==="Draft") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="sendQuote('${q.id}')">Send to client</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
+  if(q.status==="Sent") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openConvertQuoteToInvoice('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Convert to invoice</button><button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
   if(q.status==="Submitted to Finance"){
     const bal = quoteBalance(q), pending = quotePendingAmount(q);
-    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button>`:''}${pending>0?`<span class="faint" style="font-size:11.5px;">${inr(pending)} awaiting Finance</span>`:''}${downloadBtn}</div>`;
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button>`:''}${pending>0?`<span class="faint" style="font-size:11.5px;">${inr(pending)} awaiting Finance</span>`:''}${downloadBtn}${delBtn}</div>`;
   }
   if(q.status==="Invoiced"){
     const inv = q.invoiceId ? invoices.find(x=>x.id===q.invoiceId) : null;
     return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;"><span class="faint" style="font-size:11.5px;">${esc(inv?inv.invoiceNo:(q.invoiceId||''))}</span>${downloadBtn}</div>`;
   }
-  return downloadBtn;
+  return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${downloadBtn}${delBtn}</div>`;
 }
 function partyOptions(selectedValue){
   // A Sales quote-creator can only quote leads they've actually claimed —
@@ -3953,6 +3961,8 @@ function mktQuotes(){
 function clientsMissingInvoice(){
   return clients.filter(c => (c.billingType||"Prepaid")!=="Postpaid" && !invoices.some(i=>i.clientId===c.id));
 }
+// Invoices are Finance's ledger — the server only lets Finance/Admin edit or delete them (Sales can log payments).
+function canEditInvoices(){ return isFinanceAdminUser(currentUser); }
 function mktInvoices(){
   const missing = clientsMissingInvoice();
   // Shares invoicesMonthFilter with Accounts > Invoices — same "Today / month-wise / All time" filter either page sets carries to the other.
@@ -3975,7 +3985,7 @@ function mktInvoices(){
   <div class="panel">
     <div class="panel-head"><h3>All invoices</h3><div class="sub">${filtered.length} of ${invoices.length}${dateFilterSuffix(invoicesMonthFilter,'issued in')} · log a payment you've collected here and push it to Finance for confirmation</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th>Service(s)</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${sorted.map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i), pendingAmt=invoicePendingAmount(i); return `<tr><td class="mono">${esc(i.invoiceNo)}</td><td class="muted">${clientById(i.clientId).name}</td><td class="muted">${(i.items||[]).map(it=>esc(it.dept)).join(', ')||'<span class="faint">—</span>'}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openSubmitInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Log payment</button>`:''}${pendingAmt>0?`<span class="faint" style="font-size:11.5px;">${inr(pendingAmt)} awaiting Finance</span>`:''}<button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No invoices yet.</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i), pendingAmt=invoicePendingAmount(i); return `<tr><td class="mono">${esc(i.invoiceNo)}</td><td class="muted">${clientById(i.clientId).name}</td><td class="muted">${(i.items||[]).map(it=>esc(it.dept)).join(', ')||'<span class="faint">—</span>'}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openSubmitInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Log payment</button>`:''}${pendingAmt>0?`<span class="faint" style="font-size:11.5px;">${inr(pendingAmt)} awaiting Finance</span>`:''}<button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}${canEditInvoices()?`<button class="btn btn-sm ghost" onclick="openEditInvoice('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${(i.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('invoice','${i.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No invoices yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4488,11 +4498,25 @@ function acctOverview(){
 // clear heads-up before asking.
 function deleteWarningFor(kind, id){
   const fallback = "This permanently removes it from the records. This can't be undone.";
+  if(kind==='client'){
+    const c = clientById(id); if(!c) return {label:"this client", warning:fallback};
+    const inv = invoices.filter(i=>i.clientId===id).length, qs = quotes.filter(x=>x.clientId===id).length, tasks = tasksOf(id).length;
+    let w = `${esc(c.name)}.`;
+    if(inv||qs) w += ` They have ${[inv&&inv+' invoice'+(inv===1?'':'s'), qs&&qs+' quote'+(qs===1?'':'s')].filter(Boolean).join(' and ')} — the payment ledger is append-only, so this will be refused. Set their status to Churned instead (Edit).`;
+    else w += (tasks?` Their ${tasks} workflow task${tasks===1?'':'s'} will be deleted too.`:'')+" This can't be undone.";
+    return {label:"this client", warning:w};
+  }
+  if(kind==='lead'){
+    const l = marketingLeads.find(x=>x.id===id); if(!l) return {label:"this lead", warning:fallback};
+    const qs = quotes.filter(x=>x.leadId===id).length;
+    const w = `${esc(l.name)}.` + (qs ? ` ${qs} quote${qs===1?' is':'s are'} raised against them, so this will be refused — delete those quotes first, or mark the lead Lost instead.` : " This can't be undone.");
+    return {label:"this lead", warning:w};
+  }
   if(kind==='quote'){
     const q = quotes.find(x=>x.id===id); if(!q) return {label:"this quote", warning:fallback};
     const party = quoteParty(q);
     let w = `"${esc(q.title)}" for ${esc(party.name)}.`;
-    w += q.invoiceId ? ` It's already been invoiced (${esc(q.invoiceId)}) — the payment ledger is append-only, so this can't be deleted.` : " This can't be undone.";
+    w += q.invoiceId ? ` It's already been invoiced (${esc(q.invoiceId)}) — the payment ledger is append-only, so this can't be deleted.` : (quotePendingAmount(q)>0 ? ` The ${inr(quotePendingAmount(q))} payment waiting on Finance is discarded with it.` : "") + " This can't be undone.";
     return {label:"this quote", warning:w};
   }
   if(kind==='invoice'){
@@ -4531,8 +4555,11 @@ function openConfirmDelete(kind, id){
 }
 async function performDelete(kind, id){
   const ENDPOINTS = {
+    lead: { url:`/api/crm/leads/${id}`, reload: loadLeads, label:"Lead" },
+    client: { url:`/api/crm/clients/${id}`, reload: async ()=>{ nav.detail=null; await Promise.all([loadClients(), loadTasks()]); }, label:"Client" },
     quote: { url:`/api/crm/quotes/${id}`, reload: loadQuotes, label:"Quote" },
-    invoice: { url:`/api/finance/invoices/${id}`, reload: loadInvoices, label:"Invoice" },
+    // Deleting an unpaid invoice puts the quote that produced it back to Sent, so refresh quotes as well.
+    invoice: { url:`/api/finance/invoices/${id}`, reload: async ()=>{ await loadInvoices(); if(canLoadQuotes()) await loadQuotes(); }, label:"Invoice" },
     payable: { url:`/api/finance/payables/${id}`, reload: loadPayables, label:"Payable" },
     expense: { url:`/api/finance/expenses/${id}`, reload: loadExpenses, label:"Expense" },
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
