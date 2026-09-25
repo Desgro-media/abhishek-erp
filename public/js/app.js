@@ -4860,6 +4860,7 @@ function openRecordInvoicePayment(id){
   });
 }
 // Sales-side: log a payment they personally collected against an EXISTING invoice and push it to
+// Finance.
 // Nothing touches the invoice balance until Finance confirms it with openApproveInvoicePayment().
 function openSubmitInvoicePayment(id){
   const inv = invoices.find(x=>x.id===id);
