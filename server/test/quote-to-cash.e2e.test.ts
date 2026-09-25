@@ -93,7 +93,11 @@ const commissionFor = async (needle: string) =>
   (await prisma.payable.findMany({ where: { category: "COMMISSION", salesPerson: salesName, payee: { contains: needle } } })).map((p) => Number(p.amount));
 
 async function newLeadQuote(title: string, amount: number) {
-  const lead = await prisma.lead.create({ data: { leadCode: `L-${run}-${title}`, name: `Lead ${title} ${run}`, source: "test", serviceInterested: "Web Development", leadOwner: salesName } });
+  // Through the API (not prisma.lead.create) so the lead gets a real MLD-<n> code — a hand-made code in
+  // any other shape would break nextLeadCode() for every lead created after it.
+  const created = await call("POST", "/crm/leads", tokens.sales, { name: `Lead ${title} ${run}`, source: "test", serviceInterested: "Web Development", leadOwner: salesName });
+  assert.equal(created.status, 201);
+  const lead = created.body.lead;
   const q = await call("POST", "/crm/quotes", tokens.sales, { leadId: lead.id, title: `${title}-${run}`, items: [{ dept: "Web Development", amount }] });
   assert.equal(q.status, 201);
   const sent = await call("POST", `/crm/quotes/${q.body.quote.id}/send`, tokens.sales);
