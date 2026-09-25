@@ -8,6 +8,7 @@ import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
 import { lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
+import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   quoteCreateSchema,
   quoteUpdateSchema,
@@ -23,9 +24,7 @@ const notYourQuote = (req: { user?: { roles?: string[]; name: string } }, quote:
   !seesWholeSalesTeam(req.user?.roles) && quote.createdBy !== req.user!.name;
 
 async function nextQuoteCode(): Promise<string> {
-  const last = await prisma.quote.findFirst({ orderBy: { quoteCode: "desc" } });
-  const lastNum = last ? Number(last.quoteCode.replace("QUO-", "")) : 0;
-  return `QUO-${String(lastNum + 1).padStart(2, "0")}`;
+  return nextSequentialCode("QUO-", (await prisma.quote.findMany({ select: { quoteCode: true } })).map((q) => q.quoteCode));
 }
 // Highest existing number for the year + 1 — NOT count + 1. Deleting an invoice (or numbering one by hand)
 // leaves gaps, so a count-based number eventually lands on one that's already taken and the unique
@@ -134,12 +133,11 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
       if (existing) {
         clientId = existing.id;
       } else {
-        const last = await tx.client.findFirst({ orderBy: { clientCode: "desc" } });
-        const lastNum = last ? Number(last.clientCode.replace("CLI-", "")) : 0;
+        const clientCode = nextSequentialCode("CLI-", (await tx.client.findMany({ select: { clientCode: true } })).map((c) => c.clientCode));
         const services = [...new Set([quote.lead.serviceInterested, ...quote.items.map((i) => i.dept)])];
         const newClient = await tx.client.create({
           data: {
-            clientCode: `CLI-${String(lastNum + 1).padStart(2, "0")}`,
+            clientCode,
             name: quote.lead.name, industry: "—", city: "—", services,
             status: "ACTIVE", onboardedAt: new Date(d.issuedAt), accountManager: quote.lead.leadOwner, salesPerson: quote.lead.leadOwner,
           },
@@ -243,12 +241,11 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
       if (existing) {
         clientId = existing.id;
       } else {
-        const last = await tx.client.findFirst({ orderBy: { clientCode: "desc" } });
-        const lastNum = last ? Number(last.clientCode.replace("CLI-", "")) : 0;
+        const clientCode = nextSequentialCode("CLI-", (await tx.client.findMany({ select: { clientCode: true } })).map((c) => c.clientCode));
         const services = [...new Set([quote.lead.serviceInterested, ...quote.items.map((i) => i.dept)])];
         const newClient = await tx.client.create({
           data: {
-            clientCode: `CLI-${String(lastNum + 1).padStart(2, "0")}`,
+            clientCode,
             name: quote.lead.name, industry: "—", city: "—", services,
             status: "ACTIVE", onboardedAt: date, accountManager: quote.lead.leadOwner, salesPerson: quote.lead.leadOwner,
           },

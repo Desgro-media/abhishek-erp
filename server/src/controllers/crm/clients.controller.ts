@@ -4,11 +4,10 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { recordAudit } from "../../services/audit.service";
 import { clientCreateSchema, clientUpdateSchema } from "../../validation/crm.schemas";
+import { nextSequentialCode } from "../../utils/sequentialCode";
 
 async function nextClientCode(): Promise<string> {
-  const last = await prisma.client.findFirst({ orderBy: { clientCode: "desc" } });
-  const lastNum = last ? Number(last.clientCode.replace("CLI-", "")) : 0;
-  return `CLI-${String(lastNum + 1).padStart(2, "0")}`;
+  return nextSequentialCode("CLI-", (await prisma.client.findMany({ select: { clientCode: true } })).map((c) => c.clientCode));
 }
 
 // Mounted behind requireCrmUser (ADMIN, SALES_HEAD or SALES). A plain Sales caller only
