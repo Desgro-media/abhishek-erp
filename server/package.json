@@ -16,7 +16,8 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
     "prisma:studio": "prisma studio",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "tsx --test test/*.e2e.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

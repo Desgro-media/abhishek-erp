@@ -48,7 +48,9 @@ export const deptProfitability: RequestHandler = asyncHandler(async (req, res) =
   const costs = await Promise.all(employees.map(async (e) => ({ dept: e.dept, cost: await employeeMonthlyCost(e.id, Number(e.salary), month) })));
 
   const expenses = await prisma.expense.findMany({ where: { date: { gte: start, lte: end } } });
-  const rentPayables = await prisma.payable.findMany({ where: { category: "RENT" } });
+  // Month-scoped like every other cost line here (P&L filters payables on dueAt the same way) —
+  // otherwise each new month's rent piled onto every month, past and future.
+  const rentPayables = await prisma.payable.findMany({ where: { category: "RENT", dueAt: { gte: start, lte: end } } });
   const rentTotal = sumAmounts(rentPayables);
 
   const invoices = await prisma.invoice.findMany({ include: { items: true, payments: true } });

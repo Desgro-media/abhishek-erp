@@ -1429,6 +1429,12 @@ async function loadFinanceReports(month){
   financeReportsCache.bs[month] = bs;
   financeReportsCache.deptProfit[month] = dp;
 }
+// Revenue in the reports only changes when Finance approves/records a payment, and those reports are
+// cached per month — so after any such action, drop every cached month and refetch the one on screen.
+async function refreshFinanceReports(){
+  financeReportsCache = { pl: {}, bs: {}, deptProfit: {} };
+  await loadFinanceReports(payroll.selectedMonth);
+}
 function computePL(month){
   const r = financeReportsCache.pl[month];
   if(!r) return { month, income:0, invoicedIncome:0, incomeDetail:[], journalIncome:0, lines:[], totalExpense:0, netProfit:0, commissionBySales:{} };
@@ -1618,7 +1624,12 @@ function visibleModules(){
 const TAB_REFRESH = {
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "hr/withdrawals":[loadWithdrawalRequests],
+  // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
+  // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
+  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null],
+  "accounts/overview":[()=>isFinanceAdminUser(currentUser)?refreshFinanceReports():null],
 };
+function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
   const jobs = TAB_REFRESH[mid+"/"+sid];
   if(!jobs) return;
@@ -4850,7 +4861,7 @@ function openRecordInvoicePayment(id){
     const note = f.get("note").trim() || (amount>=bal?"Full settlement":"Partial payment");
     try{
       await apiJson(`/api/finance/invoices/${id}/payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, paidDate:date, accountId, note }) });
-      await Promise.all([loadInvoices(), loadBankAccounts()]);
+      await Promise.all([loadInvoices(), loadBankAccounts(), refreshFinanceReports()]);
       toast("Payment recorded"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't record payment"); }
   });
@@ -4912,7 +4923,7 @@ function openApproveInvoicePayment(id, idx){
     const accountId = f.get("accountId"), date = f.get("date");
     try{
       await apiJson(`/api/finance/invoices/${id}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
-      await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables()]);
+      await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports()]);
       const updated = invoices.find(x=>x.id===id);
       const commissionAmount = payment.salesPerson ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
       toast("Payment approved"+(invoiceBalance(updated)<=0?" — invoice fully settled":" — "+inr(invoiceBalance(updated))+" still outstanding")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+payment.salesPerson:"")); closeModal(); render();
@@ -5208,7 +5219,7 @@ function openApproveQuotePayment(quoteId, idx){
       const wasLead = !q.clientId && q.leadId;
       const leadName = wasLead ? (leadById(q.leadId)||{}).name : null;
       const result = await apiJson(`/api/crm/quotes/${quoteId}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
-      await Promise.all([loadQuotes(), loadClients(), loadLeads(), loadInvoices(), loadPayables(), loadBankAccounts()]);
+      await Promise.all([loadQuotes(), loadClients(), loadLeads(), loadInvoices(), loadPayables(), loadBankAccounts(), refreshFinanceReports()]);
       const commissionAmount = q.createdBy ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
       toast("Payment approved"+(result.balance<=0?" — quote fully invoiced":" — "+inr(result.balance)+" still outstanding")+(wasLead?" · "+leadName+" is now a client":"")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+q.createdBy:""));
       closeModal(); render();

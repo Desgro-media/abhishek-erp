@@ -8,6 +8,7 @@ import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { sumAmounts, invoiceTotal, invoicePaidAsOf, invoiceStatus } from "../../services/finance/calc";
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
+import { lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import {
   invoiceCreateSchema,
   invoiceUpdateSchema,
@@ -178,6 +179,7 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
   const date = d.date ? new Date(d.date) : pending.paymentDate;
   const approvedAt = new Date();
   const result = await prisma.$transaction(async (tx) => {
+    await lockUnapprovedPending(tx, "invoice_pending_payments", pendingId);
     const payment = await tx.invoicePayment.create({
       data: { invoiceId, amount: pending.amount, paidDate: date, accountId: d.accountId, note: pending.note ?? undefined, recordedBy: req.user!.sub },
     });
