@@ -5,6 +5,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { env } from "../../config/env";
 import { isHRAdmin, resolveScopedEmployeeId } from "../../middleware/hrAccess";
+import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   employeeCreateSchema,
   employeeUpdateSchema,
@@ -15,9 +16,7 @@ import {
 } from "../../validation/hr.schemas";
 
 async function nextEmployeeCode(): Promise<string> {
-  const last = await prisma.employee.findFirst({ orderBy: { employeeCode: "desc" } });
-  const lastNum = last ? Number(last.employeeCode.replace("EMP-", "")) : 100;
-  return `EMP-${lastNum + 1}`;
+  return nextSequentialCode("EMP-", (await prisma.employee.findMany({ select: { employeeCode: true } })).map((e) => e.employeeCode), { floor: 100, pad: 0 });
 }
 
 // Never send the linked User row itself (it carries passwordHash) — just

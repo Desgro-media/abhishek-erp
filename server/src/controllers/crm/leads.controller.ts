@@ -4,11 +4,10 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { recordAudit } from "../../services/audit.service";
 import { leadCreateSchema, leadUpdateSchema } from "../../validation/crm.schemas";
+import { nextSequentialCode } from "../../utils/sequentialCode";
 
 async function nextLeadCode(): Promise<string> {
-  const last = await prisma.lead.findFirst({ orderBy: { leadCode: "desc" } });
-  const lastNum = last ? Number(last.leadCode.replace("MLD-", "")) : 0;
-  return `MLD-${String(lastNum + 1).padStart(2, "0")}`;
+  return nextSequentialCode("MLD-", (await prisma.lead.findMany({ select: { leadCode: true } })).map((l) => l.leadCode));
 }
 
 // A plain Sales caller sees their own claimed leads plus the shared Open

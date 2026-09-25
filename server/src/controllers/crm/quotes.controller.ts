@@ -8,6 +8,7 @@ import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
 import { lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
+import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   quoteCreateSchema,
   quoteUpdateSchema,
@@ -23,9 +24,7 @@ const notYourQuote = (req: { user?: { roles?: string[]; name: string } }, quote:
   !seesWholeSalesTeam(req.user?.roles) && quote.createdBy !== req.user!.name;
 
 async function nextQuoteCode(): Promise<string> {
-  const last = await prisma.quote.findFirst({ orderBy: { quoteCode: "desc" } });
-  const lastNum = last ? Number(last.quoteCode.replace("QUO-", "")) : 0;
-  return `QUO-${String(lastNum + 1).padStart(2, "0")}`;
+  return nextSequentialCode("QUO-", (await prisma.quote.findMany({ select: { quoteCode: true } })).map((q) => q.quoteCode));
 }
 // Highest existing number for the year + 1 — NOT count + 1. Deleting an invoice (or numbering one by hand)
 // leaves gaps, so a count-based number eventually lands on one that's already taken and the unique
@@ -120,7 +119,8 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
 
   const quote = await prisma.quote.findUnique({ where: { id: req.params.id }, include: { items: true, lead: true } });
   if (!quote) return res.status(404).json({ error: "Quote not found" });
-  if (quote.status !== "SENT") return res.status(409).json({ error: "Only a sent quote can be converted to an invoice this way" });
+  // Draft quotes convert directly (there's no separate "send to client" step any more); Sent covers older quotes.
+  if (quote.status !== "DRAFT" && quote.status !== "SENT") return res.status(409).json({ error: `Can't convert a ${quote.status.toLowerCase().replace(/_/g, " ")} quote to an invoice` });
 
   const result = await prisma.$transaction(async (tx) => {
     let clientId = quote.clientId;
@@ -133,12 +133,11 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
       if (existing) {
         clientId = existing.id;
       } else {
-        const last = await tx.client.findFirst({ orderBy: { clientCode: "desc" } });
-        const lastNum = last ? Number(last.clientCode.replace("CLI-", "")) : 0;
+        const clientCode = nextSequentialCode("CLI-", (await tx.client.findMany({ select: { clientCode: true } })).map((c) => c.clientCode));
         const services = [...new Set([quote.lead.serviceInterested, ...quote.items.map((i) => i.dept)])];
         const newClient = await tx.client.create({
           data: {
-            clientCode: `CLI-${String(lastNum + 1).padStart(2, "0")}`,
+            clientCode,
             name: quote.lead.name, industry: "—", city: "—", services,
             status: "ACTIVE", onboardedAt: new Date(d.issuedAt), accountManager: quote.lead.leadOwner, salesPerson: quote.lead.leadOwner,
           },
@@ -242,12 +241,11 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
       if (existing) {
         clientId = existing.id;
       } else {
-        const last = await tx.client.findFirst({ orderBy: { clientCode: "desc" } });
-        const lastNum = last ? Number(last.clientCode.replace("CLI-", "")) : 0;
+        const clientCode = nextSequentialCode("CLI-", (await tx.client.findMany({ select: { clientCode: true } })).map((c) => c.clientCode));
         const services = [...new Set([quote.lead.serviceInterested, ...quote.items.map((i) => i.dept)])];
         const newClient = await tx.client.create({
           data: {
-            clientCode: `CLI-${String(lastNum + 1).padStart(2, "0")}`,
+            clientCode,
             name: quote.lead.name, industry: "—", city: "—", services,
             status: "ACTIVE", onboardedAt: date, accountManager: quote.lead.leadOwner, salesPerson: quote.lead.leadOwner,
           },
@@ -280,10 +278,10 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
     let commission = null;
     let salesBonus = null;
     if (quote.createdBy) {
-      commission = await createCommissionPayable(tx, { salesPerson: quote.createdBy, sourceLabel: quote.quoteCode, paymentAmount: Number(pending.amount), dueAt: date });
+      commission = await createCommissionPayable(tx, { salesPerson: quote.createdBy, sourceLabel: quote.quoteCode, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id });
       // Must run BEFORE this row is marked approved below — same reasoning as
       // the invoice pending-payment approval path, see salesTarget.ts.
-      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: quote.createdBy, paymentAmount: Number(pending.amount), date: approvedAt });
+      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: quote.createdBy, paymentAmount: Number(pending.amount), date: approvedAt, sourcePaymentId: payment.id });
     }
     await tx.quotePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
 

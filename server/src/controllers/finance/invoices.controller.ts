@@ -187,13 +187,13 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
     let commission = null;
     let salesBonus = null;
     if (pending.salesPerson) {
-      commission = await createCommissionPayable(tx, { salesPerson: pending.salesPerson, sourceLabel: invoice.invoiceNo, paymentAmount: Number(pending.amount), dueAt: date });
+      commission = await createCommissionPayable(tx, { salesPerson: pending.salesPerson, sourceLabel: invoice.invoiceNo, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id });
       // Must run BEFORE this row is marked approved below — monthlyApprovedSales()
       // sums approved=true rows, so flipping this one first would make it count
       // itself as "prior" sales and double it into the new total. Month bucket
       // must match approvedAt (what that query filters by), not the possibly-
       // backdated ledger `date`.
-      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: pending.salesPerson, paymentAmount: Number(pending.amount), date: approvedAt });
+      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: pending.salesPerson, paymentAmount: Number(pending.amount), date: approvedAt, sourcePaymentId: payment.id });
     }
     await tx.invoicePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
     return { payment, commission, salesBonus };

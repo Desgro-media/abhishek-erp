@@ -2,6 +2,7 @@ import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
+import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   positionCreateSchema,
   positionUpdateSchema,
@@ -12,9 +13,7 @@ import {
 // Everything in this file is HR/Admin only (mounted behind requireHRAdmin).
 
 async function nextPositionCode(): Promise<string> {
-  const last = await prisma.openPosition.findFirst({ orderBy: { positionCode: "desc" } });
-  const lastNum = last ? Number(last.positionCode.replace("POS-", "")) : 0;
-  return `POS-${String(lastNum + 1).padStart(2, "0")}`;
+  return nextSequentialCode("POS-", (await prisma.openPosition.findMany({ select: { positionCode: true } })).map((p) => p.positionCode));
 }
 
 // Returns both active and archived positions/candidates in one shot — the

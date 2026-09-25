@@ -158,3 +158,16 @@ test("auto invoice numbers never collide with an existing one, even after deleti
   assert.equal(conv.status, 201, JSON.stringify(conv.body));
   assert.notEqual(conv.body.invoiceNo, `DG-${year}-${1000 + count + 2}`);
 });
+
+test("a Draft quote converts straight to an invoice (no send step), but a lost one can't", async () => {
+  const lead = await newLead(tok.a, "draftconv", names.a);
+  const draft = await newQuote(tok.a, lead.id, "DC", false);
+  assert.equal((await prisma.quote.findUniqueOrThrow({ where: { id: draft.id } })).status, "DRAFT");
+  const conv = await call("POST", `/crm/quotes/${draft.id}/convert-to-invoice`, tok.a, { issuedAt: today, dueAt: today });
+  assert.equal(conv.status, 201, JSON.stringify(conv.body));
+  assert.equal((await prisma.quote.findUniqueOrThrow({ where: { id: draft.id } })).status, "INVOICED");
+
+  const lost = await newQuote(tok.a, lead.id, "DL", false);
+  await call("POST", `/crm/quotes/${lost.id}/lost`, tok.a);
+  assert.equal((await call("POST", `/crm/quotes/${lost.id}/convert-to-invoice`, tok.a, { issuedAt: today, dueAt: today })).status, 409);
+});

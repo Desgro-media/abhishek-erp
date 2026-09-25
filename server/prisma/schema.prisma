@@ -548,6 +548,9 @@ model InvoicePayment {
   recordedBy String?     @map("recorded_by")
   createdAt  DateTime    @default(now()) @map("created_at")
 
+  // Commission / sales-bonus payables this payment generated — see Payable.sourcePaymentId.
+  generatedPayables Payable[]
+
   @@index([invoiceId])
   @@map("invoice_payments")
 }
@@ -582,12 +585,19 @@ model Payable {
   salesPerson String?         @map("sales_person")
   amount      Decimal         @db.Decimal(12, 2)
   dueAt       DateTime        @map("due_at") @db.Date
+  // The approved payment that generated this row (commission / sales bonus). A real FK rather than
+  // matching on payee text or recomputing 10%, so editing, splitting or disputing the payable later
+  // never detaches it from its payment. Many payables may point at one payment (a split). Null for
+  // manually created payables. SetNull, not Cascade: payments are append-only and this is history.
+  sourcePaymentId String?         @map("source_payment_id")
+  sourcePayment   InvoicePayment? @relation(fields: [sourcePaymentId], references: [id], onDelete: SetNull)
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")
 
   payments PayablePayment[]
 
   @@index([category])
+  @@index([sourcePaymentId])
   @@map("payables")
 }
 

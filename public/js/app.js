@@ -1626,7 +1626,7 @@ const TAB_REFRESH = {
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
-  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null],
+  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():null],
   "accounts/overview":[()=>isFinanceAdminUser(currentUser)?refreshFinanceReports():null],
 };
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
@@ -3900,11 +3900,13 @@ function quoteActionsMkt(q){
   const editBtn = `<button class="btn btn-sm ghost" onclick="openEditQuote('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`;
   // The server refuses to delete once a quote has been invoiced (append-only ledger) — don't offer it then.
   const delBtn = q.invoiceId ? '' : `<button class="btn btn-sm ghost" onclick="openConfirmDelete('quote','${q.id}')" title="Delete quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`;
-  if(q.status==="Draft") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="sendQuote('${q.id}')">Send to client</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
-  if(q.status==="Sent") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openConvertQuoteToInvoice('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Convert to invoice</button><button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
+  // No "Send to client" / "Record payment" on a quote: it goes straight from Draft to an invoice, and
+  // payments are recorded on the invoice (Finance approves them from Payment Receipts). "Sent" only
+  // remains for quotes that were sent before this — same actions as a Draft.
+  if(q.status==="Draft" || q.status==="Sent") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openConvertQuoteToInvoice('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Convert to invoice</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
   if(q.status==="Submitted to Finance"){
-    const bal = quoteBalance(q), pending = quotePendingAmount(q);
-    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button>`:''}${pending>0?`<span class="faint" style="font-size:11.5px;">${inr(pending)} awaiting Finance</span>`:''}${downloadBtn}${delBtn}</div>`;
+    const pending = quotePendingAmount(q);
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${pending>0?`<span class="faint" style="font-size:11.5px;">${inr(pending)} awaiting Finance</span>`:''}${downloadBtn}${delBtn}</div>`;
   }
   if(q.status==="Invoiced"){
     const inv = q.invoiceId ? invoices.find(x=>x.id===q.invoiceId) : null;
@@ -3946,7 +3948,7 @@ function mktQuotes(){
   const sorted = filtered.slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   return `
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setQuotesMonthFilter(this.value)">${dateFilterOptions(quotes.map(q=>q.createdDate), quotesMonthFilter)}</select></div><button class="btn primary" onclick="openAddQuote()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New quote</button></div>
-  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>A quote can be for an existing client or a lead, with several services priced independently. As the client pays — in full or in installments — record each payment here to push it to Finance; they confirm the money landed and approve it from Accounts &gt; Quotes. A lead becomes a client automatically the first time Finance approves a payment for them.</div></div>
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>A quote can be for an existing client or a lead, with several services priced independently. Convert it to an invoice when the client accepts — a lead becomes a client at that point. Record the client's payments on the invoice (Marketing &gt; Invoices); Finance confirms each one from Accounts &gt; Payment Receipts.</div></div>
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My quotes':'Quotes'}</h3><div class="sub">${filtered.length} of ${quotes.length}${dateFilterSuffix(quotesMonthFilter)}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th>Service(s)</th><th class="num">Amount</th><th>Prepared by</th><th>Status</th><th></th></tr></thead>
@@ -4049,13 +4051,6 @@ function openEditQuote(id){
     }catch(err){ toast(err.message || "Couldn't update quote"); }
   });
 }
-async function sendQuote(id){
-  try{
-    await apiJson(`/api/crm/quotes/${id}/send`, { method:"POST" });
-    await loadQuotes();
-    toast("Quote sent to client"); render();
-  }catch(err){ toast(err.message || "Couldn't send quote"); }
-}
 async function markQuoteLost(id){
   try{
     await apiJson(`/api/crm/quotes/${id}/lost`, { method:"POST" });
@@ -4063,37 +4058,8 @@ async function markQuoteLost(id){
     toast("Quote marked lost"); render();
   }catch(err){ toast(err.message || "Couldn't update quote"); }
 }
-function openRecordQuotePayment(id){
-  const q = quotes.find(x=>x.id===id);
-  const bal = quoteBalance(q);
-  const party = quoteParty(q);
-  showModal(`
-    <div class="modal-head"><h3>Record client payment — ${esc(q.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
-    <form id="f-quote-paid"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(party.name)}${party.kind==='lead'?' (lead)':''} · <b>${inr(quoteTotal(q))}</b> quote total · <b>${inr(bal)}</b> not yet recorded as paid — partial payments are fine. This pushes the payment to Finance, who'll confirm the money landed before it's added to the invoice.</div></div>
-      <div class="field-row">
-        <div><label class="field-label">Amount paid (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${bal}" step="1" required value="${bal}"></div>
-        <div><label class="field-label">Payment date</label><input class="field-input" type="date" name="paymentDate" value="${TODAY}" required></div>
-      </div>
-      <div><label class="field-label">Note for Finance (optional)</label><input class="field-input" name="note" placeholder="e.g. Paid via UPI, ref UTR..."></div>
-    </div>
-    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Push to Finance</button></div></div>
-    </form>`);
-  document.getElementById("f-quote-paid").addEventListener("submit", async e=>{
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const amount = Math.min(bal, Math.max(1, Number(f.get("amount"))));
-    try{
-      await apiJson(`/api/crm/quotes/${id}/pending-payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, paymentDate:f.get("paymentDate"), note:f.get("note").trim()||"Client confirmed payment" }) });
-      await loadQuotes();
-      toast("Sent to Finance for confirmation"); closeModal(); render();
-    }catch(err){ toast(err.message || "Couldn't submit payment"); }
-  });
-}
-// Direct route to an invoice, skipping the pay-first-then-Finance-confirms
-// flow above — for Postpaid-style engagements where the client is billed
-// before paying. From here on, payments are recorded on the invoice itself
-// (Invoices / Payment Receipts), not on the quote.
+// How a quote becomes money: convert it to an invoice, then payments are recorded on the invoice
+// (Invoices / Payment Receipts) and Finance approves them there.
 function openConvertQuoteToInvoice(id){
   const q = quotes.find(x=>x.id===id);
   const party = quoteParty(q);
@@ -4608,7 +4574,101 @@ function pendingSalesPayments(){
   quotes.forEach(q=>{ (q.payments||[]).forEach((p,idx)=>{ if(!p.approved) rows.push({source:'quote', q, p, idx}); }); });
   return rows.sort((a,b)=>(b.p.date||'').localeCompare(a.p.date||''));
 }
+// Payment Receipts has two views: Pending (what Sales pushed and Finance hasn't confirmed yet — the
+// queue above) and Approved (history of every confirmed payment, so a row doesn't just vanish once
+// approved). Approved comes from its own endpoint, which joins pusher / approver / bank / commission
+// server-side — see server/src/controllers/finance/paymentReceipts.controller.ts.
+let receiptsTab = "pending";
+let approvedReceipts = [], approvedReceiptsTotal = 0, approvedReceiptsLoaded = false;
+async function loadApprovedReceipts(){
+  const d = await apiJson("/api/finance/payment-receipts/approved?limit=200");
+  approvedReceipts = d.receipts; approvedReceiptsTotal = d.total; approvedReceiptsLoaded = true;
+}
+function setReceiptsTab(t){
+  receiptsTab = t; render();
+  if(t==='approved') loadApprovedReceipts().then(()=>{ if(receiptsTab==='approved') render(); }).catch(err=>toast(err.message || "Couldn't load approved payments"));
+}
+const fmtDateTime = iso => iso ? new Date(iso).toLocaleString("en-IN",{day:"numeric",month:"short",year:"numeric",hour:"numeric",minute:"2-digit"}) : "—";
+function acctApprovedReceipts(){
+  const rows = approvedReceipts;
+  const dash = '<span class="faint">—</span>';
+  return `
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Every payment Finance has confirmed, newest first — pushed by Sales (against a quote or an invoice) or recorded straight on the invoice by Finance (<b>Direct</b>, no Sales person and so no commission). The commission shown is what that payment generated, linked to it directly, so editing or splitting a commission in Accounts &gt; Commissions updates it here too.</div></div>
+  <div class="panel">
+    <div class="panel-head"><h3>Approved payments</h3><div class="sub">${approvedReceiptsLoaded?`${approvedReceiptsTotal} confirmed payment${approvedReceiptsTotal===1?'':'s'}${approvedReceiptsTotal>rows.length?' · showing the latest '+rows.length:''}`:'Loading…'}</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">Amount</th><th>Pushed by</th><th>Approved by</th><th>Bank account</th><th>Commission</th><th></th></tr></thead>
+      <tbody>${rows.length?rows.map(r=>`<tr>
+        <td class="mono">${esc(r.invoiceNo)}<div class="subtext">${r.source==='Direct'?pill('Direct','neutral'):r.source==='Quote'?'Quote '+esc(r.quoteCode||''):'Invoice'}</div></td>
+        <td class="muted">${esc(r.clientName)}</td>
+        <td class="num mono">${inr(r.amount)}<div class="subtext" style="white-space:nowrap;">paid ${fmtDateShort(isoDate(r.paidDate))}</div></td>
+        <td class="muted">${r.pushedBy?esc(r.pushedBy):dash}</td>
+        <td class="muted">${r.approvedBy?esc(r.approvedBy):dash}<div class="subtext" style="white-space:nowrap;">${fmtDateTime(r.approvedAt)}</div></td>
+        <td class="muted">${esc(r.bankAccount.name)}</td>
+        <td>${r.commissions.length?r.commissions.map(c=>`<div class="mono">${inr(c.amount)} <span class="faint" style="font-family:inherit;">→ ${esc(c.salesPerson||'—')}</span></div>`).join(''):dash}</td>
+        <td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEditApprovedReceipt('${r.paymentId}')" title="Edit payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="openReverseApprovedReceipt('${r.paymentId}')" title="Delete payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td>
+      </tr>`).join(""):`<tr><td colspan="8"><div class="empty">${approvedReceiptsLoaded?'No payments confirmed yet.':'Loading…'}</div></td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+}
+// Editing / deleting a confirmed payment goes through the server, which keeps the bank ledger, invoice
+// balance, revenue and commission in sync (or refuses with a reason and changes nothing) — see
+// updateApprovedReceipt / deleteApprovedReceipt in paymentReceipts.controller.ts.
+async function reloadAfterReceiptChange(){
+  await Promise.all([loadApprovedReceipts(), loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports(), canLoadQuotes()?loadQuotes():null]);
+}
+function openEditApprovedReceipt(paymentId){
+  const r = approvedReceipts.find(x=>x.paymentId===paymentId); if(!r) return;
+  const rate = Math.round(SALES_COMMISSION_RATE*100);
+  showModal(`
+    <div class="modal-head"><h3>Edit payment — ${esc(r.invoiceNo)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-edit-receipt"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(r.clientName)} · confirmed ${fmtDateTime(r.approvedAt)}. Saving updates the bank-ledger entry, the invoice balance and revenue to match.${r.commissions.length?` Changing the <b>amount</b> also recalculates the ${rate}% commission (${r.commissions.map(c=>inr(c.amount)+' → '+esc(c.salesPerson||'—')).join(', ')}) — unless it was edited, split or paid out since, in which case the change is refused. Date, bank account and note never touch it.`:''}</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="1" step="1" required value="${r.amount}"></div>
+        <div><label class="field-label">Payment date</label><input class="field-input" type="date" name="paidDate" required value="${isoDate(r.paidDate)}"></div>
+      </div>
+      <div><label class="field-label">Credited to account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}" ${b.id===r.bankAccount.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
+      <div><label class="field-label">Note</label><input class="field-input" name="note" value="${esc(r.note||'')}"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></div>
+    </form>`);
+  document.getElementById("f-edit-receipt").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try{
+      await apiJson(`/api/finance/payment-receipts/approved/${paymentId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
+        amount:Number(f.get("amount")), paidDate:f.get("paidDate"), accountId:f.get("accountId"), note:f.get("note").trim()||null,
+      })});
+      await reloadAfterReceiptChange();
+      toast("Payment updated"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't update payment"); }
+  });
+}
+function openReverseApprovedReceipt(paymentId){
+  const r = approvedReceipts.find(x=>x.paymentId===paymentId); if(!r) return;
+  const back = r.source==='Direct' ? "It was recorded directly by Finance, so it is simply removed." : "It goes back to the <b>Pending</b> tab exactly as Sales pushed it, where you can approve it again or discard it.";
+  showModal(`
+    <div class="modal-head"><h3>Delete this payment?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div><b>${inr(r.amount)}</b> on ${esc(r.invoiceNo)} (${esc(r.clientName)}) is reversed: the credit to <b>${esc(r.bankAccount.name)}</b> is removed from the bank ledger, ${r.commissions.length?`the ${r.commissions.map(c=>inr(c.amount)+' commission for '+esc(c.salesPerson||'—')).join(' and ')} is removed, `:''}the invoice balance goes back up and revenue drops. ${back} Refused if its commission has already been paid out or a sales bonus depends on it.</div></div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="button" class="btn danger" onclick="performReverseApprovedReceipt('${paymentId}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg>Delete payment</button></div>`);
+}
+async function performReverseApprovedReceipt(paymentId){
+  const r = approvedReceipts.find(x=>x.paymentId===paymentId);
+  try{
+    await apiJson(`/api/finance/payment-receipts/approved/${paymentId}`, { method:"DELETE" });
+    await reloadAfterReceiptChange();
+    toast(r && r.source!=='Direct' ? "Payment reversed — back in Pending" : "Payment deleted"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't delete payment"); }
+}
 function acctPaymentReceipts(){
+  const pending = pendingSalesPayments().length;
+  const tab = (id, label, n) => `<button class="chip ${receiptsTab===id?'active':''}" onclick="setReceiptsTab('${id}')">${label}${n?' · '+n:''}</button>`;
+  return `<div class="filter-group" style="margin-bottom:14px;">${tab('pending','Pending',pending)}${tab('approved','Approved',approvedReceiptsLoaded?approvedReceiptsTotal:0)}</div>`
+    + (receiptsTab==='approved' ? acctApprovedReceipts() : acctPendingReceipts());
+}
+function acctPendingReceipts(){
   const rows = pendingSalesPayments();
   return `
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Sales pushes a payment here the moment a client pays — even a partial one — whether it's against a quote or an existing invoice. Confirm which account the money actually landed in before approving; that's what creates (or tops up) the invoice and posts it to the bank ledger. Approving a lead's first payment also turns them into a client automatically.</div></div>
@@ -4888,13 +4948,13 @@ function openRecordInvoicePayment(id){
     const note = f.get("note").trim() || (amount>=bal?"Full settlement":"Partial payment");
     try{
       await apiJson(`/api/finance/invoices/${id}/payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, paidDate:date, accountId, note }) });
-      await Promise.all([loadInvoices(), loadBankAccounts(), refreshFinanceReports()]);
+      await Promise.all([loadInvoices(), loadBankAccounts(), refreshFinanceReports(), loadApprovedReceipts()]);
       toast("Payment recorded"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't record payment"); }
   });
 }
 // Sales-side: log a payment they personally collected against an EXISTING invoice and push it to
-// Finance — mirrors openRecordQuotePayment() exactly, just against an invoice instead of a quote.
+// Finance.
 // Nothing touches the invoice balance until Finance confirms it with openApproveInvoicePayment().
 function openSubmitInvoicePayment(id){
   const inv = invoices.find(x=>x.id===id);
@@ -4950,7 +5010,7 @@ function openApproveInvoicePayment(id, idx){
     const accountId = f.get("accountId"), date = f.get("date");
     try{
       await apiJson(`/api/finance/invoices/${id}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
-      await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports()]);
+      await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports(), loadApprovedReceipts()]);
       const updated = invoices.find(x=>x.id===id);
       const commissionAmount = payment.salesPerson ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
       toast("Payment approved"+(invoiceBalance(updated)<=0?" — invoice fully settled":" — "+inr(invoiceBalance(updated))+" still outstanding")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+payment.salesPerson:"")); closeModal(); render();
@@ -5246,7 +5306,7 @@ function openApproveQuotePayment(quoteId, idx){
       const wasLead = !q.clientId && q.leadId;
       const leadName = wasLead ? (leadById(q.leadId)||{}).name : null;
       const result = await apiJson(`/api/crm/quotes/${quoteId}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
-      await Promise.all([loadQuotes(), loadClients(), loadLeads(), loadInvoices(), loadPayables(), loadBankAccounts(), refreshFinanceReports()]);
+      await Promise.all([loadQuotes(), loadClients(), loadLeads(), loadInvoices(), loadPayables(), loadBankAccounts(), refreshFinanceReports(), loadApprovedReceipts()]);
       const commissionAmount = q.createdBy ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
       toast("Payment approved"+(result.balance<=0?" — quote fully invoiced":" — "+inr(result.balance)+" still outstanding")+(wasLead?" · "+leadName+" is now a client":"")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+q.createdBy:""));
       closeModal(); render();
