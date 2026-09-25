@@ -120,7 +120,8 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
 
   const quote = await prisma.quote.findUnique({ where: { id: req.params.id }, include: { items: true, lead: true } });
   if (!quote) return res.status(404).json({ error: "Quote not found" });
-  if (quote.status !== "SENT") return res.status(409).json({ error: "Only a sent quote can be converted to an invoice this way" });
+  // Draft quotes convert directly (there's no separate "send to client" step any more); Sent covers older quotes.
+  if (quote.status !== "DRAFT" && quote.status !== "SENT") return res.status(409).json({ error: `Can't convert a ${quote.status.toLowerCase().replace(/_/g, " ")} quote to an invoice` });
 
   const result = await prisma.$transaction(async (tx) => {
     let clientId = quote.clientId;

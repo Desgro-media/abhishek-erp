@@ -3900,11 +3900,13 @@ function quoteActionsMkt(q){
   const editBtn = `<button class="btn btn-sm ghost" onclick="openEditQuote('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`;
   // The server refuses to delete once a quote has been invoiced (append-only ledger) — don't offer it then.
   const delBtn = q.invoiceId ? '' : `<button class="btn btn-sm ghost" onclick="openConfirmDelete('quote','${q.id}')" title="Delete quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`;
-  if(q.status==="Draft") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="sendQuote('${q.id}')">Send to client</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
-  if(q.status==="Sent") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openConvertQuoteToInvoice('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Convert to invoice</button><button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
+  // No "Send to client" / "Record payment" on a quote: it goes straight from Draft to an invoice, and
+  // payments are recorded on the invoice (Finance approves them from Payment Receipts). "Sent" only
+  // remains for quotes that were sent before this — same actions as a Draft.
+  if(q.status==="Draft" || q.status==="Sent") return `<div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm primary" onclick="openConvertQuoteToInvoice('${q.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Convert to invoice</button>${editBtn}<button class="btn btn-sm ghost" onclick="markQuoteLost('${q.id}')">Mark lost</button>${downloadBtn}${delBtn}</div>`;
   if(q.status==="Submitted to Finance"){
-    const bal = quoteBalance(q), pending = quotePendingAmount(q);
-    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordQuotePayment('${q.id}')">Record payment</button>`:''}${pending>0?`<span class="faint" style="font-size:11.5px;">${inr(pending)} awaiting Finance</span>`:''}${downloadBtn}${delBtn}</div>`;
+    const pending = quotePendingAmount(q);
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${pending>0?`<span class="faint" style="font-size:11.5px;">${inr(pending)} awaiting Finance</span>`:''}${downloadBtn}${delBtn}</div>`;
   }
   if(q.status==="Invoiced"){
     const inv = q.invoiceId ? invoices.find(x=>x.id===q.invoiceId) : null;
@@ -3946,7 +3948,7 @@ function mktQuotes(){
   const sorted = filtered.slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   return `
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setQuotesMonthFilter(this.value)">${dateFilterOptions(quotes.map(q=>q.createdDate), quotesMonthFilter)}</select></div><button class="btn primary" onclick="openAddQuote()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New quote</button></div>
-  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>A quote can be for an existing client or a lead, with several services priced independently. As the client pays — in full or in installments — record each payment here to push it to Finance; they confirm the money landed and approve it from Accounts &gt; Quotes. A lead becomes a client automatically the first time Finance approves a payment for them.</div></div>
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>A quote can be for an existing client or a lead, with several services priced independently. Convert it to an invoice when the client accepts — a lead becomes a client at that point. Record the client's payments on the invoice (Marketing &gt; Invoices); Finance confirms each one from Accounts &gt; Payment Receipts.</div></div>
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My quotes':'Quotes'}</h3><div class="sub">${filtered.length} of ${quotes.length}${dateFilterSuffix(quotesMonthFilter)}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th>Service(s)</th><th class="num">Amount</th><th>Prepared by</th><th>Status</th><th></th></tr></thead>
@@ -4049,13 +4051,6 @@ function openEditQuote(id){
     }catch(err){ toast(err.message || "Couldn't update quote"); }
   });
 }
-async function sendQuote(id){
-  try{
-    await apiJson(`/api/crm/quotes/${id}/send`, { method:"POST" });
-    await loadQuotes();
-    toast("Quote sent to client"); render();
-  }catch(err){ toast(err.message || "Couldn't send quote"); }
-}
 async function markQuoteLost(id){
   try{
     await apiJson(`/api/crm/quotes/${id}/lost`, { method:"POST" });
@@ -4063,37 +4058,8 @@ async function markQuoteLost(id){
     toast("Quote marked lost"); render();
   }catch(err){ toast(err.message || "Couldn't update quote"); }
 }
-function openRecordQuotePayment(id){
-  const q = quotes.find(x=>x.id===id);
-  const bal = quoteBalance(q);
-  const party = quoteParty(q);
-  showModal(`
-    <div class="modal-head"><h3>Record client payment — ${esc(q.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
-    <form id="f-quote-paid"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(party.name)}${party.kind==='lead'?' (lead)':''} · <b>${inr(quoteTotal(q))}</b> quote total · <b>${inr(bal)}</b> not yet recorded as paid — partial payments are fine. This pushes the payment to Finance, who'll confirm the money landed before it's added to the invoice.</div></div>
-      <div class="field-row">
-        <div><label class="field-label">Amount paid (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${bal}" step="1" required value="${bal}"></div>
-        <div><label class="field-label">Payment date</label><input class="field-input" type="date" name="paymentDate" value="${TODAY}" required></div>
-      </div>
-      <div><label class="field-label">Note for Finance (optional)</label><input class="field-input" name="note" placeholder="e.g. Paid via UPI, ref UTR..."></div>
-    </div>
-    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Push to Finance</button></div></div>
-    </form>`);
-  document.getElementById("f-quote-paid").addEventListener("submit", async e=>{
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const amount = Math.min(bal, Math.max(1, Number(f.get("amount"))));
-    try{
-      await apiJson(`/api/crm/quotes/${id}/pending-payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, paymentDate:f.get("paymentDate"), note:f.get("note").trim()||"Client confirmed payment" }) });
-      await loadQuotes();
-      toast("Sent to Finance for confirmation"); closeModal(); render();
-    }catch(err){ toast(err.message || "Couldn't submit payment"); }
-  });
-}
-// Direct route to an invoice, skipping the pay-first-then-Finance-confirms
-// flow above — for Postpaid-style engagements where the client is billed
-// before paying. From here on, payments are recorded on the invoice itself
-// (Invoices / Payment Receipts), not on the quote.
+// How a quote becomes money: convert it to an invoice, then payments are recorded on the invoice
+// (Invoices / Payment Receipts) and Finance approves them there.
 function openConvertQuoteToInvoice(id){
   const q = quotes.find(x=>x.id===id);
   const party = quoteParty(q);
@@ -4894,7 +4860,6 @@ function openRecordInvoicePayment(id){
   });
 }
 // Sales-side: log a payment they personally collected against an EXISTING invoice and push it to
-// Finance — mirrors openRecordQuotePayment() exactly, just against an invoice instead of a quote.
 // Nothing touches the invoice balance until Finance confirms it with openApproveInvoicePayment().
 function openSubmitInvoicePayment(id){
   const inv = invoices.find(x=>x.id===id);
