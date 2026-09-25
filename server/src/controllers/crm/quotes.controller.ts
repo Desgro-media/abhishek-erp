@@ -6,6 +6,7 @@ import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
+import { lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
 import {
   quoteCreateSchema,
@@ -158,8 +159,17 @@ export const submitQuotePendingPayment: RequestHandler = asyncHandler(async (req
   const d = parsed.data;
   const quoteId = req.params.id;
 
-  const quote = await prisma.quote.findUnique({ where: { id: quoteId } });
+  const quote = await prisma.quote.findUnique({ where: { id: quoteId }, include: { items: true, pendingPayments: true } });
   if (!quote) return res.status(404).json({ error: "Quote not found" });
+  // Only a sent quote (or one that already has payments in flight) takes payments here. Once it's
+  // been converted to an invoice, payments are logged on the invoice — accepting one here would also
+  // flip an INVOICED quote back to SUBMITTED_TO_FINANCE.
+  if (quote.status !== "SENT" && quote.status !== "SUBMITTED_TO_FINANCE") {
+    return res.status(409).json({ error: `Can't record a payment against a ${quote.status.toLowerCase().replace(/_/g, " ")} quote` });
+  }
+  // Approved and still-pending payments both count — same "not yet recorded as paid" balance the UI shows.
+  const outstanding = sumAmounts(quote.items) - sumAmounts(quote.pendingPayments);
+  if (d.amount > outstanding + 0.01) return res.status(400).json({ error: "Amount exceeds what's left on this quote" });
 
   const [pending] = await prisma.$transaction([
     prisma.quotePendingPayment.create({ data: { quoteId, amount: d.amount, paymentDate: new Date(d.paymentDate), note: d.note } }),
@@ -206,6 +216,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
   const approvedAt = new Date();
 
   const result = await prisma.$transaction(async (tx) => {
+    await lockUnapprovedPending(tx, "quote_pending_payments", pendingId);
     let clientId = quote.clientId;
 
     // First approved payment for a lead-targeted quote converts that lead
