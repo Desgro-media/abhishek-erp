@@ -4596,7 +4596,7 @@ function acctApprovedReceipts(){
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Every payment Finance has confirmed, newest first — pushed by Sales (against a quote or an invoice) or recorded straight on the invoice by Finance (<b>Direct</b>, no Sales person and so no commission). The commission shown is what that payment generated, linked to it directly, so editing or splitting a commission in Accounts &gt; Commissions updates it here too.</div></div>
   <div class="panel">
     <div class="panel-head"><h3>Approved payments</h3><div class="sub">${approvedReceiptsLoaded?`${approvedReceiptsTotal} confirmed payment${approvedReceiptsTotal===1?'':'s'}${approvedReceiptsTotal>rows.length?' · showing the latest '+rows.length:''}`:'Loading…'}</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">Amount</th><th>Pushed by</th><th>Approved by</th><th>Bank account</th><th>Commission</th></tr></thead>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">Amount</th><th>Pushed by</th><th>Approved by</th><th>Bank account</th><th>Commission</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map(r=>`<tr>
         <td class="mono">${esc(r.invoiceNo)}<div class="subtext">${r.source==='Direct'?pill('Direct','neutral'):r.source==='Quote'?'Quote '+esc(r.quoteCode||''):'Invoice'}</div></td>
         <td class="muted">${esc(r.clientName)}</td>
@@ -4605,9 +4605,62 @@ function acctApprovedReceipts(){
         <td class="muted">${r.approvedBy?esc(r.approvedBy):dash}<div class="subtext" style="white-space:nowrap;">${fmtDateTime(r.approvedAt)}</div></td>
         <td class="muted">${esc(r.bankAccount.name)}</td>
         <td>${r.commissions.length?r.commissions.map(c=>`<div class="mono">${inr(c.amount)} <span class="faint" style="font-family:inherit;">→ ${esc(c.salesPerson||'—')}</span></div>`).join(''):dash}</td>
-      </tr>`).join(""):`<tr><td colspan="7"><div class="empty">${approvedReceiptsLoaded?'No payments confirmed yet.':'Loading…'}</div></td></tr>`}</tbody>
+        <td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEditApprovedReceipt('${r.paymentId}')" title="Edit payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="openReverseApprovedReceipt('${r.paymentId}')" title="Delete payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td>
+      </tr>`).join(""):`<tr><td colspan="8"><div class="empty">${approvedReceiptsLoaded?'No payments confirmed yet.':'Loading…'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
+}
+// Editing / deleting a confirmed payment goes through the server, which keeps the bank ledger, invoice
+// balance, revenue and commission in sync (or refuses with a reason and changes nothing) — see
+// updateApprovedReceipt / deleteApprovedReceipt in paymentReceipts.controller.ts.
+async function reloadAfterReceiptChange(){
+  await Promise.all([loadApprovedReceipts(), loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports(), canLoadQuotes()?loadQuotes():null]);
+}
+function openEditApprovedReceipt(paymentId){
+  const r = approvedReceipts.find(x=>x.paymentId===paymentId); if(!r) return;
+  const rate = Math.round(SALES_COMMISSION_RATE*100);
+  showModal(`
+    <div class="modal-head"><h3>Edit payment — ${esc(r.invoiceNo)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-edit-receipt"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(r.clientName)} · confirmed ${fmtDateTime(r.approvedAt)}. Saving updates the bank-ledger entry, the invoice balance and revenue to match.${r.commissions.length?` Changing the <b>amount</b> also recalculates the ${rate}% commission (${r.commissions.map(c=>inr(c.amount)+' → '+esc(c.salesPerson||'—')).join(', ')}) — unless it was edited, split or paid out since, in which case the change is refused. Date, bank account and note never touch it.`:''}</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="1" step="1" required value="${r.amount}"></div>
+        <div><label class="field-label">Payment date</label><input class="field-input" type="date" name="paidDate" required value="${isoDate(r.paidDate)}"></div>
+      </div>
+      <div><label class="field-label">Credited to account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}" ${b.id===r.bankAccount.id?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
+      <div><label class="field-label">Note</label><input class="field-input" name="note" value="${esc(r.note||'')}"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></div>
+    </form>`);
+  document.getElementById("f-edit-receipt").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try{
+      await apiJson(`/api/finance/payment-receipts/approved/${paymentId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
+        amount:Number(f.get("amount")), paidDate:f.get("paidDate"), accountId:f.get("accountId"), note:f.get("note").trim()||null,
+      })});
+      await reloadAfterReceiptChange();
+      toast("Payment updated"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't update payment"); }
+  });
+}
+function openReverseApprovedReceipt(paymentId){
+  const r = approvedReceipts.find(x=>x.paymentId===paymentId); if(!r) return;
+  const back = r.source==='Direct' ? "It was recorded directly by Finance, so it is simply removed." : "It goes back to the <b>Pending</b> tab exactly as Sales pushed it, where you can approve it again or discard it.";
+  showModal(`
+    <div class="modal-head"><h3>Delete this payment?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div><b>${inr(r.amount)}</b> on ${esc(r.invoiceNo)} (${esc(r.clientName)}) is reversed: the credit to <b>${esc(r.bankAccount.name)}</b> is removed from the bank ledger, ${r.commissions.length?`the ${r.commissions.map(c=>inr(c.amount)+' commission for '+esc(c.salesPerson||'—')).join(' and ')} is removed, `:''}the invoice balance goes back up and revenue drops. ${back} Refused if its commission has already been paid out or a sales bonus depends on it.</div></div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="button" class="btn danger" onclick="performReverseApprovedReceipt('${paymentId}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg>Delete payment</button></div>`);
+}
+async function performReverseApprovedReceipt(paymentId){
+  const r = approvedReceipts.find(x=>x.paymentId===paymentId);
+  try{
+    await apiJson(`/api/finance/payment-receipts/approved/${paymentId}`, { method:"DELETE" });
+    await reloadAfterReceiptChange();
+    toast(r && r.source!=='Direct' ? "Payment reversed — back in Pending" : "Payment deleted"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't delete payment"); }
 }
 function acctPaymentReceipts(){
   const pending = pendingSalesPayments().length;

@@ -40,6 +40,8 @@ router.post("/invoices/:id/pending-payments/:pendingId/approve", requireFinanceA
 
 // Payment Receipts history — every confirmed payment (Sales-pushed or Direct), Finance/Admin only.
 router.get("/payment-receipts/approved", requireFinanceAdmin, paymentReceipts.listApprovedReceipts);
+router.patch("/payment-receipts/approved/:id", requireFinanceAdmin, paymentReceipts.updateApprovedReceipt);
+router.delete("/payment-receipts/approved/:id", requireFinanceAdmin, paymentReceipts.deleteApprovedReceipt);
 
 // Payables — writes are Finance/Admin only; reads also let Sales through
 // (the controller itself scopes a Sales caller to just their own

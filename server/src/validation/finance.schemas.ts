@@ -159,3 +159,13 @@ export const salesPolicyUpdateSchema = z.object({
 });
 
 export { monthStr };
+
+// Editing an already-approved payment (Accounts > Payment Receipts > Approved). At least one field.
+export const approvedReceiptUpdateSchema = z
+  .object({
+    amount: z.number().positive().optional(),
+    paidDate: dateStr.optional(),
+    accountId: z.string().uuid().optional(),
+    note: z.string().nullable().optional(),
+  })
+  .refine((d) => Object.values(d).some((v) => v !== undefined), { message: "Nothing to change" });
