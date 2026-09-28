@@ -3679,11 +3679,11 @@ function contentCardHTML(item){
   const inits = item.assignee ? initials(item.assignee) : '—';
   const stageOptions = STAGES.map(s=>`<option value="${s}" ${s===item.stage?'selected':''}>${s}</option>`).join('');
   return `
-    <div class="card ${item.stage==='Published'?'published':''}" draggable="true" data-id="${item.id}" ondragstart="onDragStart(event,${item.id})">
+    <div class="card ${item.stage==='Published'?'published':''}" draggable="true" data-id="${item.id}" ondragstart="onDragStart(event,'${item.id}')">
       <div class="card-title">${esc(item.title)}</div>
       <div class="card-meta"><span class="tag type">${esc(item.type)}</span>${item.platforms.map(p=>`<span class="tag"><svg class="icon"><use href="#${platformIcon(p)}"/></svg>${p}</span>`).join('')}</div>
       <div class="card-foot"><span class="assignee"><span class="mini-avatar sm ${item.assignee?'':'unassigned'}">${inits}</span>${esc(item.assignee||'Unassigned')}</span>${dueLabel}</div>
-      <div class="card-move"><select onchange="moveContentCard(${item.id}, this.value)">${stageOptions}</select><button class="card-edit" title="Edit" onclick="openContentModal(${item.id})"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>
+      <div class="card-move"><select onchange="moveContentCard('${item.id}', this.value)">${stageOptions}</select><button class="card-edit" title="Edit" onclick="openContentModal('${item.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>
     </div>`;
 }
 function renderBoard(){
