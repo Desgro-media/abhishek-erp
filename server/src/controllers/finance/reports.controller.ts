@@ -5,6 +5,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { getAccountBalance } from "../../services/finance/bankLedger";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
 import { SALES_COMMISSION_RATE } from "../../services/finance/commission";
+import { monthlyApprovedInvoiceRevenue } from "../../services/finance/revenue";
 
 // Mirrors app.js's DEPARTMENTS/SERVICE_DEPARTMENTS/OVERHEAD_DEPTS exactly —
 // duplicated here (not imported, there's nothing to import from) because
@@ -53,18 +54,7 @@ export const deptProfitability: RequestHandler = asyncHandler(async (req, res) =
   const rentPayables = await prisma.payable.findMany({ where: { category: "RENT", dueAt: { gte: start, lte: end } } });
   const rentTotal = sumAmounts(rentPayables);
 
-  const invoices = await prisma.invoice.findMany({ include: { items: true, payments: true } });
-  const grossRevenueByDept = new Map<string, number>();
-  for (const inv of invoices) {
-    const total = invoiceTotal(inv.items);
-    if (total <= 0) continue;
-    for (const p of inv.payments) {
-      if (isoMonth(p.paidDate) !== month) continue;
-      for (const item of inv.items) {
-        grossRevenueByDept.set(item.dept, (grossRevenueByDept.get(item.dept) ?? 0) + Number(p.amount) * (Number(item.amount) / total));
-      }
-    }
-  }
+  const { byDept: grossRevenueByDept } = await monthlyApprovedInvoiceRevenue(month);
 
   const directPayrollByDept = new Map<string, number>();
   for (const c of costs) directPayrollByDept.set(c.dept, (directPayrollByDept.get(c.dept) ?? 0) + c.cost);
@@ -98,21 +88,18 @@ export const deptProfitability: RequestHandler = asyncHandler(async (req, res) =
   res.json({ month, overheadPayroll, overheadHeadcount, rent: rentTotal, sharedExpenses, overheadPool, totalHeadcount: totalServiceHeadcount, perHeadOverhead, rows });
 });
 
-function isoMonth(d: Date): string {
-  return d.toISOString().slice(0, 7);
-}
-
-// Accrual basis: income when invoiced, expenses when incurred.
+// Cash basis: income when a payment is Finance-approved (not when the invoice
+// is raised), expenses when incurred. Revenue comes from the same
+// monthlyApprovedInvoiceRevenue() that deptProfitability uses, so the two
+// reports can't disagree on what counts as this month's revenue.
 export const profitAndLoss: RequestHandler = asyncHandler(async (req, res) => {
   const month = req.query.month as string;
   if (!month) return res.status(400).json({ error: "month (YYYY-MM) is required" });
   const { start, end } = monthBounds(month);
 
-  const invoices = await prisma.invoice.findMany({ where: { issuedAt: { gte: start, lte: end } }, include: { items: true } });
-  const invoicedIncome = invoices.reduce((s, i) => s + invoiceTotal(i.items), 0);
   // clientId only — clients aren't migrated yet (Phase 4), so the frontend
   // enriches this with a display name from its own client list.
-  const incomeDetail = invoices.map((i) => ({ invoiceNo: i.invoiceNo, clientId: i.clientId, amount: invoiceTotal(i.items), date: i.issuedAt }));
+  const { totalRevenue: invoicedIncome, incomeDetail } = await monthlyApprovedInvoiceRevenue(month);
 
   const incomeAccounts = await prisma.chartOfAccount.findMany({ where: { type: "INCOME" } });
   const journalIncomeByAccount = await Promise.all(
