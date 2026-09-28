@@ -120,7 +120,7 @@ function mapPosition(p){
   return { id:p.id, role:p.role, dept:p.dept, openings:p.openings, status:TITLECASE_FROM_API(p.status), postedDate:isoDate(p.postedDate), archived:!!p.archived };
 }
 function mapCandidate(c){
-  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate), archived:!!c.archived };
+  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate), archived:!!c.archived, hasResume:!!c.resumeFilename };
 }
 function mapNotice(n){
   return { id:n.id, title:n.title, message:n.message, postedBy:n.postedByUser?.name||"", postedDate:isoDate(n.postedDate) };
@@ -2522,7 +2522,7 @@ function hrHiring(){
   <div class="panel">
     <div class="panel-head"><h3>Candidates</h3><div class="sub">${activeCandidates.length} in pipeline</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Contact</th><th>Applied</th><th>Stage</th><th></th></tr></thead>
-      <tbody>${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td><select class="select-sm" onchange="updateCandidateStage('${c.id}',this.value)">${CANDIDATE_STAGES.map(s=>`<option value="${s}" ${s===c.stage?'selected':''}>${s}</option>`).join("")}</select></td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
+      <tbody>${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td><select class="select-sm" onchange="updateCandidateStage('${c.id}',this.value)">${CANDIDATE_STAGES.map(s=>`<option value="${s}" ${s===c.stage?'selected':''}>${s}</option>`).join("")}</select></td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${c.hasResume?`<button class="btn btn-sm ghost" onclick="downloadCandidateResume('${c.id}')" title="Download resume"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Resume</button>`:""}<button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
     </table></div>
   </div>
   ${archivedCandidates.length ? `
@@ -2573,6 +2573,27 @@ async function unarchivePosition(id){
     await loadHiring();
     toast(p.role+" reopened"); render();
   }catch(err){ toast(err.message || "Couldn't reopen position"); }
+}
+// Authenticated file download — plain <a href> can't carry the Bearer token, so fetch it as a
+// blob through the same Auth.apiFetch() every other call uses, then hand the browser a throwaway
+// object URL to save. Mirrors what a "download the actual bytes" action looks like here; every
+// other download in this app (invoice/receipt) instead prints a client-generated document, since
+// this is the one case where a real file exists on the server to fetch.
+async function downloadCandidateResume(id){
+  // Looked up rather than passed in through the onclick string — a name is free text (an
+  // apostrophe in it, e.g. "D'Souza", would break out of the single-quoted inline argument the
+  // same way an unquoted UUID did elsewhere on this board; see the Content Pipeline fix above).
+  const c = candidates.find(x=>x.id===id);
+  try{
+    const res = await Auth.apiFetch(`/api/hr/candidates/${id}/resume`);
+    if(!res.ok){ const d = await res.json().catch(()=>({})); throw new Error(d.error || "Couldn't download resume"); }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = ((c && c.name) || "resume").replace(/[^\w.-]+/g,"_") + ".pdf";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }catch(err){ toast(err.message || "Couldn't download resume"); }
 }
 async function archiveCandidate(id){
   const c = candidates.find(x=>x.id===id);

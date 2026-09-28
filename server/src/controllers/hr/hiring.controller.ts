@@ -1,8 +1,10 @@
 import { RequestHandler } from "express";
+import path from "node:path";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { nextSequentialCode } from "../../utils/sequentialCode";
+import { RESUMES_DIR } from "../../config/uploads";
 import {
   positionCreateSchema,
   positionUpdateSchema,
@@ -86,4 +88,18 @@ export const updateCandidate: RequestHandler = asyncHandler(async (req, res) => 
     afterData: parsed.data,
   });
   res.json({ candidate });
+});
+
+// HR/Admin only (same requireHRAdmin gate as everything else in this file) — the file itself
+// lives outside /public specifically so it's never reachable except through this authenticated
+// route. path.basename() on the stored filename (already just a uuid + ".pdf", never the
+// applicant's own name — see public.controller.ts) is belt-and-braces against ever resolving
+// outside RESUMES_DIR, even though nothing user-supplied reaches this path today.
+export const downloadCandidateResume: RequestHandler = asyncHandler(async (req, res) => {
+  const candidate = await prisma.candidate.findUnique({ where: { id: req.params.id } });
+  if (!candidate || !candidate.resumeFilename) return res.status(404).json({ error: "No resume on file for this candidate" });
+
+  res.download(path.join(RESUMES_DIR, path.basename(candidate.resumeFilename)), candidate.resumeOriginalName || "resume.pdf", (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: "Resume file is missing" });
+  });
 });

@@ -6,6 +6,8 @@
 // browser console's own CSP violation log.
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let positions = [];
+const MAX_RESUME_BYTES = 5 * 1024 * 1024; // matches MAX_RESUME_BYTES in server/src/config/uploads.ts — checked here too so a
+                                           // too-large file never reaches the network at all, not just the server's own check.
 
 async function loadPositions(){
   const panel = document.getElementById("positions-panel");
@@ -43,6 +45,7 @@ function openApplyModal(positionId){
   document.getElementById("f-name").value = "";
   document.getElementById("f-phone").value = "";
   document.getElementById("f-email").value = "";
+  document.getElementById("f-resume").value = "";
   document.getElementById("apply-error").innerHTML = "";
   document.getElementById("apply-submit-btn").disabled = false;
   document.getElementById("apply-submit-btn").textContent = "Submit application";
@@ -56,18 +59,28 @@ document.getElementById("apply-form").addEventListener("submit", async e => {
   const name = document.getElementById("f-name").value.trim();
   const phone = document.getElementById("f-phone").value.trim();
   const email = document.getElementById("f-email").value.trim();
+  const resumeFile = document.getElementById("f-resume").files[0];
   const errorEl = document.getElementById("apply-error");
   errorEl.innerHTML = "";
   if(!name){ errorEl.innerHTML = `<div class="error-msg">Enter your name.</div>`; return; }
   if(!phone && !email){ errorEl.innerHTML = `<div class="error-msg">Add a phone number or an email.</div>`; return; }
+  if(resumeFile){
+    if(resumeFile.type !== "application/pdf"){ errorEl.innerHTML = `<div class="error-msg">Resume must be a PDF.</div>`; return; }
+    if(resumeFile.size > MAX_RESUME_BYTES){ errorEl.innerHTML = `<div class="error-msg">Resume must be 5MB or smaller.</div>`; return; }
+  }
   const btn = document.getElementById("apply-submit-btn");
   btn.disabled = true; btn.textContent = "Submitting…";
   try{
-    const res = await fetch("/api/public/apply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ positionId, name, phone: phone || undefined, email: email || undefined }),
-    });
+    // multipart/form-data, not JSON — the resume file has to travel as a real file part, and
+    // fetch sets the correct boundary header itself once the body is a FormData (setting
+    // Content-Type by hand here would drop that boundary and break parsing server-side).
+    const form = new FormData();
+    form.set("positionId", positionId);
+    form.set("name", name);
+    if(phone) form.set("phone", phone);
+    if(email) form.set("email", email);
+    if(resumeFile) form.set("resume", resumeFile);
+    const res = await fetch("/api/public/apply", { method: "POST", body: form });
     const data = await res.json().catch(()=>({}));
     if(!res.ok) throw new Error(data.error || "Couldn't submit your application");
     closeApplyModal();

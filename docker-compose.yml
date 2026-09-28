@@ -41,6 +41,12 @@ services:
       SEED_SAMPLE_DATA: ${SEED_SAMPLE_DATA:-true}
     ports:
       - "${API_PORT:-4000}:4000"
+    volumes:
+      # Uploaded resumes (server/src/config/uploads.ts resolves this same path from inside the
+      # container) — without this, a redeploy/restart would silently wipe every resume on file,
+      # even though the Candidate rows pointing at them survive fine in Postgres.
+      - resumes_data:/app/server/uploads
 
 volumes:
   db_data:
+  resumes_data:

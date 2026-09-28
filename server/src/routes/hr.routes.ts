@@ -64,6 +64,7 @@ router.post("/positions", requireHRAdmin, hiring.createPosition);
 router.patch("/positions/:id", requireHRAdmin, hiring.updatePosition);
 router.post("/candidates", requireHRAdmin, hiring.createCandidate);
 router.patch("/candidates/:id", requireHRAdmin, hiring.updateCandidate);
+router.get("/candidates/:id/resume", requireHRAdmin, hiring.downloadCandidateResume);
 
 // Notices — visible company-wide, writes are HR/Admin only
 router.get("/notices", notices.listNotices);

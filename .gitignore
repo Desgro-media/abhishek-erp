@@ -5,6 +5,9 @@ server/dist/
 *.log
 .kilo/
 *.tsbuildinfo
+# Uploaded resumes (server/src/config/uploads.ts) — user data, not source; see the
+# docker-compose.yml volume for how this persists in a real deploy instead.
+server/uploads/
 
 # Standalone single-file UI reference/mockup builds (fake in-memory data,
 # not served by the app) — kept locally as design reference, not tracked.

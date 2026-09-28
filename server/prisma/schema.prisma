@@ -351,6 +351,14 @@ model Candidate {
   stage       CandidateStage @default(APPLIED)
   appliedDate DateTime       @default(now()) @map("applied_date")
   archived    Boolean        @default(false)
+  // Set only when they attached a resume on careers.html (optional there).
+  // Stores the generated on-disk filename, never the applicant's own —
+  // resumeOriginalName is what HR sees/downloads as, resumeFilename is
+  // what's actually on disk (see UPLOADS_DIR in public.controller.ts),
+  // keeping the two independent so a hostile filename can't do anything to
+  // the filesystem path.
+  resumeFilename     String? @map("resume_filename")
+  resumeOriginalName String? @map("resume_original_name")
 
   @@index([positionId])
   @@map("candidates")
