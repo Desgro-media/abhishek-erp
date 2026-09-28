@@ -187,7 +187,7 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
     let commission = null;
     let salesBonus = null;
     if (pending.salesPerson) {
-      commission = await createCommissionPayable(tx, { salesPerson: pending.salesPerson, sourceLabel: invoice.invoiceNo, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id });
+      commission = await createCommissionPayable(tx, { salesPerson: pending.salesPerson, sourceLabel: invoice.invoiceNo, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id, rate: d.commissionRate != null ? d.commissionRate / 100 : undefined });
       // Must run BEFORE this row is marked approved below — monthlyApprovedSales()
       // sums approved=true rows, so flipping this one first would make it count
       // itself as "prior" sales and double it into the new total. Month bucket

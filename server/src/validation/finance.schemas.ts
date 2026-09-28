@@ -38,6 +38,7 @@ export const invoicePendingPaymentSchema = z.object({
 export const invoicePendingApprovalSchema = z.object({
   accountId: z.string().uuid(),
   date: dateStr.optional(),
+  commissionRate: z.number().min(0).max(100).optional(),
 });
 
 export const payableCreateSchema = z.object({

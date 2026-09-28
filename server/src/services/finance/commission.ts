@@ -10,9 +10,10 @@ export const SALES_COMMISSION_RATE = 0.1;
 // payment approval can create one the same way once quotes are migrated.
 export async function createCommissionPayable(
   tx: Prisma.TransactionClient,
-  params: { salesPerson: string; sourceLabel: string; paymentAmount: number; dueAt: Date; sourcePaymentId: string }
+  params: { salesPerson: string; sourceLabel: string; paymentAmount: number; dueAt: Date; sourcePaymentId: string; rate?: number }
 ) {
-  const commissionAmount = Math.round(params.paymentAmount * SALES_COMMISSION_RATE);
+  const rate = params.rate ?? SALES_COMMISSION_RATE;
+  const commissionAmount = Math.round(params.paymentAmount * rate);
   if (commissionAmount <= 0) return null;
   return tx.payable.create({
     data: {
