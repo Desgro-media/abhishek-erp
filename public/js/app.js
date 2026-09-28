@@ -1680,6 +1680,9 @@ const TOPBAR_TITLES = {
     payments:["Payment Requests", ()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id).length+" request(s) on record":""],
     commission:["My Commission", ()=>{ if(!currentUser) return ""; const mine=commissionRowsByPerson().find(r=>r.name===currentUser.name); return mine&&mine.balance>0 ? inr(mine.balance)+" outstanding" : "All settled"; }],
     leaderboard:["Leaderboard", ()=>salesLeaderboardRows().length+" sales team member(s)"],
+    // No count here (unlike hr.complaints below) — complaints[] is only ever loaded for HR/Admin
+    // (see loadHrModule()), and anonymity means there's no "yours" subset to count for anyone else.
+    complaints:["Complaints","Submit something anonymously — no name or ID attached"],
   },
   hr: {
     overview:["People Overview","Team snapshot · "+employees.length+" people"],
@@ -1728,7 +1731,11 @@ function renderTopbar(){
   if(nav.module==="dashboard"){ [h,sub] = TOPBAR_TITLES.dashboard; }
   else{
     const s = nav.sub[nav.module];
-    const t = TOPBAR_TITLES[nav.module][s];
+    // Falls back to the raw tab id instead of throwing on a missing entry — this exact gap (a tab
+    // added to a module's sub[] with no matching title here) previously threw mid-render, which
+    // aborted the whole render() before it reached the content swap below and silently froze the
+    // page on whatever was showing before (nav looked like it navigated; nothing else did).
+    const t = TOPBAR_TITLES[nav.module][s] || (console.warn(`No TOPBAR_TITLES entry for ${nav.module}/${s}`), [s, ""]);
     h = t[0]; sub = typeof t[1]==="function" ? t[1]() : t[1];
   }
   document.getElementById("topbar-title").innerHTML = `<h2>${h}</h2><span>${sub}</span>`;
