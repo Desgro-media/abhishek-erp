@@ -5109,6 +5109,15 @@ function openSubmitInvoicePayment(id){
     }catch(err){ toast(err.message || "Couldn't submit payment"); }
   });
 }
+// Live-updates the ₹ preview next to the Commission % input in the approve-payment
+// modals as Finance edits the rate — amount comes off the input's own data-amount.
+function updateCommissionPreview(el){
+  const out = document.getElementById('commission-amount-preview');
+  if(!out) return;
+  const amount = Number(el.dataset.amount)||0;
+  const rate = Number(el.value)||0;
+  out.textContent = inr(Math.round(amount*rate/100));
+}
 // Finance-side: confirm which bank account the money landed in, then it lands in inv.payments and
 // the bank ledger — mirrors openApproveQuotePayment() exactly, minus the lead-conversion step
 // (an invoice always already belongs to an existing client).
@@ -5125,7 +5134,7 @@ function openApproveInvoicePayment(id, idx){
       </div>
       ${payment.salesPerson?`<div class="field-row">
         <div><label class="field-label">Salesperson</label><input class="field-input" value="${esc(payment.salesPerson)}" disabled></div>
-        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" required></div>
+        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" data-amount="${payment.amount}" oninput="updateCommissionPreview(this)" required><div class="sub" style="margin-top:4px;"><span id="commission-amount-preview">${inr(Math.round(payment.amount*SALES_COMMISSION_RATE))}</span> commission</div></div>
       </div>`:''}
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Approve &amp; confirm</button></div></div>
@@ -5418,7 +5427,7 @@ function openApproveQuotePayment(quoteId, idx){
       </div>
       ${q.createdBy?`<div class="field-row">
         <div><label class="field-label">Salesperson</label><input class="field-input" value="${esc(q.createdBy)}" disabled></div>
-        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" required></div>
+        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" data-amount="${payment.amount}" oninput="updateCommissionPreview(this)" required><div class="sub" style="margin-top:4px;"><span id="commission-amount-preview">${inr(Math.round(payment.amount*SALES_COMMISSION_RATE))}</span> commission</div></div>
       </div>`:''}
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Approve &amp; confirm</button></div></div>
