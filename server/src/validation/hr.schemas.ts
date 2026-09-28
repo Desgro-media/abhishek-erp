@@ -2,8 +2,16 @@ import { z } from "zod";
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
 
+// Trims and collapses internal runs of whitespace (e.g. a stray double space typed between first
+// and last name) so an employee's name always matches byte-for-byte everywhere else it's stored —
+// commission payables, invoice/quote salesPerson fields, client assignment — all of which compare
+// this string exactly rather than fuzzily. An untrimmed duplicate silently breaks that matching
+// (see the Sruthi R commission bug: "Sruthi  R" in Employee vs "Sruthi R" everywhere else) without
+// ever looking wrong on screen.
+const employeeName = z.string().min(1).transform(s => s.trim().replace(/\s+/g, " "));
+
 export const employeeCreateSchema = z.object({
-  name: z.string().min(1),
+  name: employeeName,
   dept: z.string().min(1),
   role: z.string().min(1),
   dob: dateStr.optional(),
@@ -25,7 +33,7 @@ export const employeeCreateSchema = z.object({
 });
 
 export const employeeUpdateSchema = z.object({
-  name: z.string().min(1).optional(),
+  name: employeeName.optional(),
   dept: z.string().min(1).optional(),
   role: z.string().min(1).optional(),
   dob: dateStr.optional(),
