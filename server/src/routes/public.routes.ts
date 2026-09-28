@@ -1,6 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { listOpenPositionsPublic, submitApplicationPublic } from "../controllers/public.controller";
+import { listOpenPositionsPublic, submitApplicationPublic, handleResumeUpload } from "../controllers/public.controller";
 
 const router = Router();
 
@@ -17,6 +17,8 @@ const applyRateLimiter = rateLimit({
 });
 
 router.get("/positions", listOpenPositionsPublic);
-router.post("/apply", applyRateLimiter, submitApplicationPublic);
+// Body is multipart/form-data (the optional resume file plus the same text fields as before) —
+// handleResumeUpload parses it and populates req.file before submitApplicationPublic runs.
+router.post("/apply", applyRateLimiter, handleResumeUpload, submitApplicationPublic);
 
 export default router;
