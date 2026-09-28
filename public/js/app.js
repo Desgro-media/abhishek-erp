@@ -3359,7 +3359,10 @@ function openAddPosition(){
   });
 }
 function openApplicationLink(){
-  const link = "https://careers.desgromedia.com/apply";
+  // Wherever this ERP is actually deployed (test.desgromedia.com today, the real domain in
+  // prod) — careers.html is served from the same origin, no separate hosting/DNS needed, and
+  // this can never drift into a fake/dead link the way a hardcoded domain string would.
+  const link = window.location.origin + "/careers.html";
   const open = openPositions.filter(p=>p.status==="Open");
   const listing = open.map(p=>`• ${p.role} (${p.dept}) — ${p.openings} opening${p.openings>1?"s":""}`).join("\n");
   const message = open.length
