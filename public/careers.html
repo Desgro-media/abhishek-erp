@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Careers · DesGro Media</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* Same brand tokens as index.html (see that file's comment for the source) — this page is
+     deliberately standalone (no app.js, no login) since it's the one page anyone on the
+     internet can open, but it should still look like it belongs to the same product. */
+  :root{
+    --paper:#F6F4F3; --surface:#FFFFFF; --surface-sunk:#EFEBEA;
+    --ink:#1B1515; --ink-soft:#6B5F5D; --ink-faint:#9C908E; --line:#E3DDDC;
+    --brand:#EB2027; --brand-strong:#A8141A; --brand-soft:#FBE3E4;
+    --pos:#1F6B45; --pos-soft:#E4F1E9; --neg:#C31A20; --neg-soft:#FBE6E6;
+    --shadow: 0 1px 2px rgba(20,16,16,.05), 0 8px 24px -12px rgba(20,16,16,.14);
+    --radius:12px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#141010; --surface:#1D1717; --surface-sunk:#241D1D;
+      --ink:#EDE7E6; --ink-soft:#AB9F9D; --ink-faint:#786C6A; --line:#332B2A;
+      --brand:#FF4A50; --brand-strong:#EB2027; --brand-soft:rgba(235,32,39,.16);
+      --pos:#57B885; --pos-soft:rgba(87,184,133,.14); --neg:#F0787C; --neg-soft:rgba(240,120,124,.14);
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 28px -14px rgba(0,0,0,.6);
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--ink);font-family:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:640px;margin:0 auto;padding:40px 20px 80px;}
+  .brand-bar{width:34px;height:6px;border-radius:2px;background:linear-gradient(90deg,var(--brand) 0%,#8C0F14 100%);margin-bottom:10px;}
+  .wordmark{font-weight:800;font-size:21px;letter-spacing:-.01em;}
+  .wordmark small{display:block;font-weight:600;font-size:10.5px;letter-spacing:.14em;color:var(--ink-faint);}
+  h1{font-size:26px;font-weight:800;margin:28px 0 6px;text-wrap:balance;}
+  .lede{color:var(--ink-soft);margin-bottom:28px;}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;margin-bottom:16px;}
+  .role-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 4px;border-bottom:1px solid var(--line);}
+  .role-row:last-child{border-bottom:none;}
+  .role-name{font-weight:700;font-size:15px;}
+  .role-meta{color:var(--ink-faint);font-size:12.5px;margin-top:2px;}
+  button{font:inherit;cursor:pointer;}
+  .btn{padding:9px 16px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-weight:700;font-size:13px;white-space:nowrap;}
+  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff;}
+  .btn.primary:disabled{opacity:.6;cursor:default;}
+  .field-label{display:block;font-size:12.5px;font-weight:700;color:var(--ink-soft);margin:14px 0 5px;}
+  input,select,textarea{font:inherit;width:100%;background:var(--surface-sunk);border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:var(--ink);}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--brand);outline-offset:1px;}
+  .empty{color:var(--ink-faint);padding:8px 4px;}
+  .error-msg{background:var(--neg-soft);color:var(--neg);border-radius:8px;padding:10px 12px;font-size:13px;font-weight:600;margin-top:14px;}
+  .success{text-align:center;padding:20px 4px;}
+  .success .icon-circle{width:52px;height:52px;border-radius:50%;background:var(--pos-soft);color:var(--pos);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:26px;}
+  #apply-modal{position:fixed;inset:0;background:rgba(10,6,6,.45);display:flex;align-items:center;justify-content:center;padding:20px;z-index:10;}
+  #apply-modal[hidden]{display:none;}
+  #apply-modal .sheet{background:var(--surface);border-radius:14px;max-width:440px;width:100%;padding:24px;box-shadow:0 20px 60px -10px rgba(10,6,6,.35);}
+  .sheet-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:4px;}
+  .close-x{background:none;border:none;color:var(--ink-faint);font-size:20px;line-height:1;padding:2px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand-bar"></div>
+  <div class="wordmark">DESGRO<small>MEDIA</small></div>
+  <h1>Join DesGro Media</h1>
+  <div class="lede" id="lede">Loading current openings…</div>
+  <div class="panel" id="positions-panel"></div>
+</div>
+
+<div id="apply-modal" hidden>
+  <div class="sheet">
+    <div class="sheet-head">
+      <div>
+        <div style="font-weight:800;font-size:17px;" id="apply-role-title">Apply</div>
+        <div class="role-meta" id="apply-role-meta"></div>
+      </div>
+      <button class="close-x" onclick="closeApplyModal()" aria-label="Close">&times;</button>
+    </div>
+    <form id="apply-form">
+      <input type="hidden" id="f-position-id">
+      <label class="field-label">Full name</label>
+      <input id="f-name" required placeholder="Your name">
+      <label class="field-label">Phone</label>
+      <input id="f-phone" type="tel" placeholder="+91…">
+      <label class="field-label">Email</label>
+      <input id="f-email" type="email" placeholder="you@example.com">
+      <div class="lede" style="font-size:12px;margin:8px 0 0;">Give us a phone number or an email, whichever's easiest to reach you on.</div>
+      <div id="apply-error"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
+        <button type="button" class="btn" onclick="closeApplyModal()">Cancel</button>
+        <button type="submit" class="btn primary" id="apply-submit-btn">Submit application</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let positions = [];
+
+async function loadPositions(){
+  const panel = document.getElementById("positions-panel");
+  const lede = document.getElementById("lede");
+  try{
+    const res = await fetch("/api/public/positions");
+    const data = await res.json();
+    positions = data.positions || [];
+    if(!positions.length){
+      lede.textContent = "No open roles right now — check back soon.";
+      panel.innerHTML = `<div class="empty">Nothing open at the moment.</div>`;
+      return;
+    }
+    lede.textContent = "We're hiring — pick a role below to apply.";
+    panel.innerHTML = positions.map(p => `
+      <div class="role-row">
+        <div>
+          <div class="role-name">${esc(p.role)}</div>
+          <div class="role-meta">${esc(p.dept)} · ${p.openings} opening${p.openings===1?"":"s"}</div>
+        </div>
+        <button class="btn primary" onclick="openApplyModal('${p.id}')">Apply</button>
+      </div>`).join("");
+  }catch(err){
+    lede.textContent = "";
+    panel.innerHTML = `<div class="error-msg">Couldn't load openings right now — please try again shortly.</div>`;
+  }
+}
+
+function openApplyModal(positionId){
+  const p = positions.find(x => x.id === positionId);
+  if(!p) return;
+  document.getElementById("f-position-id").value = p.id;
+  document.getElementById("apply-role-title").textContent = "Apply — " + p.role;
+  document.getElementById("apply-role-meta").textContent = p.dept;
+  document.getElementById("f-name").value = "";
+  document.getElementById("f-phone").value = "";
+  document.getElementById("f-email").value = "";
+  document.getElementById("apply-error").innerHTML = "";
+  document.getElementById("apply-submit-btn").disabled = false;
+  document.getElementById("apply-submit-btn").textContent = "Submit application";
+  document.getElementById("apply-modal").hidden = false;
+}
+function closeApplyModal(){ document.getElementById("apply-modal").hidden = true; }
+
+document.getElementById("apply-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const positionId = document.getElementById("f-position-id").value;
+  const name = document.getElementById("f-name").value.trim();
+  const phone = document.getElementById("f-phone").value.trim();
+  const email = document.getElementById("f-email").value.trim();
+  const errorEl = document.getElementById("apply-error");
+  errorEl.innerHTML = "";
+  if(!name){ errorEl.innerHTML = `<div class="error-msg">Enter your name.</div>`; return; }
+  if(!phone && !email){ errorEl.innerHTML = `<div class="error-msg">Add a phone number or an email.</div>`; return; }
+  const btn = document.getElementById("apply-submit-btn");
+  btn.disabled = true; btn.textContent = "Submitting…";
+  try{
+    const res = await fetch("/api/public/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ positionId, name, phone: phone || undefined, email: email || undefined }),
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || "Couldn't submit your application");
+    closeApplyModal();
+    document.getElementById("positions-panel").innerHTML = `
+      <div class="success">
+        <div class="icon-circle">✓</div>
+        <div style="font-weight:800;font-size:17px;margin-bottom:6px;">Application received</div>
+        <div class="lede">Thanks for applying — we'll be in touch if it's a fit.</div>
+      </div>`;
+    document.getElementById("lede").textContent = "";
+  }catch(err){
+    errorEl.innerHTML = `<div class="error-msg">${esc(err.message)}</div>`;
+    btn.disabled = false; btn.textContent = "Submit application";
+  }
+});
+
+loadPositions();
+</script>
+</body>
+</html>
