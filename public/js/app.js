@@ -5123,6 +5123,10 @@ function openApproveInvoicePayment(id, idx){
         <div><label class="field-label">Credited to account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Date confirmed</label><input class="field-input" type="date" name="date" value="${payment.date||TODAY}" required></div>
       </div>
+      ${payment.salesPerson?`<div class="field-row">
+        <div><label class="field-label">Salesperson</label><input class="field-input" value="${esc(payment.salesPerson)}" disabled></div>
+        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" required></div>
+      </div>`:''}
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Approve &amp; confirm</button></div></div>
     </form>`);
@@ -5130,11 +5134,12 @@ function openApproveInvoicePayment(id, idx){
     e.preventDefault();
     const f = new FormData(e.target);
     const accountId = f.get("accountId"), date = f.get("date");
+    const commissionRate = payment.salesPerson ? Number(f.get("commissionRate")) : undefined;
     try{
-      await apiJson(`/api/finance/invoices/${id}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
+      await apiJson(`/api/finance/invoices/${id}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date, commissionRate }) });
       await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports(), loadApprovedReceipts()]);
       const updated = invoices.find(x=>x.id===id);
-      const commissionAmount = payment.salesPerson ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
+      const commissionAmount = payment.salesPerson ? Math.round(payment.amount * (commissionRate/100)) : 0;
       toast("Payment approved"+(invoiceBalance(updated)<=0?" — invoice fully settled":" — "+inr(invoiceBalance(updated))+" still outstanding")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+payment.salesPerson:"")); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't approve payment"); }
   });
@@ -5411,6 +5416,10 @@ function openApproveQuotePayment(quoteId, idx){
         <div><label class="field-label">Credited to account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Date confirmed</label><input class="field-input" type="date" name="date" value="${payment.date||TODAY}" required></div>
       </div>
+      ${q.createdBy?`<div class="field-row">
+        <div><label class="field-label">Salesperson</label><input class="field-input" value="${esc(q.createdBy)}" disabled></div>
+        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" required></div>
+      </div>`:''}
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Approve &amp; confirm</button></div></div>
     </form>`);
@@ -5418,6 +5427,7 @@ function openApproveQuotePayment(quoteId, idx){
     e.preventDefault();
     const f = new FormData(e.target);
     const accountId = f.get("accountId"), date = f.get("date");
+    const commissionRate = q.createdBy ? Number(f.get("commissionRate")) : undefined;
     // The one real fix this migration owed the old prototype: this used to
     // mutate the local invoices/payables/clients caches directly (no bank
     // ledger entry, no persistence, invisible to other users). Now it's a
@@ -5427,9 +5437,9 @@ function openApproveQuotePayment(quoteId, idx){
     try{
       const wasLead = !q.clientId && q.leadId;
       const leadName = wasLead ? (leadById(q.leadId)||{}).name : null;
-      const result = await apiJson(`/api/crm/quotes/${quoteId}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date }) });
+      const result = await apiJson(`/api/crm/quotes/${quoteId}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date, commissionRate }) });
       await Promise.all([loadQuotes(), loadClients(), loadLeads(), loadInvoices(), loadPayables(), loadBankAccounts(), refreshFinanceReports(), loadApprovedReceipts()]);
-      const commissionAmount = q.createdBy ? Math.round(payment.amount * SALES_COMMISSION_RATE) : 0;
+      const commissionAmount = q.createdBy ? Math.round(payment.amount * (commissionRate/100)) : 0;
       toast("Payment approved"+(result.balance<=0?" — quote fully invoiced":" — "+inr(result.balance)+" still outstanding")+(wasLead?" · "+leadName+" is now a client":"")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+q.createdBy:""));
       closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't approve payment"); }

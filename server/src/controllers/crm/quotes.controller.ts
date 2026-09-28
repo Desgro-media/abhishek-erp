@@ -278,7 +278,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
     let commission = null;
     let salesBonus = null;
     if (quote.createdBy) {
-      commission = await createCommissionPayable(tx, { salesPerson: quote.createdBy, sourceLabel: quote.quoteCode, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id });
+      commission = await createCommissionPayable(tx, { salesPerson: quote.createdBy, sourceLabel: quote.quoteCode, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id, rate: d.commissionRate != null ? d.commissionRate / 100 : undefined });
       // Must run BEFORE this row is marked approved below — same reasoning as
       // the invoice pending-payment approval path, see salesTarget.ts.
       salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: quote.createdBy, paymentAmount: Number(pending.amount), date: approvedAt, sourcePaymentId: payment.id });
