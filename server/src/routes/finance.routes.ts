@@ -65,6 +65,7 @@ router.delete("/coa/:id", requireFinanceAdmin, coa.removeAccount);
 
 router.get("/journal", requireFinanceAdmin, journal.listJournalEntries);
 router.post("/journal", requireFinanceAdmin, journal.createJournalEntry);
+router.delete("/journal/:id", requireFinanceAdmin, journal.deleteJournalEntry);
 
 // Commissions — Finance/Admin sees everyone; Sales sees/acts on their own.
 router.get("/commissions", requireFinanceAdmin, commissions.listCommissionsByPerson);

@@ -12,9 +12,9 @@ export const listJournalEntries: RequestHandler = asyncHandler(async (req, res) 
   res.json({ entries });
 });
 
-// Append-only per the project brief — no update/delete endpoint exists.
-// A correction is a new entry (e.g. a reversing entry), unlike the old
-// prototype which rewrote entries and reposted ledger rows in place.
+// No update endpoint — a correction is still meant to be a new entry (e.g. a
+// reversing entry), not an edit to history. Deletion is allowed (below) for
+// a genuine mistake, same as Expenses/Payables.
 export const createJournalEntry: RequestHandler = asyncHandler(async (req, res) => {
   const parsed = journalEntryCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
@@ -73,4 +73,25 @@ export const createJournalEntry: RequestHandler = asyncHandler(async (req, res) 
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_JOURNAL_ENTRY_CREATE", entityType: "JournalEntry", entityId: entry.id, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(201).json({ entry });
+});
+
+// Deletes the entry and, since a bank-account line also posted a real
+// BankTransaction (refType=JOURNAL, refId=entry.id) when it was created,
+// that transaction too — otherwise it'd be an orphaned cash movement still
+// counted in the account balance with no journal entry to explain it.
+export const deleteJournalEntry: RequestHandler = asyncHandler(async (req, res) => {
+  const before = await prisma.journalEntry.findUnique({ where: { id: req.params.id }, include: INCLUDE });
+  if (!before) return res.status(404).json({ error: "Journal entry not found" });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.bankTransaction.deleteMany({ where: { refType: "JOURNAL", refId: before.id } });
+    await tx.journalEntry.delete({ where: { id: before.id } });
+  });
+
+  await recordAudit({
+    userId: req.user!.sub, action: "FIN_JOURNAL_ENTRY_DELETE", entityType: "JournalEntry", entityId: before.id,
+    beforeData: { ...before, lines: before.lines.map((l) => ({ ...l, amount: l.amount.toString() })) },
+    ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null,
+  });
+  res.status(204).send();
 });
