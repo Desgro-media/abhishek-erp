@@ -1526,6 +1526,7 @@ const MODULES = [
   ]},
   {id:"accounts", label:"Accounts", icon:"i-wallet", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
+    {id:"quotes", label:"Quotes", icon:"i-handshake", count:()=>quotes.filter(q=>q.status==="Submitted to Finance").length},
     {id:"invoices", label:"Invoices", icon:"i-receipt", count:()=>invoices.filter(i=>invoiceStatus(i)==="Overdue").length},
     {id:"receipts", label:"Payment Receipts", icon:"i-receipt", count:()=>pendingSalesPayments().length},
     {id:"requests", label:"Payment Requests", icon:"i-coins", count:()=>pendingAdvanceDisbursements.length+pendingPaymentRequests().length},
@@ -1533,7 +1534,6 @@ const MODULES = [
     {id:"payables", label:"Payables", icon:"i-coins", count:()=>payables.filter(p=>payableStatus(p)!=="Paid").length},
     {id:"expenses", label:"Expenses", icon:"i-file"},
     {id:"banks", label:"Banks", icon:"i-building"},
-    {id:"quotes", label:"Quotes", icon:"i-handshake", count:()=>quotes.filter(q=>q.status==="Submitted to Finance").length},
     {id:"commissions", label:"Commissions", icon:"i-percent", count:()=>payables.filter(p=>p.category==="Commission" && payableBalance(p)>0).length},
     {id:"coa", label:"Chart of Accounts", icon:"i-sliders"},
     {id:"journal", label:"Journal", icon:"i-edit"},
