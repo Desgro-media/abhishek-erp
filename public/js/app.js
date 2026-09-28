@@ -4737,6 +4737,20 @@ function commissionRowsByPerson(){
 }
 // Every Sales-dept employee, ranked by all-time commission earned (₹0 for anyone with none yet, so a
 // new hire still appears) — powers the Leaderboard tab and the rank shown on a Sales sign-in's overview.
+// Groups one sales person's commission payables by month (the YYYY-MM of
+// each entry's due date), newest first, with a subtotal per month — powers
+// the monthly breakdown shown when a name is expanded in "Commission by
+// sales person" below (Accounts > Commissions), answering "how much did
+// they earn each month" without needing the page's own month filter.
+function groupCommissionsByMonth(mine){
+  const byMonth = {};
+  mine.forEach(p=>{ const m = p.due && p.due.length>=7 ? p.due.slice(0,7) : 'Unknown'; (byMonth[m] ||= []).push(p); });
+  return Object.keys(byMonth).sort().reverse().map(m=>({
+    label: m==='Unknown' ? 'Unknown date' : monthLabel(m),
+    items: byMonth[m].slice().sort((a,b)=>b.due.localeCompare(a.due)),
+    total: byMonth[m].reduce((s,p)=>s+p.amount,0),
+  }));
+}
 function salesLeaderboardRows(){
   const commission = commissionRowsByPerson();
   return assignableEmployees().filter(e=>e.dept==='Sales').map(e=>{
@@ -4807,14 +4821,19 @@ function acctCommissions(){
             <span>${pill(statusLabel, r.balance<=0?'pos':'warn')}</span>
           </summary>
           <div class="report-detail">
-            ${r.mine.slice().sort((a,b)=>b.due.localeCompare(a.due)).map(p=>{ const bal=payableBalance(p); return `<div class="report-detail-row" style="align-items:center;">
-              <span>${esc(p.payee)} <span class="faint">· ${fmtDateShort(p.due)}</span></span>
-              <span style="display:flex;gap:10px;align-items:center;">
-                <span class="amt mono">${inr(p.amount)}${bal>0 && bal<p.amount?` <span class="faint">(${inr(bal)} left)</span>`:''}</span>
-                ${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11px;">paid in full</span>`}
-                ${(p.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}
-              </span>
-            </div>`; }).join('')}
+            ${groupCommissionsByMonth(r.mine).map(g=>`<div class="report-detail-month">
+              <div class="report-detail-row" style="font-weight:700;color:var(--ink-soft);">
+                <span>${esc(g.label)}</span><span class="amt mono">${inr(g.total)}</span>
+              </div>
+              ${g.items.map(p=>{ const bal=payableBalance(p); return `<div class="report-detail-row" style="align-items:center;padding-left:10px;">
+                <span>${esc(p.payee)} <span class="faint">· ${fmtDateShort(p.due)}</span></span>
+                <span style="display:flex;gap:10px;align-items:center;">
+                  <span class="amt mono">${inr(p.amount)}${bal>0 && bal<p.amount?` <span class="faint">(${inr(bal)} left)</span>`:''}</span>
+                  ${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11px;">paid in full</span>`}
+                  ${(p.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}
+                </span>
+              </div>`; }).join('')}
+            </div>`).join('')}
           </div>
         </details>
       </td></tr>`; }).join(""):`<tr><td colspan="5"><div class="empty">No commission earned${commissionsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
