@@ -4580,6 +4580,11 @@ function deleteWarningFor(kind, id){
     w += q.invoiceId ? ` It's already been invoiced (${esc(q.invoiceId)}) — the payment ledger is append-only, so this can't be deleted.` : (quotePendingAmount(q)>0 ? ` The ${inr(quotePendingAmount(q))} payment waiting on Finance is discarded with it.` : "") + " This can't be undone.";
     return {label:"this quote", warning:w};
   }
+  if(kind==='journal'){
+    const j = journalEntries.find(x=>x.id===id); if(!j) return {label:"this journal entry", warning:fallback};
+    const bankLine = j.lines.some(l=>l.account && l.account.startsWith('bank:'));
+    return {label:"this journal entry", warning:`"${esc(j.memo)}" — ${inr(journalEntryTotal(j))}.${bankLine?' Its bank ledger posting is removed with it, so the account balance updates too.':''} This can't be undone.`};
+  }
   if(kind==='invoice'){
     const inv = invoices.find(x=>x.id===id); if(!inv) return {label:"this invoice", warning:fallback};
     const blocked = (inv.payments||[]).length>0;
@@ -4624,6 +4629,9 @@ async function performDelete(kind, id){
     payable: { url:`/api/finance/payables/${id}`, reload: loadPayables, label:"Payable" },
     expense: { url:`/api/finance/expenses/${id}`, reload: loadExpenses, label:"Expense" },
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
+    // A bank-line journal entry also posted a real ledger row, so its removal changes account
+    // balances — refresh banks and the finance reports (which read off the ledger) alongside it.
+    journal: { url:`/api/finance/journal/${id}`, reload: async ()=>{ await Promise.all([loadJournalEntries(), loadBankAccounts()]); await refreshFinanceReports(); }, label:"Journal entry" },
   };
   const ep = ENDPOINTS[kind];
   if(!ep) return;
@@ -5507,12 +5515,12 @@ function acctJournal(){
   const filtered = journalEntries.filter(j=>matchesDateFilter(j.date, journalMonthFilter));
   const sorted = filtered.slice().sort((a,b)=>b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
   return `
-  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>For anything the structured forms (Invoices, Payables, Expenses, Banks) don't capture — write-offs, accruals, corrections. Each entry must balance (total debits = total credits). Debit increases an Asset or Expense; Credit increases a Liability or Income. A line against a bank account posts straight to that account's ledger. Entries are permanent once posted — a correction goes in as a new entry, never an edit to history.</div></div>
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>For anything the structured forms (Invoices, Payables, Expenses, Banks) don't capture — write-offs, accruals, corrections. Each entry must balance (total debits = total credits). Debit increases an Asset or Expense; Credit increases a Liability or Income. A line against a bank account posts straight to that account's ledger. There's no editing a posted entry — a correction is best made as a new entry, though a genuine mistake can be deleted.</div></div>
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setJournalMonthFilter(this.value)">${dateFilterOptions(journalEntries.map(j=>j.date), journalMonthFilter)}</select></div><button class="btn primary" onclick="openAddJournalEntry()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New journal entry</button></div>
   <div class="panel">
     <div class="panel-head"><h3>Journal entries</h3><div class="sub">${filtered.length} of ${journalEntries.length}${dateFilterSuffix(journalMonthFilter,'posted in')}</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Memo</th><th>Lines</th><th class="num">Amount</th></tr></thead>
-      <tbody>${sorted.map(j=>`<tr><td class="muted">${fmtDate(j.date)}</td><td style="font-weight:600;">${esc(j.memo)}</td><td class="muted" style="font-size:12px;">${j.lines.map(l=>`${esc(journalAccountLabel(l.account))} ${l.side==='debit'?'Dr':'Cr'} ${inr(l.amount)}`).join(' · ')}</td><td class="num mono">${inr(journalEntryTotal(j))}</td></tr>`).join("") || `<tr><td colspan="4"><div class="empty">No journal entries${journalMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Memo</th><th>Lines</th><th class="num">Amount</th><th></th></tr></thead>
+      <tbody>${sorted.map(j=>`<tr><td class="muted">${fmtDate(j.date)}</td><td style="font-weight:600;">${esc(j.memo)}</td><td class="muted" style="font-size:12px;">${j.lines.map(l=>`${esc(journalAccountLabel(l.account))} ${l.side==='debit'?'Dr':'Cr'} ${inr(l.amount)}`).join(' · ')}</td><td class="num mono">${inr(journalEntryTotal(j))}</td><td><div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openConfirmDelete('journal','${j.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">No journal entries${journalMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
