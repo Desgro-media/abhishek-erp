@@ -4788,18 +4788,22 @@ function acctCommissions(){
       <div><h3>Monthly sales target &amp; bonus</h3><div class="sub">Target ${inr(salesPolicy.monthlyTarget)} · ${Math.round(salesPolicy.bonusRate*100)}% bonus on sales past target, on top of the ${Math.round(SALES_COMMISSION_RATE*100)}% flat commission above</div></div>
       <button class="btn btn-sm ghost" onclick="openEditSalesPolicy()"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>
     </div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">This month</th><th class="num">Target</th><th></th><th class="num">Bonus earned</th></tr></thead>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">This month</th><th class="num">Target</th><th></th><th class="num">Commission (${Math.round(SALES_COMMISSION_RATE*100)}%)</th><th class="num">Bonus earned</th></tr></thead>
       <tbody>${salesTargets.length ? salesTargets.map(r=>{
         const pct = r.target>0 ? Math.min(100, Math.round(r.monthlySales/r.target*100)) : 0;
         const over = r.monthlySales>=r.target;
+        // Flat commission credited this calendar month — same Commission payables the table below
+        // rolls up all-time, filtered here to entries due this month for this sales person.
+        const commissionThisMonth = commissionPayables.filter(p=>p.salesPerson===r.salesPerson && p.due && p.due.slice(0,7)===TODAY.slice(0,7)).reduce((s,p)=>s+p.amount,0);
         return `<tr>
           <td>${esc(r.salesPerson)}</td>
           <td class="num mono">${inr(r.monthlySales)}</td>
           <td class="num mono muted">${inr(r.target)}</td>
           <td style="min-width:120px;"><div class="bar-track"><div class="bar-fill" style="width:${pct}%;${over?'background:var(--pos);':''}"></div></div></td>
+          <td class="num mono ${commissionThisMonth>0?'pos':''}">${commissionThisMonth>0?inr(commissionThisMonth):'—'}</td>
           <td class="num mono ${r.bonusEarnedThisMonth>0?'pos':''}">${r.bonusEarnedThisMonth>0?inr(r.bonusEarnedThisMonth):'—'}</td>
         </tr>`;
-      }).join('') : `<tr><td colspan="5"><div class="empty">No Sales-dept employees yet.</div></td></tr>`}</tbody>
+      }).join('') : `<tr><td colspan="6"><div class="empty">No Sales-dept employees yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>
   ${pendingWithdrawals.length || decidedWithdrawals.length ? `<div class="panel">
