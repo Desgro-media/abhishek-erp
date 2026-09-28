@@ -666,7 +666,7 @@ function mapInvoice(i){
 function mapPayable(p){
   return {
     id: p.id, category: TITLECASE_FROM_API(p.category), payee: p.payee, salesPerson: p.salesPerson || undefined,
-    amount: Number(p.amount), due: isoDate(p.dueAt),
+    amount: Number(p.amount), due: isoDate(p.dueAt), createdAt: isoDate(p.createdAt),
     payments: p.payments.map(pm=>({id:pm.id, amount:Number(pm.amount), date:isoDate(pm.paidDate), accountId:pm.accountId, note:pm.note})),
   };
 }
@@ -4793,8 +4793,12 @@ function acctCommissions(){
         const pct = r.target>0 ? Math.min(100, Math.round(r.monthlySales/r.target*100)) : 0;
         const over = r.monthlySales>=r.target;
         // Flat commission credited this calendar month — same Commission payables the table below
-        // rolls up all-time, filtered here to entries due this month for this sales person.
-        const commissionThisMonth = commissionPayables.filter(p=>p.salesPerson===r.salesPerson && p.due && p.due.slice(0,7)===TODAY.slice(0,7)).reduce((s,p)=>s+p.amount,0);
+        // rolls up all-time, filtered here to this sales person's entries created this month.
+        // Bucketed by createdAt (set the instant Finance approves the payment), not by the
+        // entry's own due date — due is the payment's (sometimes backdated) collection date, and
+        // r.monthlySales/bonusEarnedThisMonth above are both bucketed by approval time too, so this
+        // has to match that or it silently disagrees with "This month" in the same row.
+        const commissionThisMonth = commissionPayables.filter(p=>p.salesPerson===r.salesPerson && p.createdAt && p.createdAt.slice(0,7)===TODAY.slice(0,7)).reduce((s,p)=>s+p.amount,0);
         return `<tr>
           <td>${esc(r.salesPerson)}</td>
           <td class="num mono">${inr(r.monthlySales)}</td>
