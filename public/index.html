@@ -105,6 +105,13 @@
   .search{display:flex;align-items:center;gap:8px;background:var(--surface-sunk);border:1px solid var(--line);border-radius:8px;padding:7px 12px;color:var(--ink-faint);font-size:var(--fs-sm);width:210px;}
   .search input{background:none;border:none;color:var(--ink);width:100%;outline:none;}
   .search input::placeholder{color:var(--ink-faint);}
+  .search-results{position:absolute;top:calc(100% + 6px);left:0;width:340px;max-height:70vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-lg);z-index:20;padding:6px;}
+  .search-results .group-label{font-size:10.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-faint);padding:8px 10px 4px;}
+  .search-results .result-row{display:flex;flex-direction:column;gap:1px;width:100%;text-align:left;padding:8px 10px;border-radius:7px;border:none;background:none;color:var(--ink);cursor:pointer;}
+  .search-results .result-row:hover, .search-results .result-row.active{background:var(--surface-sunk);}
+  .search-results .result-row .title{font-size:13px;font-weight:700;}
+  .search-results .result-row .subtitle{font-size:11.5px;color:var(--ink-faint);}
+  .search-results .empty-msg{padding:14px 10px;font-size:12.5px;color:var(--ink-faint);}
   .icon-btn{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--ink-soft);border:1px solid var(--line);background:var(--surface);flex:none;}
   .avatar{width:34px;height:34px;border-radius:8px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12.5px;flex:none;}
   .mini-avatar{width:26px;height:26px;border-radius:7px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;flex:none;}
@@ -379,7 +386,11 @@
     <div class="topbar">
       <div class="topbar-title" id="topbar-title"></div>
       <div class="topbar-right">
-        <div class="search"><svg class="icon" style="width:14px;height:14px"><use href="#i-search"/></svg><input placeholder="Search…" id="global-search"></div>
+        <div class="search" style="position:relative;">
+          <svg class="icon" style="width:14px;height:14px"><use href="#i-search"/></svg>
+          <input placeholder="Search…" id="global-search" autocomplete="off" oninput="onGlobalSearchInput(this.value)" onkeydown="onGlobalSearchKeydown(event)">
+          <div id="global-search-results" class="search-results" hidden></div>
+        </div>
         <div class="icon-btn"><svg class="icon"><use href="#i-bell"/></svg></div>
         <div class="avatar" id="topbar-avatar">TH</div>
       </div>
