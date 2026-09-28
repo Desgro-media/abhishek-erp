@@ -1741,6 +1741,70 @@ function renderTopbar(){
   document.getElementById("topbar-title").innerHTML = `<h2>${h}</h2><span>${sub}</span>`;
 }
 
+/* ===================== GLOBAL SEARCH (topbar) ===================== */
+// One shared box, same on every page, searching across every entity type the signed-in caller can
+// already see elsewhere — /api/search itself scopes each type by the exact same rule its own list
+// endpoint uses, so results here can never show more than that role already can. By the time this
+// runs, whichever arrays a given role is allowed to search (clients/marketingLeads/quotes/invoices/
+// employees) are already loaded from the initial boot sequence, so a result's "open" action can
+// call straight into the existing edit/detail modal for it — no extra fetch needed.
+let globalSearchDebounce = null, globalSearchResults = [], globalSearchActive = -1;
+function onGlobalSearchInput(v){
+  clearTimeout(globalSearchDebounce);
+  const q = v.trim();
+  if(q.length < 2){ closeGlobalSearch(); return; }
+  globalSearchDebounce = setTimeout(async ()=>{
+    try{
+      const { results } = await apiJson(`/api/search?q=${encodeURIComponent(q)}`);
+      globalSearchResults = results; globalSearchActive = -1;
+      renderGlobalSearchResults();
+    }catch(err){ console.error("Search failed", err); }
+  }, 250);
+}
+function renderGlobalSearchResults(){
+  const box = document.getElementById("global-search-results");
+  if(!box) return;
+  if(!globalSearchResults.length){ box.innerHTML = `<div class="empty-msg">No matches.</div>`; box.hidden = false; return; }
+  const groups = {};
+  globalSearchResults.forEach(r=>{ (groups[r.type] ||= []).push(r); });
+  box.innerHTML = Object.entries(groups).map(([type, rows])=>`
+    <div class="group-label">${esc(type)}${rows.length>1?"s":""}</div>
+    ${rows.map(r=>{ const i = globalSearchResults.indexOf(r); return `<button type="button" class="result-row ${i===globalSearchActive?'active':''}" onmousedown="event.preventDefault();openGlobalSearchResult('${r.type}','${esc(r.id)}')"><span class="title">${esc(r.title)}</span><span class="subtitle">${esc(r.subtitle)}</span></button>`; }).join("")}
+  `).join("");
+  box.hidden = false;
+}
+function closeGlobalSearch(){
+  const box = document.getElementById("global-search-results");
+  if(box){ box.hidden = true; box.innerHTML = ""; }
+  globalSearchResults = []; globalSearchActive = -1;
+}
+function onGlobalSearchKeydown(e){
+  if(e.key==="Escape"){ e.target.blur(); closeGlobalSearch(); return; }
+  if(!globalSearchResults.length) return;
+  if(e.key==="ArrowDown"){ e.preventDefault(); globalSearchActive = Math.min(globalSearchActive+1, globalSearchResults.length-1); renderGlobalSearchResults(); }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); globalSearchActive = Math.max(globalSearchActive-1, 0); renderGlobalSearchResults(); }
+  else if(e.key==="Enter" && globalSearchActive>=0){ e.preventDefault(); const r = globalSearchResults[globalSearchActive]; openGlobalSearchResult(r.type, r.id); }
+}
+document.addEventListener("click", e=>{ if(!e.target.closest(".search")) closeGlobalSearch(); });
+// Each branch reuses the exact existing "view/edit" modal for that entity (Accounts > Invoices'
+// own edit modal, HR Directory's own employee detail modal, etc.) — global search is a shortcut to
+// records that already have a home elsewhere, not a new detail view of its own.
+function openGlobalSearchResult(type, id){
+  closeGlobalSearch();
+  const input = document.getElementById("global-search"); if(input) input.value = "";
+  if(type==="Client"){ setModule("clients"); openClientDetail(id); }
+  else if(type==="Lead"){ setSub("marketing","leads"); openEditLead(id); }
+  else if(type==="Quote"){ setSub("marketing","quotes"); openEditQuote(id); }
+  else if(type==="Invoice"){
+    // A plain Sales sign-in has no Accounts module at all — their invoices live inline on the
+    // client's own page instead (see clientDetailPage), so fall back to that when Accounts isn't
+    // in their nav rather than navigating to a tab that doesn't exist for them.
+    if(visibleModules().some(m=>m.id==="accounts")){ setSub("accounts","invoices"); openEditInvoice(id); }
+    else{ const inv = invoices.find(x=>x.id===id); if(inv){ setModule("clients"); openClientDetail(inv.clientId); } }
+  }
+  else if(type==="Employee"){ setSub("hr","directory"); openEmployeeDetail(id); }
+}
+
 /* ===================== RENDER DISPATCH ===================== */
 function renderDetailTopbar(){
   if(nav.detail.type==='client'){
