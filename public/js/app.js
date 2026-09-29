@@ -3316,20 +3316,26 @@ function openEditEmployee(id){
       <div><label class="field-label">Phone</label><input class="field-input" name="phone" required value="${esc(e.phone)}"></div>
       <div class="section-label">ERP access</div>
       ${e.hasErpAccess
-        ? `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Tick the modules ${esc(e.name)} can open. My Workspace is always included. Changes apply on their next request — no logout needed.</div></div>${accessCheckboxes(e.erpRoles)}`
-        : `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>No ERP login yet — go back to their profile and use “Grant access” to create one and pick their modules.</div></div>`}
+        ? `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Tick the modules ${esc(e.name)} can open. My Workspace is always included. Changes apply on their next request — no logout needed.</div></div>`
+        : `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>No ERP login yet. Tick the modules and set a password to create their login (login email: ${esc(e.email)}), or leave both empty to skip.</div></div>
+      <div><label class="field-label">Password (to create their login)</label><input class="field-input" type="password" name="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters"></div>`}
+      <div><label class="field-label">Modules they can access (My Workspace is always included)</label>${accessCheckboxes(e.erpRoles)}</div>
     </div>
     <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></div>
     </form>`);
   document.getElementById("f-edit-employee").addEventListener("submit", async ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
+    const wantLogin = !e.hasErpAccess && (f.get("password") || f.getAll("grantRole").length);
+    if(wantLogin && (f.get("password")||"").length<8){ toast("Set a password of at least 8 characters to create their login"); return; }
     try{
       await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
         name: f.get("name"), dept: f.get("dept"), role: f.get("role"), joinedAt: f.get("joined"), dob: f.get("dob")||undefined,
         email: f.get("email"), phone: f.get("phone"), empType: TITLECASE_TO_API(f.get("empType")),
       })});
-      if(e.hasErpAccess){
+      if(wantLogin){
+        await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/grant-access`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: f.get("password"), roles: accessRolesFromForm(f, []) }) });
+      } else if(e.hasErpAccess){
         const roles = accessRolesFromForm(f, e.erpRoles);
         if([...roles].sort().join() !== [...new Set(["EMPLOYEE",...e.erpRoles])].sort().join())
           await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/access`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ roles }) });
