@@ -1,3 +1,4 @@
+import { ensureCarryForward, ensureCarryForwardAll, thisMonth } from "../../services/hr/leaveBalance";
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
@@ -29,11 +30,17 @@ export const markAttendance: RequestHandler = asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
+  const previous = await prisma.attendanceRecord.findUnique({ where: { employeeId_date: { employeeId: d.employeeId, date: new Date(d.date) } }, select: { status: true } });
   const record = await prisma.attendanceRecord.upsert({
     where: { employeeId_date: { employeeId: d.employeeId, date: new Date(d.date) } },
     create: { employeeId: d.employeeId, date: new Date(d.date), status: d.status, checkIn: d.checkIn, markedBy: req.user!.sub },
     update: { status: d.status, checkIn: d.checkIn, markedBy: req.user!.sub },
   });
+
+  // A correction to a CLOSED month's leave days changes what carried into the months after it.
+  if ((previous?.status === "ON_LEAVE" || d.status === "ON_LEAVE") && d.date.slice(0, 7) < thisMonth()) {
+    await ensureCarryForward(d.employeeId, thisMonth(), prisma, { reconcile: true });
+  }
 
   await recordAudit({
     userId: req.user!.sub,
@@ -72,7 +79,15 @@ export const getMonthlySummary: RequestHandler = asyncHandler(async (req, res) =
     else byEmployee[row.employeeId].wfh = row._count._all;
   }
 
-  res.json({ month, byEmployee });
+  // Effective paid-leave cap per employee that differs from the org default (carried-in days / HR
+  // adjustments), so the client's LOP preview matches what payroll will deduct.
+  await ensureCarryForwardAll(month);
+  const policy = await prisma.hrPolicy.findUnique({ where: { id: 1 } });
+  const ledgerRows = await prisma.leaveLedgerEntry.findMany({ where: { month, supersededAt: null } });
+  const caps: Record<string, number> = {};
+  for (const r of ledgerRows) caps[r.employeeId] = (caps[r.employeeId] ?? policy?.paidLeavesPerMonth ?? 1) + Number(r.days);
+
+  res.json({ month, byEmployee, caps });
 });
 
 // HR/Admin can view any employee's history; anyone else only their own.

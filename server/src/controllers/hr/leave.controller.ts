@@ -4,7 +4,8 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { isHRAdmin, resolveScopedEmployeeId } from "../../middleware/hrAccess";
 import { leaveRequestCreateSchema, leaveDecisionSchema } from "../../validation/hr.schemas";
-import { computeMonthlyLeaveUsage } from "../../services/hr/leaveBalance";
+import { computeMonthlyLeaveUsage, getLeaveLedger, ensureCarryForward, thisMonth } from "../../services/hr/leaveBalance";
+import { leaveAdjustmentSchema } from "../../validation/hr.schemas";
 
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -154,5 +155,25 @@ export const getLeaveBalance: RequestHandler = asyncHandler(async (req, res) => 
   }
   const month = (req.query.month as string) || currentMonth();
   const balance = await computeMonthlyLeaveUsage(targetId, month);
-  res.json({ balance });
+  // ?history=1 adds the month-by-month ledger (granted / carried in / used / carried out).
+  const ledger = req.query.history ? await getLeaveLedger(targetId) : undefined;
+  res.json({ balance, ledger });
+});
+
+// HR/Admin only — grant or remove paid-leave days for one month, with a reason. Recorded as its own
+// append-only ledger entry (never edits history); later months' carry-forward is then reconciled.
+export const addLeaveAdjustment: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = leaveAdjustmentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const d = parsed.data;
+  const employeeId = req.params.employeeId;
+  const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { id: true } });
+  if (!emp) return res.status(404).json({ error: "Employee not found" });
+
+  const entry = await prisma.leaveLedgerEntry.create({
+    data: { employeeId, kind: "ADJUSTMENT", month: d.month, days: d.days, note: d.note, createdBy: req.user!.sub },
+  });
+  await ensureCarryForward(employeeId, thisMonth(), prisma, { reconcile: true });
+  await recordAudit({ userId: req.user!.sub, action: "HR_LEAVE_ADJUSTMENT", entityType: "Employee", entityId: employeeId, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.status(201).json({ entry });
 });

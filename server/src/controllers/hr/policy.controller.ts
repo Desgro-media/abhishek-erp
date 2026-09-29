@@ -1,3 +1,4 @@
+import { nextMonth, thisMonth } from "../../services/hr/leaveBalance";
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
@@ -17,10 +18,16 @@ export const updatePolicy: RequestHandler = asyncHandler(async (req, res) => {
   const parsed = policyUpdateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
 
+  // Switching carry-forward on starts it NEXT month, so no already-run payroll is re-priced.
+  const extra: { carryForwardStartMonth?: string } = {};
+  if (parsed.data.carryForwardMaxDays && parsed.data.carryForwardMaxDays > 0) {
+    const existing = await prisma.hrPolicy.findUnique({ where: { id: 1 } });
+    if (!existing?.carryForwardStartMonth) extra.carryForwardStartMonth = nextMonth(thisMonth());
+  }
   const policy = await prisma.hrPolicy.upsert({
     where: { id: 1 },
-    create: { id: 1, ...parsed.data },
-    update: parsed.data,
+    create: { id: 1, ...parsed.data, ...extra },
+    update: { ...parsed.data, ...extra },
   });
 
   await recordAudit({ userId: req.user!.sub, action: "HR_POLICY_UPDATE", entityType: "HrPolicy", entityId: "1", afterData: parsed.data });

@@ -217,6 +217,7 @@ model Employee {
   salaryRevisions         SalaryRevision[]
   attendanceRecords       AttendanceRecord[]
   leaveRequests           LeaveRequest[]
+  leaveLedgerEntries      LeaveLedgerEntry[]
   advances                Advance[]
   payrollEntries          PayrollEntry[]
   commissionWithdrawals   CommissionWithdrawal[]
@@ -259,6 +260,40 @@ model AttendanceRecord {
   @@unique([employeeId, date])
   @@index([date])
   @@map("attendance_records")
+}
+
+enum LeaveLedgerKind {
+  CARRY_FORWARD
+  ADJUSTMENT
+}
+
+// Append-only ledger behind the paid-leave balance. A row adds (or removes) days to ONE month's cap:
+//  - CARRY_FORWARD: unused days rolled in from the previous month, capped by HrPolicy. Recomputed
+//    rows never edit history — the old row gets supersededAt and a new one is inserted.
+//  - ADJUSTMENT: a manual grant/deduction by HR, with a reason.
+// "Used" days are never stored here; they are always counted from Attendance.
+model LeaveLedgerEntry {
+  id           String          @id @default(uuid())
+  employeeId   String          @map("employee_id")
+  employee     Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  kind         LeaveLedgerKind
+  // The month (YYYY-MM) whose cap this entry changes.
+  month        String
+  // Signed days added to that month's cap (carried-in days, or the adjustment).
+  days         Decimal         @db.Decimal(5, 2)
+  // CARRY_FORWARD audit trail — how the number was arrived at.
+  sourceMonth  String?         @map("source_month")
+  sourceCap    Decimal?        @map("source_cap") @db.Decimal(5, 2)
+  unusedDays   Decimal?        @map("unused_days") @db.Decimal(5, 2)
+  lapsedDays   Decimal?        @map("lapsed_days") @db.Decimal(5, 2)
+  capApplied   Int?            @map("cap_applied")
+  note         String?
+  createdBy    String?         @map("created_by")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  supersededAt DateTime?       @map("superseded_at")
+
+  @@index([employeeId, month])
+  @@map("leave_ledger_entries")
 }
 
 model LeaveRequest {
@@ -395,6 +430,12 @@ model HrPolicy {
   // touched. Org-wide for now, not per-employee/per-role.
   paidLeavesPerMonth Int      @default(1) @map("paid_leaves_per_month")
   paidWfhPerMonth    Int      @default(1) @map("paid_wfh_per_month")
+  // Max unused paid-leave days that roll into the next month. 0 = carry-forward off (the default —
+  // nothing changes until HR turns it on). WFH days never carry forward.
+  carryForwardMaxDays Int     @default(0) @map("carry_forward_max_days")
+  // First month (YYYY-MM) that can receive carried-in days; set automatically to the month after
+  // carry-forward is first switched on, so past payrolls are never re-priced.
+  carryForwardStartMonth String? @map("carry_forward_start_month")
   generalNotes       String?  @map("general_notes")
   leavePayNotes      String?  @map("leave_pay_notes")
   updatedAt          DateTime @updatedAt @map("updated_at")

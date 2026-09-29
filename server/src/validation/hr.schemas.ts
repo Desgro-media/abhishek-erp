@@ -161,6 +161,7 @@ export const policyUpdateSchema = z.object({
   weeklyOff: z.number().int().min(0).max(6).optional(),
   paidLeavesPerMonth: z.number().int().nonnegative().optional(),
   paidWfhPerMonth: z.number().int().nonnegative().optional(),
+  carryForwardMaxDays: z.number().int().min(0).max(31).optional(),
   generalNotes: z.string().optional(),
   leavePayNotes: z.string().optional(),
 });
@@ -180,4 +181,11 @@ export const payrollPaymentSchema = z.object({
   amount: z.number().positive(),
   paidDate: dateStr.optional(),
   note: z.string().optional(),
+});
+
+// HR grants (+) or removes (−) paid-leave days for one month; always with a reason.
+export const leaveAdjustmentSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, "Expected YYYY-MM"),
+  days: z.number().min(-31).max(31).refine((n) => n !== 0 && Number.isInteger(n * 2), "Days must be non-zero, in half-day steps"),
+  note: z.string().trim().min(3, "Give a reason"),
 });
