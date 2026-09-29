@@ -48,6 +48,7 @@ router.post("/leave-requests", leave.createLeaveRequest); // self-service or HR-
 router.patch("/leave-requests/:id", requireHRAdmin, leave.decideLeaveRequest);
 router.get("/leave-balance", requireHRAdmin, leave.listAllLeaveBalances);
 router.get("/leave-balance/:employeeId", leave.getLeaveBalance); // self-or-HR
+router.post("/leave-balance/:employeeId/adjustments", requireHRAdmin, leave.addLeaveAdjustment);
 
 // Advances
 router.get("/advances", advances.listAdvances); // self-or-HR (checked inside)

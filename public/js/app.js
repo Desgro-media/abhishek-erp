@@ -144,7 +144,7 @@ async function apiJson(url, opts){
 }
 
 /* ===================== HR MODULE — LOADERS ===================== */
-let hrPolicy = { weeklyOff:0, paidLeavesPerMonth:1, paidWfhPerMonth:1, notes:"", holidays:[] };
+let hrPolicy = { weeklyOff:0, paidLeavesPerMonth:1, paidWfhPerMonth:1, carryForwardMaxDays:0, carryForwardStartMonth:null, notes:"", holidays:[] };
 let leavePayPolicy = { notes:"" };
 // empCode -> computeMonthlyLeaveUsage() shape for whatever month was last fetched
 // ({month, leaveDays, leaveCap, leaveRemaining, lopDays, wfhDays, wfhCap, wfhRemaining, wfhExcessDays}).
@@ -169,6 +169,7 @@ async function loadPolicy(){
   const { policy, holidays } = await apiJson("/api/hr/policy");
   hrPolicy = {
     weeklyOff: policy.weeklyOff, paidLeavesPerMonth: policy.paidLeavesPerMonth, paidWfhPerMonth: policy.paidWfhPerMonth,
+    carryForwardMaxDays: policy.carryForwardMaxDays||0, carryForwardStartMonth: policy.carryForwardStartMonth||null,
     notes: policy.generalNotes || "",
     holidays: holidays.map(h=>({date:isoDate(h.date), name:h.name})),
   };
@@ -258,9 +259,11 @@ async function setAttendanceDate(date){
 // server-side comment for why the two aren't the same figure.
 let attendanceMonthSummary = {};
 async function loadAttendanceMonthSummary(month){
-  const { byEmployee } = await apiJson(`/api/hr/attendance/summary?month=${month}`);
+  const { byEmployee, caps } = await apiJson(`/api/hr/attendance/summary?month=${month}`);
   const byCode = {};
   Object.entries(byEmployee).forEach(([dbId, counts])=>{ byCode[employeeCodeByDbId[dbId] || dbId] = counts; });
+  // Server-computed effective paid-leave cap (org cap + carried-forward + HR adjustments) where it differs.
+  Object.entries(caps||{}).forEach(([dbId, cap])=>{ const code = employeeCodeByDbId[dbId] || dbId; byCode[code] = { leave:0, wfh:0, ...(byCode[code]||{}), leaveCap:cap }; });
   attendanceMonthSummary[month] = byCode;
 }
 async function loadPayrollMonth(month){
@@ -309,6 +312,7 @@ async function loadHrModule(){
       advances = (await apiJson(`/api/hr/advances?employeeId=${currentUser._dbId}`)).advances.map(mapAdvance);
       const bal = await apiJson(`/api/hr/leave-balance/${currentUser._dbId}`);
       leaveBalanceCache[currentUser.id] = bal.balance;
+      loadMyLeaveBalance().catch(()=>{});
       const { records } = await apiJson(`/api/hr/attendance/${currentUser._dbId}/history?month=${TODAY.slice(0,7)}`);
       const todayRec = records.find(r=>isoDate(r.date)===TODAY);
       attendanceToday[currentUser.id] = todayRec ? { status: ATTENDANCE_FROM_API[todayRec.status], in: todayRec.checkIn||null } : { status:"absent", in:null };
@@ -346,7 +350,7 @@ function workingDaysMTD(){ return workingDaysInRange(TODAY.slice(0,7)+"-01", TOD
 // before an employee is even added to payroll lines up with what the server will actually deduct.
 function lopDaysFor(empId, month){
   const counts = attendanceMonthSummary[month] && attendanceMonthSummary[month][empId];
-  return Math.max(0, (counts?.leave||0) - hrPolicy.paidLeavesPerMonth);
+  return Math.max(0, (counts?.leave||0) - (counts?.leaveCap ?? hrPolicy.paidLeavesPerMonth));
 }
 // WFH days beyond the monthly paid-WFH allowance — mirrors computeWfhExcessDays, paid at 75% (a 25% cut)
 // rather than a full Loss of Pay.
@@ -1673,7 +1677,7 @@ function visibleModulesLegacy(){
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
-  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "hr/withdrawals":[loadWithdrawalRequests],
+  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
   "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():null],
@@ -2110,6 +2114,73 @@ function workspaceTasks(){
   </div>
   <div class="board-scroll"><div class="board" id="my-task-board"></div></div>`;
 }
+// ---- Paid-leave balance, carry-forward & history (all numbers computed server-side) ----
+let leaveLedgerCache = {}; // employee code -> {carryForwardMaxDays, months[], entries[]}
+async function loadMyLeaveBalance(){
+  if(!currentUser || !currentUser._dbId) return;
+  const r = await apiJson(`/api/hr/leave-balance/${currentUser._dbId}?history=1`);
+  leaveBalanceCache[currentUser.id] = r.balance; leaveLedgerCache[currentUser.id] = r.ledger;
+}
+function leaveCarryNote(b){
+  const bits = [];
+  if(b.leaveCarriedIn>0) bits.push(`${b.leaveCarriedIn} carried forward`);
+  if(b.leaveAdjustment) bits.push(`${b.leaveAdjustment>0?'+':''}${b.leaveAdjustment} adjusted by HR`);
+  return bits.length ? ` · ${bits.join(' · ')}` : '';
+}
+function leaveLedgerTable(ledger){
+  if(!ledger) return `<div class="empty">Loading…</div>`;
+  const rows = ledger.months.map(m=>`<tr><td>${esc(monthLabel(m.month))}</td><td class="num">${m.granted}</td><td class="num">${m.carriedIn||'—'}</td><td class="num">${m.adjustment?(m.adjustment>0?'+':'')+m.adjustment:'—'}</td><td class="num">${m.used||'—'}</td><td class="num ${m.lop>0?'warn':''}">${Math.max(0,m.cap-m.used)}${m.lop>0?` <span class="faint">(${m.lop} LOP)</span>`:''}</td><td class="num">${ledger.carryForwardMaxDays>0 ? (m.carriedOut||'—')+(m.closed?'':' <span class="faint">(so far)</span>')+(m.lapsed>0?` <span class="faint">· ${m.lapsed} lapsed</span>`:'') : '—'}</td></tr>`).join("");
+  return `<div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Granted</th><th class="num">Carried in</th><th class="num">Adjusted</th><th class="num">Used</th><th class="num">Left</th><th class="num">Carried out</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function leaveLedgerPanel(ledger){
+  const off = ledger && ledger.carryForwardMaxDays<=0;
+  return `<div class="panel">
+    <div class="panel-head"><h3>Leave balance history</h3><div class="sub">${off ? 'Carry-forward is off — unused paid-leave days do not roll over' : `Unused paid-leave days roll into the next month, up to ${ledger?ledger.carryForwardMaxDays:hrPolicy.carryForwardMaxDays} day${(ledger?ledger.carryForwardMaxDays:hrPolicy.carryForwardMaxDays)===1?'':'s'}`}</div></div>
+    ${leaveLedgerTable(ledger)}
+  </div>`;
+}
+// HR: any employee's balance + carry-forward history, and a way to grant / remove days with a reason.
+async function openLeaveBalance(id){
+  const e = byId(id); const dbId = employeeDbIdByCode[id];
+  showModal(`<div class="modal-head"><h3>Leave balance — ${esc(e.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div><div class="modal-body"><div class="empty">Loading…</div></div>`);
+  try{
+    const r = await apiJson(`/api/hr/leave-balance/${dbId}?history=1`);
+    const b = r.balance, l = r.ledger;
+    const audit = l.entries.filter(x=>x.kind==='ADJUSTMENT' || x.superseded || x.days>0 || x.lapsedDays>0).slice(0,12).map(x=>{
+      const what = x.kind==='ADJUSTMENT' ? `HR adjustment ${x.days>0?'+':''}${x.days}` : `Carry-forward ${x.days} (${x.unusedDays} unused in ${esc(monthLabel(x.sourceMonth))}${x.lapsedDays>0?`, ${x.lapsedDays} lapsed over the ${x.capApplied}-day cap`:''})`;
+      return `<div class="calc-line"><span>${esc(monthLabel(x.month))} — ${what}${x.note?` · <span class="faint">${esc(x.note)}</span>`:''}${x.superseded?' <span class="faint">(superseded)</span>':''}</span><span class="mono faint">${fmtDateShort(isoDate(x.createdAt))}</span></div>`;
+    }).join("") || `<div class="subtext">No carry-forward or adjustment entries yet.</div>`;
+    showModal(`
+      <div class="modal-head"><h3>Leave balance — ${esc(e.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+      <div class="modal-body">
+        <div class="calc-line"><span>${esc(monthLabel(b.month))} — paid leave left</span><span class="mono">${b.leaveRemaining} / ${b.leaveCap}${leaveCarryNote(b)}</span></div>
+        <div class="calc-line"><span>Paid WFH left</span><span class="mono">${b.wfhRemaining} / ${b.wfhCap}</span></div>
+        <div class="section-label">History</div>
+        ${leaveLedgerTable(l)}
+        <div class="section-label">How the balance was arrived at</div>
+        ${audit}
+        <div class="section-label">Grant or remove leave days</div>
+        <form id="f-leave-adjust">
+          <div class="field-row">
+            <div><label class="field-label">Month</label><input class="field-input" type="month" name="month" value="${b.month}" required></div>
+            <div><label class="field-label">Days (+ grant / − remove)</label><input class="field-input" type="number" name="days" step="0.5" required placeholder="e.g. 2 or -1"></div>
+          </div>
+          <div><label class="field-label">Reason (kept in the history)</label><input class="field-input" name="note" required minlength="3" placeholder="e.g. Comp-off for weekend work"></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px;"><button type="submit" class="btn primary btn-sm">Save adjustment</button></div>
+        </form>
+      </div>`);
+    document.getElementById("f-leave-adjust").addEventListener("submit", async ev=>{
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      try{
+        await apiJson(`/api/hr/leave-balance/${dbId}/adjustments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ month:f.get("month"), days:Number(f.get("days")), note:f.get("note") }) });
+        toast("Leave balance adjusted");
+        await loadAttendanceMonthSummary(TODAY.slice(0,7)).catch(()=>{});
+        render(); openLeaveBalance(id);
+      }catch(err){ toast(err.message || "Couldn't save adjustment"); }
+    });
+  }catch(err){ toast(err.message || "Couldn't load leave balance"); closeModal(); }
+}
 function workspaceLeave(){
   if(!currentUser) return '';
   const mine = leaveRequests.filter(l=>l.empId===currentUser.id).slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
@@ -2121,13 +2192,13 @@ function workspaceLeave(){
     <div class="panel-head"><h3>This month's leave &amp; WFH</h3><div class="sub">${esc(monthLabel(bal.month))} · ${hrPolicy.paidLeavesPerMonth} paid leave day &amp; ${hrPolicy.paidWfhPerMonth} paid WFH day per month</div></div>
     <div class="panel-body">
       <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);">
-        <div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Paid leave left</div><div class="kpi-value mono ${bal.leaveRemaining<=0?'warn':''}">${bal.leaveRemaining} <span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;">/ ${hrPolicy.paidLeavesPerMonth}</span></div><div class="kpi-sub">${bal.leaveDays} taken so far this month</div></div>
+        <div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Paid leave left</div><div class="kpi-value mono ${bal.leaveRemaining<=0?'warn':''}">${bal.leaveRemaining} <span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;">/ ${bal.leaveCap ?? hrPolicy.paidLeavesPerMonth}</span></div><div class="kpi-sub">${bal.leaveDays} taken so far this month${leaveCarryNote(bal)}</div></div>
         <div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Paid WFH left</div><div class="kpi-value mono ${bal.wfhRemaining<=0?'warn':''}">${bal.wfhRemaining} <span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;">/ ${hrPolicy.paidWfhPerMonth}</span></div><div class="kpi-sub">${bal.wfhDays} taken so far this month</div></div>
       </div>
       ${hasImpact ? `
       <div class="banner" style="margin-top:12px;">
         <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-        <div><b>This is already affecting your payroll.</b> ${bal.lopDays>0?`${bal.lopDays} leave day${bal.lopDays===1?"":"s"} beyond your ${hrPolicy.paidLeavesPerMonth}/month allowance means a full Loss of Pay deduction for ${bal.lopDays===1?"that day":"those days"}.`:""} ${bal.wfhExcessDays>0?`${bal.wfhExcessDays} WFH day${bal.wfhExcessDays===1?"":"s"} beyond your ${hrPolicy.paidWfhPerMonth}/month allowance is paid at 75% instead of full pay.`:""} See exactly how much in My Payroll.</div>
+        <div><b>This is already affecting your payroll.</b> ${bal.lopDays>0?`${bal.lopDays} leave day${bal.lopDays===1?"":"s"} beyond your ${bal.leaveCap ?? hrPolicy.paidLeavesPerMonth}-day allowance means a full Loss of Pay deduction for ${bal.lopDays===1?"that day":"those days"}.`:""} ${bal.wfhExcessDays>0?`${bal.wfhExcessDays} WFH day${bal.wfhExcessDays===1?"":"s"} beyond your ${hrPolicy.paidWfhPerMonth}/month allowance is paid at 75% instead of full pay.`:""} See exactly how much in My Payroll.</div>
       </div>` : `
       <div class="banner muted" style="margin-top:12px;">
         <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
@@ -2135,6 +2206,7 @@ function workspaceLeave(){
       </div>`}
     </div>
   </div>
+  ${leaveLedgerPanel(leaveLedgerCache[currentUser.id])}
   <div class="panel">
     <div class="panel-head"><h3>Your requests</h3></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Type</th><th>Dates</th><th class="num">Days</th><th>Reason</th><th>Status</th></tr></thead>
@@ -2147,7 +2219,7 @@ function openApplyLeave(){
   showModal(`
     <div class="modal-head"><h3>Apply for leave</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-apply-leave"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval.</div></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval. <b>Your balance for ${esc(monthLabel(leaveBalance(currentUser.id).month))}:</b> ${leaveBalance(currentUser.id).leaveRemaining} paid leave day${leaveBalance(currentUser.id).leaveRemaining===1?'':'s'} left${leaveCarryNote(leaveBalance(currentUser.id))} · ${leaveBalance(currentUser.id).wfhRemaining} paid WFH day${leaveBalance(currentUser.id).wfhRemaining===1?'':'s'} left.</div></div>
       <div class="field-row">
         <div><label class="field-label">Type</label><select class="field-input" id="leave-type" name="type" onchange="updateLeaveImpactNote()"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option></select></div>
         <div><label class="field-label">Duration</label><select class="field-input" id="leave-duration" name="duration" onchange="updateLeaveImpactNote()"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
@@ -2225,23 +2297,24 @@ async function updateLeaveImpactNote(){
   if(fromEl.value!==from || toEl.value!==to || !document.getElementById('leave-impact-note')) return;
 
   const dayKey = isWfh ? 'wfhDays' : 'leaveDays', capKey = isWfh ? 'wfhCap' : 'leaveCap';
+  const perDay = m=>{ const wd = workingDaysInMonth(m); return (currentUser.salary && wd) ? currentUser.salary/wd : 0; };
   const withExcess = months.map(m=>{
     const usage = applyLeaveMonthUsage[m];
     if(!usage) return null;
     const newTotal = usage[dayKey] + newDaysByMonth[m];
     const excess = Math.max(0, newTotal - usage[capKey]);
-    return excess>0 ? {month:m, excess, cap:usage[capKey]} : null;
+    return excess>0 ? {month:m, excess, cap:usage[capKey], cost:Math.round(perDay(m)*excess*(isWfh?0.25:1))} : null;
   }).filter(Boolean);
 
   if(withExcess.length){
     noteEl.innerHTML = `<div class="banner" style="margin-top:2px;margin-bottom:10px;">
       <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-      <div><b>This request will cause a pay cut.</b> ${withExcess.map(m=>`${m.excess} day${m.excess===1?"":"s"} in ${esc(monthLabel(m.month))} beyond your ${m.cap}/month ${isWfh?"paid-WFH":"paid-leave"} allowance — expect ${isWfh?"a 25% pay cut (paid at 75%)":"a Loss of Pay deduction"} for ${m.excess===1?"that day":"those days"} once approved.`).join(' ')}</div>
+      <div><b>This request will cause a pay cut.</b> ${withExcess.map(m=>`${m.excess} day${m.excess===1?"":"s"} in ${esc(monthLabel(m.month))} beyond your ${m.cap}/month ${isWfh?"paid-WFH":"paid-leave"} allowance — expect ${isWfh?"a 25% pay cut (paid at 75%)":"a Loss of Pay deduction"} for ${m.excess===1?"that day":"those days"} once approved${m.cost>0?` — about <b>−${inr(m.cost)}</b> from that month's pay`:''}.`).join(' ')}</div>
     </div>`;
   } else {
     noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;">
       <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-      <div>Within your paid ${isWfh?"WFH":"leave"} allowance — no pay impact expected.</div>
+      <div>Within your paid ${isWfh?"WFH":"leave"} allowance — no pay impact expected.${months.length===1&&applyLeaveMonthUsage[months[0]]?` You'll have <b>${Math.max(0,applyLeaveMonthUsage[months[0]][capKey]-applyLeaveMonthUsage[months[0]][dayKey]-newDaysByMonth[months[0]])}</b> paid ${isWfh?"WFH":"leave"} day(s) left after this request.`:''}</div>
     </div>`;
   }
 }
@@ -2527,8 +2600,8 @@ function hrLeave(){
     return `
   <div class="panel">
     <div class="panel-head"><h3>Leave &amp; WFH — ${esc(monthLabel(summaryMonth))}</h3><div class="sub">${hrPolicy.paidLeavesPerMonth} paid leave day${hrPolicy.paidLeavesPerMonth===1?'':'s'} &amp; ${hrPolicy.paidWfhPerMonth} paid WFH day${hrPolicy.paidWfhPerMonth===1?'':'s'} per employee per month — set in HR Settings</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">On Leave</th><th class="num">LOP days</th><th class="num">WFH</th><th class="num">WFH pay-cut days</th></tr></thead>
-      <tbody>${employees.map(e=>{ const c=summary[e.id]||{leave:0,wfh:0}; const lop=Math.max(0,c.leave-hrPolicy.paidLeavesPerMonth); const wfhCut=Math.max(0,c.wfh-hrPolicy.paidWfhPerMonth); return `<tr><td>${personCell(e)}</td><td class="num">${c.leave||'—'}</td><td class="num ${lop>0?'warn':''}">${lop||'—'}</td><td class="num">${c.wfh||'—'}</td><td class="num ${wfhCut>0?'warn':''}">${wfhCut||'—'}</td></tr>`; }).join("")}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">On Leave</th><th class="num">LOP days</th><th class="num">WFH</th><th class="num">WFH pay-cut days</th><th></th></tr></thead>
+      <tbody>${employees.map(e=>{ const c=summary[e.id]||{leave:0,wfh:0}; const lop=Math.max(0,c.leave-(c.leaveCap ?? hrPolicy.paidLeavesPerMonth)); const wfhCut=Math.max(0,c.wfh-hrPolicy.paidWfhPerMonth); return `<tr><td>${personCell(e)}</td><td class="num">${c.leave||'—'}</td><td class="num ${lop>0?'warn':''}">${lop||'—'}</td><td class="num">${c.wfh||'—'}</td><td class="num ${wfhCut>0?'warn':''}">${wfhCut||'—'}</td><td class="num"><button class="btn btn-sm ghost" onclick="openLeaveBalance('${e.id}')">Balance</button></td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>`;
   })()}`;
@@ -2997,6 +3070,10 @@ function hrPolicies(){
         <div><label class="field-label">Paid leave (days/month)</label><input class="field-input" id="policy-paid-leaves" type="number" min="0" step="1" value="${hrPolicy.paidLeavesPerMonth}"></div>
         <div><label class="field-label">Paid WFH (days/month)</label><input class="field-input" id="policy-paid-wfh" type="number" min="0" step="1" value="${hrPolicy.paidWfhPerMonth}"></div>
       </div>
+      <div class="field-row" style="margin-top:10px;">
+        <div><label class="field-label">Carry-forward cap (paid-leave days, 0 = off)</label><input class="field-input" id="policy-carry-forward" type="number" min="0" max="31" step="1" value="${hrPolicy.carryForwardMaxDays||0}"></div>
+        <div class="subtext" style="align-self:end;">Unused paid-leave days roll into the next month, up to this many. ${hrPolicy.carryForwardMaxDays>0&&hrPolicy.carryForwardStartMonth?`Active from ${esc(monthLabel(hrPolicy.carryForwardStartMonth))} — earlier months are never re-priced.`:'Once switched on it starts next month. WFH days never carry forward.'}</div>
+      </div>
       <div style="display:flex;justify-content:flex-end;margin-top:10px;"><button class="btn primary btn-sm" onclick="saveLeavePayCaps()">Save caps</button></div>
       <div class="banner muted" style="margin-top:14px;">
         <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
@@ -3035,6 +3112,7 @@ async function saveLeavePayCaps(){
     await apiJson("/api/hr/policy", { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
       paidLeavesPerMonth: Number(document.getElementById("policy-paid-leaves").value) || 0,
       paidWfhPerMonth: Number(document.getElementById("policy-paid-wfh").value) || 0,
+      carryForwardMaxDays: Number(document.getElementById("policy-carry-forward").value) || 0,
     })});
     await loadPolicy();
     toast("Monthly leave & WFH caps updated"); render();
