@@ -1,3 +1,4 @@
+import { accountIdByName } from "./payableAccounts";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 
@@ -74,6 +75,7 @@ export async function createSalesBonusIfCrossed(
   return tx.payable.create({
     data: {
       category: "SALES_BONUS",
+      accountId: await accountIdByName(tx, "Sales Bonus Payable"),
       payee: `${params.salesPerson} — monthly target bonus (${month})`,
       salesPerson: params.salesPerson,
       amount: roundedDelta,
