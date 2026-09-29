@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const roleEnum = z.enum(["ADMIN", "HR", "FINANCE", "SALES", "SALES_HEAD", "CONTENT", "EMPLOYEE", "CLIENTS"]);
+
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
 
 // Trims and collapses internal runs of whitespace (e.g. a stray double space typed between first
@@ -27,7 +29,7 @@ export const employeeCreateSchema = z.object({
   grantAccess: z
     .object({
       password: z.string().min(8),
-      roles: z.array(z.enum(["ADMIN", "HR", "FINANCE", "SALES", "SALES_HEAD", "CONTENT", "EMPLOYEE"])).default(["EMPLOYEE"]),
+      roles: z.array(roleEnum).default(["EMPLOYEE"]),
     })
     .optional(),
 });
@@ -57,9 +59,13 @@ export const confirmDepartureSchema = z.object({
 // password of one who already does — same shape either way. Roles are only
 // applied when creating the login for the first time; resetting an existing
 // login's password never silently changes their roles.
+export const updateAccessSchema = z.object({
+  roles: z.array(roleEnum).default(["EMPLOYEE"]),
+});
+
 export const grantAccessSchema = z.object({
   password: z.string().min(8),
-  roles: z.array(z.enum(["ADMIN", "HR", "FINANCE", "SALES", "SALES_HEAD", "CONTENT", "EMPLOYEE"])).default(["EMPLOYEE"]),
+  roles: z.array(roleEnum).default(["EMPLOYEE"]),
 });
 
 export const salaryRevisionSchema = z.object({

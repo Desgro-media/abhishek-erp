@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/auth";
-import { requireCrmUser } from "../middleware/crmAccess";
+import { requireCrmUser, requireClientsUser } from "../middleware/crmAccess";
 import { requireFinanceAdmin } from "../middleware/financeAccess";
 import * as clients from "../controllers/crm/clients.controller";
 import * as leads from "../controllers/crm/leads.controller";
@@ -15,10 +15,14 @@ const router = Router();
 // user) can reach it, and so Sales can't approve their own payment.
 router.post("/quotes/:id/pending-payments/:pendingId/approve", authenticate, requireFinanceAdmin, quotes.approveQuotePendingPayment);
 
-router.use(authenticate, requireCrmUser);
+router.use(authenticate);
 
-router.get("/clients", clients.listClients);
-router.get("/clients/:id", clients.getClient);
+// Clients and client tasks are open to a Clients-only login as well; leads and quotes stay Sales/Admin.
+router.get("/clients", requireClientsUser, clients.listClients);
+router.get("/clients/:id", requireClientsUser, clients.getClient);
+router.get("/tasks", requireClientsUser, tasks.listTasks);
+
+router.use(requireCrmUser);
 router.post("/clients", clients.createClient);
 router.patch("/clients/:id", clients.updateClient);
 router.delete("/clients/:id", clients.deleteClient);
@@ -38,7 +42,6 @@ router.post("/quotes/:id/convert-to-invoice", quotes.convertQuoteToInvoice);
 router.post("/quotes/:id/pending-payments", quotes.submitQuotePendingPayment);
 router.delete("/quotes/:id/pending-payments/:pendingId", quotes.deleteQuotePendingPayment);
 
-router.get("/tasks", tasks.listTasks);
 router.post("/clients/:clientId/tasks", tasks.createTask);
 router.patch("/tasks/:id", tasks.updateTask);
 router.post("/tasks/:id/attachments", tasks.addTaskAttachment);
