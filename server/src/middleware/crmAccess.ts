@@ -16,6 +16,10 @@ export function seesWholeSalesTeam(roles: string[] | undefined): boolean {
   const r = roles ?? [];
   return r.includes("ADMIN") || r.includes("SALES_HEAD");
 }
+// A Clients-module login sees the whole client list (it's their job), not just a sales book.
+export function seesAllClients(roles: string[] | undefined): boolean {
+  return seesWholeSalesTeam(roles) || (roles ?? []).includes("CLIENTS");
+}
 export function isContentUser(roles: string[] | undefined): boolean {
   const r = roles ?? [];
   return r.includes("ADMIN") || r.includes("CONTENT");
@@ -29,4 +33,15 @@ export const requireCrmUser: RequestHandler = (req, res, next) => {
 export const requireContentUser: RequestHandler = (req, res, next) => {
   if (isContentUser(req.user?.roles)) return next();
   return res.status(403).json({ error: "Forbidden — Content/Admin access required" });
+};
+
+// The Clients module (client list + their delivery tasks) can be granted on its own,
+// without the Leads/Quotes/Invoices side of CRM that Sales gets.
+export function isClientsUser(roles: string[] | undefined): boolean {
+  return isCrmUser(roles) || (roles ?? []).includes("CLIENTS");
+}
+
+export const requireClientsUser: RequestHandler = (req, res, next) => {
+  if (isClientsUser(req.user?.roles)) return next();
+  return res.status(403).json({ error: "Forbidden — Clients access required" });
 };

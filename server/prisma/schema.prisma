@@ -30,6 +30,7 @@ enum Role {
   SALES_HEAD
   CONTENT
   EMPLOYEE
+  CLIENTS
 }
 
 model User {

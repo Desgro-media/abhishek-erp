@@ -1,7 +1,7 @@
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
-import { seesWholeSalesTeam } from "../../middleware/crmAccess";
+import { seesWholeSalesTeam, seesAllClients } from "../../middleware/crmAccess";
 import { recordAudit } from "../../services/audit.service";
 import { clientCreateSchema, clientUpdateSchema } from "../../validation/crm.schemas";
 import { nextSequentialCode } from "../../utils/sequentialCode";
@@ -14,7 +14,7 @@ async function nextClientCode(): Promise<string> {
 // ever sees their own book — same "narrow self-service slice" listInvoices
 // already does by salesPerson — ADMIN and the Sales Head see everyone's.
 export const listClients: RequestHandler = asyncHandler(async (req, res) => {
-  const admin = seesWholeSalesTeam(req.user?.roles);
+  const admin = seesAllClients(req.user?.roles);
   const clients = await prisma.client.findMany({
     where: { status: req.query.status as any, salesPerson: admin ? undefined : req.user!.name },
     orderBy: { name: "asc" },
@@ -23,7 +23,7 @@ export const listClients: RequestHandler = asyncHandler(async (req, res) => {
 });
 
 export const getClient: RequestHandler = asyncHandler(async (req, res) => {
-  const admin = seesWholeSalesTeam(req.user?.roles);
+  const admin = seesAllClients(req.user?.roles);
   const client = await prisma.client.findUnique({ where: { id: req.params.id } });
   if (!client) return res.status(404).json({ error: "Client not found" });
   if (!admin && client.salesPerson !== req.user!.name) return res.status(403).json({ error: "Forbidden — not your client" });

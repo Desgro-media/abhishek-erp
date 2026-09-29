@@ -13,6 +13,7 @@ import {
   noticePeriodSchema,
   confirmDepartureSchema,
   grantAccessSchema,
+  updateAccessSchema,
 } from "../../validation/hr.schemas";
 
 async function nextEmployeeCode(): Promise<string> {
@@ -22,9 +23,14 @@ async function nextEmployeeCode(): Promise<string> {
 // Never send the linked User row itself (it carries passwordHash) — just
 // whether one exists, so Edit Employee can offer "grant access" vs "reset
 // password" without a second round trip.
-function withAccessFlag<T extends { user: unknown }>(e: T) {
+function withAccessFlag<T extends { user: { roles?: string[] } | null }>(e: T) {
   const { user, ...rest } = e;
-  return { ...rest, hasErpAccess: !!user };
+  return { ...rest, hasErpAccess: !!user, erpRoles: user?.roles ?? [] };
+}
+
+// HR can hand out module roles, but only an Admin may mint another Admin.
+function adminGrantForbidden(req: { user?: { roles: string[] } }, roles: string[]): boolean {
+  return roles.includes("ADMIN") && !(req.user?.roles ?? []).includes("ADMIN");
 }
 
 // Directory/headcount/attendance-roster views all want the active + notice-
@@ -39,7 +45,7 @@ export const listEmployees: RequestHandler = asyncHandler(async (req, res) => {
       employmentStatus: employmentStatus ? (employmentStatus as any) : { not: "LEFT" },
       ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
     },
-    include: { user: { select: { id: true } } },
+    include: { user: { select: { id: true, roles: true } } },
     orderBy: { name: "asc" },
   });
   res.json({ employees: employees.map(withAccessFlag) });
@@ -67,7 +73,7 @@ export const getEmployee: RequestHandler = asyncHandler(async (req, res) => {
   if (!scoped || scoped !== targetId) {
     return res.status(403).json({ error: "Forbidden — you can only view your own HR record" });
   }
-  const employee = await prisma.employee.findUnique({ where: { id: targetId }, include: { user: { select: { id: true } } } });
+  const employee = await prisma.employee.findUnique({ where: { id: targetId }, include: { user: { select: { id: true, roles: true } } } });
   if (!employee) return res.status(404).json({ error: "Employee not found" });
   res.json({ employee: withAccessFlag(employee) });
 });
@@ -87,6 +93,7 @@ export const createEmployee: RequestHandler = asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
+  if (d.grantAccess && adminGrantForbidden(req, d.grantAccess.roles)) return res.status(403).json({ error: "Forbidden — only an Admin can grant the Admin role" });
   const employeeCode = await nextEmployeeCode();
   const employee = await prisma.employee.create({
     data: {
@@ -221,6 +228,7 @@ export const grantAccess: RequestHandler = asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
   const employeeId = req.params.id;
+  if (adminGrantForbidden(req, d.roles)) return res.status(403).json({ error: "Forbidden — only an Admin can grant the Admin role" });
 
   const employee = await prisma.employee.findUnique({ where: { id: employeeId }, include: { user: true } });
   if (!employee) return res.status(404).json({ error: "Employee not found" });
@@ -247,6 +255,43 @@ export const grantAccess: RequestHandler = asyncHandler(async (req, res) => {
   });
 
   res.json({ hasErpAccess: true });
+});
+
+// Changes which module roles an existing login holds. Takes effect on the
+// person's very next request (authenticate re-reads roles from the DB).
+export const updateAccess: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = updateAccessSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const roles = [...new Set(["EMPLOYEE", ...parsed.data.roles])] as any[];
+  const employeeId = req.params.id;
+
+  const employee = await prisma.employee.findUnique({ where: { id: employeeId }, include: { user: true } });
+  if (!employee) return res.status(404).json({ error: "Employee not found" });
+  if (!employee.user) return res.status(409).json({ error: "This employee has no ERP login yet — grant access first" });
+
+  const before: string[] = employee.user.roles;
+  // Adding or removing Admin membership is Admin-only.
+  if (roles.includes("ADMIN") !== before.includes("ADMIN") && !(req.user?.roles ?? []).includes("ADMIN")) {
+    return res.status(403).json({ error: "Forbidden — only an Admin can change the Admin role" });
+  }
+  // Never leave the system without an Admin.
+  if (before.includes("ADMIN") && !roles.includes("ADMIN")) {
+    const otherAdmins = await prisma.user.count({ where: { roles: { has: "ADMIN" }, active: true, id: { not: employee.user.id } } });
+    if (otherAdmins === 0) return res.status(409).json({ error: "Can't remove the last Admin" });
+  }
+
+  await prisma.user.update({ where: { id: employee.user.id }, data: { roles } });
+  await recordAudit({
+    userId: req.user!.sub,
+    action: "HR_EMPLOYEE_ACCESS_UPDATE",
+    entityType: "Employee",
+    entityId: employeeId,
+    beforeData: { roles: before },
+    afterData: { roles },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"] ?? null,
+  });
+  res.json({ erpRoles: roles });
 });
 
 // ---- Offboarding lifecycle: ACTIVE <-> NOTICE_PERIOD -> LEFT -> ACTIVE ----

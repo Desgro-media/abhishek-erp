@@ -92,7 +92,7 @@ function mapEmployee(e){
     empType: TITLECASE_FROM_API(e.empType),
     employmentStatus: TITLECASE_FROM_API(e.employmentStatus),
     leavingDate: isoDate(e.leavingDate), noticeGivenDate: isoDate(e.noticeGivenDate), noticeNote: e.noticeNote || "",
-    hasErpAccess: !!e.hasErpAccess,
+    hasErpAccess: !!e.hasErpAccess, erpRoles: e.erpRoles || [],
   };
 }
 function mapLeaveRequest(l){
@@ -1581,7 +1581,42 @@ const SALES_WORKSPACE_SUB = [
   {id:"leaderboard", label:"Leaderboard", icon:"i-target"},
   {id:"complaints", label:"Complaints", icon:"i-megaphone"},
 ];
+// Module access HR can hand out (Add/Edit Employee). Each checkbox maps to one stored User role; the
+// sidebar is the union of whatever is ticked, and the API enforces the same roles server-side.
+// Roles not listed here (ADMIN, SALES_HEAD, EMPLOYEE) are never touched by these checkboxes.
+const ACCESS_MODULES = [
+  {label:"HR", role:"HR"},
+  {label:"Marketing and Sales", role:"SALES"},
+  {label:"Clients", role:"CLIENTS"},
+  {label:"Accounts", role:"FINANCE"},
+  {label:"Content pipeline only", role:"CONTENT"},
+];
+function accessCheckboxes(selected){
+  const sel = selected || [];
+  return `<div class="check-row">${ACCESS_MODULES.map(m=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${m.role}" ${sel.includes(m.role)?"checked":""}>${m.label}</label>`).join("")}</div>`;
+}
+// Ticked modules + everything the checkboxes don't manage (so saving never strips e.g. Sales Head).
+function accessRolesFromForm(f, existing){
+  const managed = ACCESS_MODULES.map(m=>m.role);
+  return [...new Set(["EMPLOYEE", ...(existing||[]).filter(r=>!managed.includes(r)), ...f.getAll("grantRole")])];
+}
 function visibleModules(){
+  // Real stored roles drive the sidebar (Admin = everything; otherwise the union of the modules
+  // granted, always with My Workspace) — not the job-title guessing the legacy branch below does.
+  if(currentUser && Array.isArray(currentUser.roles) && currentUser.roles.length){
+    if(currentUser.isAdmin) return MODULES;
+    const r = currentUser.roles;
+    const sales = r.includes('SALES') || r.includes('SALES_HEAD');
+    const show = { workspace:true, hr:r.includes('HR'), marketing:sales||r.includes('CONTENT'), clients:sales||r.includes('CLIENTS'), accounts:r.includes('FINANCE') };
+    return MODULES.filter(m=>show[m.id]).map(m=>{
+      if(m.id==='workspace' && sales) return {...m, sub:SALES_WORKSPACE_SUB};
+      if(m.id==='marketing' && !sales) return {...m, sub:m.sub.filter(s=>s.id==='content')};
+      return m;
+    });
+  }
+  return visibleModulesLegacy();
+}
+function visibleModulesLegacy(){
   // Leadership/Admin must win ties — someone can legitimately hold both HR
   // and ADMIN (or any other combination), and Admin always means full,
   // unrestricted access regardless of what else is checked.
@@ -3062,14 +3097,14 @@ function openAddEmployee(){
       <div><label class="field-label">Email</label><input class="field-input" type="email" name="email" required placeholder="name@desgromedia.com"></div>
       <div><label class="field-label">Phone</label><input class="field-input" name="phone" required placeholder="+91 9xxxx xxxxx"></div>
       <div class="section-label">ERP access</div>
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Grant them a login now (email above + a password you set), or skip this and add it later — not every employee needs ERP access. Every login gets the base Employee role (their own attendance/leave/payslips) automatically; check any module roles they also need — a person can hold more than one (e.g. Sales + Content).</div></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Grant them a login now (email above + a password you set), or skip this and add it later — not every employee needs ERP access. Every login gets the base Employee role (their own attendance/leave/payslips) automatically; choose “Yes” below, then tick the modules they should see — a person can hold more than one.</div></div>
       <div class="field-row">
         <div><label class="field-label">Grant ERP access</label><select class="field-input" name="grant" onchange="document.getElementById('grant-role-row').hidden = this.value!=='yes'">${'<option value="no">No login for now</option><option value="yes">Yes — set a password</option>'}</select></div>
         <div><label class="field-label">Password (if granting access)</label><input class="field-input" type="password" name="password" minlength="8" placeholder="At least 8 characters"></div>
       </div>
       <div id="grant-role-row" hidden>
-        <label class="field-label">Module roles (base Employee always included)</label>
-        <div class="check-row">${["ADMIN","HR","FINANCE","SALES","SALES_HEAD","CONTENT"].map(r=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${r}">${r.charAt(0)+r.slice(1).toLowerCase().replace("_"," ")}</label>`).join("")}</div>
+        <label class="field-label">Modules they can access (My Workspace is always included)</label>
+        ${accessCheckboxes([])}
       </div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Add employee</button></div></div>
@@ -3077,7 +3112,7 @@ function openAddEmployee(){
   document.getElementById("f-add-employee").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    const grantAccess = f.get("grant")==="yes" ? { password: f.get("password"), roles: [...new Set(["EMPLOYEE", ...f.getAll("grantRole")])] } : undefined;
+    const grantAccess = f.get("grant")==="yes" ? { password: f.get("password"), roles: accessRolesFromForm(f, []) } : undefined;
     if(grantAccess && (!grantAccess.password || grantAccess.password.length<8)){ toast("Password must be at least 8 characters"); return; }
     try{
       await apiJson("/api/hr/employees", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
@@ -3152,7 +3187,7 @@ function openGrantAccess(id){
       <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${e.hasErpAccess ? "Their login is "+esc(e.email)+" — this sets a new password, it doesn't change their existing module roles." : "Their login will be "+esc(e.email)+" — set a password and pick which module roles they need. The base Employee role (their own attendance/leave/payslips) is always included."}</div></div>
       <div><label class="field-label">${e.hasErpAccess?"New password":"Set password"}</label><input class="field-input" type="password" name="password" required minlength="8" placeholder="At least 8 characters"></div>
-      ${e.hasErpAccess ? "" : `<div><label class="field-label">Module roles (base Employee always included)</label><div class="check-row">${["ADMIN","HR","FINANCE","SALES","SALES_HEAD","CONTENT"].map(r=>`<label class="check-chip"><input type="checkbox" name="grantRole" value="${r}">${r.charAt(0)+r.slice(1).toLowerCase().replace("_"," ")}</label>`).join("")}</div></div>`}
+      ${e.hasErpAccess ? "" : `<div><label class="field-label">Modules they can access (My Workspace is always included)</label>${accessCheckboxes([])}</div>`}
     </div>
     <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><button type="submit" class="btn primary">${e.hasErpAccess?"Reset password":"Grant access"}</button></div>
     </form>`);
@@ -3160,7 +3195,7 @@ function openGrantAccess(id){
     ev.preventDefault();
     const f = new FormData(ev.target);
     try{
-      await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/grant-access`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: f.get("password"), roles: [...new Set(["EMPLOYEE", ...f.getAll("grantRole")])] }) });
+      await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/grant-access`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: f.get("password"), roles: accessRolesFromForm(f, []) }) });
       await loadEmployees();
       toast(e.hasErpAccess ? "Password reset" : "ERP access granted");
       await openEmployeeDetail(id); render();
@@ -3279,6 +3314,10 @@ function openEditEmployee(id){
       </div>
       <div><label class="field-label">Email</label><input class="field-input" type="email" name="email" required value="${esc(e.email)}"></div>
       <div><label class="field-label">Phone</label><input class="field-input" name="phone" required value="${esc(e.phone)}"></div>
+      <div class="section-label">ERP access</div>
+      ${e.hasErpAccess
+        ? `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Tick the modules ${esc(e.name)} can open. My Workspace is always included. Changes apply on their next request — no logout needed.</div></div>${accessCheckboxes(e.erpRoles)}`
+        : `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>No ERP login yet — go back to their profile and use “Grant access” to create one and pick their modules.</div></div>`}
     </div>
     <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></div>
     </form>`);
@@ -3290,6 +3329,11 @@ function openEditEmployee(id){
         name: f.get("name"), dept: f.get("dept"), role: f.get("role"), joinedAt: f.get("joined"), dob: f.get("dob")||undefined,
         email: f.get("email"), phone: f.get("phone"), empType: TITLECASE_TO_API(f.get("empType")),
       })});
+      if(e.hasErpAccess){
+        const roles = accessRolesFromForm(f, e.erpRoles);
+        if([...roles].sort().join() !== [...new Set(["EMPLOYEE",...e.erpRoles])].sort().join())
+          await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/access`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ roles }) });
+      }
       await loadEmployees();
       toast("Employee details updated"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't save changes"); }
@@ -5759,11 +5803,13 @@ Auth.init().then(async (authUser) => {
   const crmContentJobs = [];
   const roles = emp.roles || [];
   if(emp.isAdmin || roles.includes('SALES') || roles.includes('SALES_HEAD')) crmContentJobs.push(loadCrmModule());
+  else if(roles.includes('CLIENTS')) crmContentJobs.push(Promise.all([loadClients(), loadTasks()]));
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
   await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
   nav.module = isLeadershipRole(emp) ? 'dashboard' : (isHRRole(emp) ? 'hr' : ((isStaffRole(emp) || isSalesRole(emp)) ? 'workspace' : 'dashboard'));
+  if(!visibleModules().some(m=>m.id===nav.module)) nav.module = visibleModules()[0].id;
   const landingMod = visibleModules().find(m=>m.id===nav.module);
   nav.sub[nav.module] = (landingMod && landingMod.sub && landingMod.sub.length) ? landingMod.sub[0].id : (nav.sub[nav.module] || 'overview');
   document.getElementById('app-shell').hidden = false;
