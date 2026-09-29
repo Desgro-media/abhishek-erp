@@ -1,3 +1,4 @@
+import { accountIdByName } from "./payableAccounts";
 import type { Prisma } from "@prisma/client";
 
 // Flat 10% — hardcoded in the old prototype too (not per-employee or
@@ -18,6 +19,7 @@ export async function createCommissionPayable(
   return tx.payable.create({
     data: {
       category: "COMMISSION",
+      accountId: await accountIdByName(tx, "Commission Payable"),
       payee: `${params.salesPerson} — commission on ${params.sourceLabel}`,
       salesPerson: params.salesPerson,
       amount: commissionAmount,

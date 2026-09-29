@@ -644,6 +644,9 @@ function payableStatus(p){
   return "Pending";
 }
 function payableStatusKind(s){ return {Paid:"pos","Partially Paid":"warn",Pending:"warn"}[s] || "neutral"; }
+// What to show as a payable's category/liability account: the real Chart-of-Accounts account it sits
+// on, falling back to the legacy name guess only for old rows that couldn't be matched.
+function payableAccountLabel(p){ return p.accountName || liabilityAccountFor(p.category); }
 function liabilityAccountFor(category){
   if(category==="Internal Loan") return "Internal Loan";
   if(category==="Salary") return "Payroll Payable";
@@ -665,7 +668,8 @@ function mapInvoice(i){
 }
 function mapPayable(p){
   return {
-    id: p.id, category: TITLECASE_FROM_API(p.category), payee: p.payee, salesPerson: p.salesPerson || undefined,
+    id: p.id, category: TITLECASE_FROM_API(p.category), accountId: p.accountId || "", accountName: p.account ? p.account.name : "",
+    payee: p.payee, salesPerson: p.salesPerson || undefined,
     amount: Number(p.amount), due: isoDate(p.dueAt), createdAt: isoDate(p.createdAt),
     payments: p.payments.map(pm=>({id:pm.id, amount:Number(pm.amount), date:isoDate(pm.paidDate), accountId:pm.accountId, note:pm.note})),
   };
@@ -1407,6 +1411,17 @@ function journalAccountOptions(selected){
 function expenseCoaOptions(selectedId){
   const opts = [];
   chartOfAccounts.filter(c=>!c.parent && (c.type==="Expense"||c.type==="Liability")).forEach(m=>{
+    opts.push(`<option value="${m._dbId}" ${selectedId===m._dbId?'selected':''}>${esc(m.name)}</option>`);
+    chartOfAccounts.filter(c=>c.parent===m.name).forEach(k=>opts.push(`<option value="${k._dbId}" ${selectedId===k._dbId?'selected':''}>&nbsp;&nbsp;↳ ${esc(k.name)}</option>`));
+  });
+  return opts.join("");
+}
+
+// Category options for a payable — Liability accounts only, main accounts with their sub-accounts
+// indented beneath (same shape as expenseCoaOptions). The server re-validates the account is a Liability.
+function payableCoaOptions(selectedId){
+  const opts = [];
+  chartOfAccounts.filter(c=>!c.parent && c.type==="Liability").forEach(m=>{
     opts.push(`<option value="${m._dbId}" ${selectedId===m._dbId?'selected':''}>${esc(m.name)}</option>`);
     chartOfAccounts.filter(c=>c.parent===m.name).forEach(k=>opts.push(`<option value="${k._dbId}" ${selectedId===k._dbId?'selected':''}>&nbsp;&nbsp;↳ ${esc(k.name)}</option>`));
   });
@@ -3316,20 +3331,26 @@ function openEditEmployee(id){
       <div><label class="field-label">Phone</label><input class="field-input" name="phone" required value="${esc(e.phone)}"></div>
       <div class="section-label">ERP access</div>
       ${e.hasErpAccess
-        ? `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Tick the modules ${esc(e.name)} can open. My Workspace is always included. Changes apply on their next request — no logout needed.</div></div>${accessCheckboxes(e.erpRoles)}`
-        : `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>No ERP login yet — go back to their profile and use “Grant access” to create one and pick their modules.</div></div>`}
+        ? `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Tick the modules ${esc(e.name)} can open. My Workspace is always included. Changes apply on their next request — no logout needed.</div></div>`
+        : `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>No ERP login yet. Tick the modules and set a password to create their login (login email: ${esc(e.email)}), or leave both empty to skip.</div></div>
+      <div><label class="field-label">Password (to create their login)</label><input class="field-input" type="password" name="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters"></div>`}
+      <div><label class="field-label">Modules they can access (My Workspace is always included)</label>${accessCheckboxes(e.erpRoles)}</div>
     </div>
     <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></div>
     </form>`);
   document.getElementById("f-edit-employee").addEventListener("submit", async ev=>{
     ev.preventDefault();
     const f = new FormData(ev.target);
+    const wantLogin = !e.hasErpAccess && (f.get("password") || f.getAll("grantRole").length);
+    if(wantLogin && (f.get("password")||"").length<8){ toast("Set a password of at least 8 characters to create their login"); return; }
     try{
       await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
         name: f.get("name"), dept: f.get("dept"), role: f.get("role"), joinedAt: f.get("joined"), dob: f.get("dob")||undefined,
         email: f.get("email"), phone: f.get("phone"), empType: TITLECASE_TO_API(f.get("empType")),
       })});
-      if(e.hasErpAccess){
+      if(wantLogin){
+        await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/grant-access`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: f.get("password"), roles: accessRolesFromForm(f, []) }) });
+      } else if(e.hasErpAccess){
         const roles = accessRolesFromForm(f, e.erpRoles);
         if([...roles].sort().join() !== [...new Set(["EMPLOYEE",...e.erpRoles])].sort().join())
           await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/access`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ roles }) });
@@ -4639,7 +4660,7 @@ function deleteWarningFor(kind, id){
   if(kind==='payable'){
     const p = payables.find(x=>x.id===id); if(!p) return {label:"this payable", warning:fallback};
     const blocked = (p.payments||[]).length>0;
-    let w = `${esc(p.category)} — ${esc(p.payee)}.`;
+    let w = `${esc(payableAccountLabel(p))} — ${esc(p.payee)}.`;
     if(p.category==='Commission') w += " This is a sales commission entry — deleting it removes that person's earned commission record.";
     w += blocked ? " It has recorded payments — the payment ledger is append-only, so this can't be deleted." : " This can't be undone.";
     return {label:"this payable", warning:w};
@@ -4863,7 +4884,7 @@ function acctPayables(){
   <div class="panel">
     <div class="panel-head"><h3>Payables</h3><div class="sub">${inr(total)}${dateFilterSuffix(payablesMonthFilter,'due in')} · cleared Salary &amp; Rent → Commission &amp; Internal Loans → Vendor</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Category</th><th>Liability Account</th><th>Payee / Purpose</th><th>Due</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${filtered.slice().sort((a,b)=>CLEAR_ORDER.indexOf(a.category)-CLEAR_ORDER.indexOf(b.category)).map(p=>{ const st=payableStatus(p), bal=payableBalance(p); return `<tr><td><span class="tag type">${esc(p.category)}</span></td><td class="muted">${esc(liabilityAccountFor(p.category))}</td><td class="muted">${esc(p.payee)}</td><td class="muted">${fmtDateShort(p.due)}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,payableStatusKind(st))}</td><td><div style="display:flex;gap:6px;">${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditPayable('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${(p.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No payables${payablesMonthFilter==='All'?'':' for this range'}.</div></td></tr>`}</tbody>
+      <tbody>${filtered.slice().sort((a,b)=>CLEAR_ORDER.indexOf(a.category)-CLEAR_ORDER.indexOf(b.category)).map(p=>{ const st=payableStatus(p), bal=payableBalance(p); return `<tr><td><span class="tag type">${esc(payableAccountLabel(p))}</span></td><td class="muted">${p.accountName ? esc((chartOfAccounts.find(c=>c._dbId===p.accountId)||{}).parent || "—") : "Unassigned — edit to fix"}</td><td class="muted">${esc(p.payee)}</td><td class="muted">${fmtDateShort(p.due)}</td><td class="num mono">${inr(p.amount)}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,payableStatusKind(st))}</td><td><div style="display:flex;gap:6px;">${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditPayable('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${(p.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No payables${payablesMonthFilter==='All'?'':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -5210,7 +5231,7 @@ function openAddPayable(){
     <div class="modal-head"><h3>New payable</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-add-payable"><div class="modal-body">
       <div class="field-row">
-        <div><label class="field-label">Category</label><select class="field-input" name="category">${CLEAR_ORDER.map(c=>`<option>${c}</option>`).join('')}</select></div>
+        <div><label class="field-label">Category</label><select class="field-input" name="accountId">${payableCoaOptions()}</select></div>
         <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="0" required placeholder="15000"></div>
       </div>
       <div><label class="field-label">Payee / Purpose</label><input class="field-input" name="payee" required placeholder="e.g. Office rent — September"></div>
@@ -5222,7 +5243,7 @@ function openAddPayable(){
     e.preventDefault();
     const f = new FormData(e.target);
     try{
-      await apiJson("/api/finance/payables", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ category:TITLECASE_TO_API(f.get("category")), payee:f.get("payee"), amount:Number(f.get("amount")), dueAt:f.get("due") }) });
+      await apiJson("/api/finance/payables", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId:f.get("accountId"), payee:f.get("payee"), amount:Number(f.get("amount")), dueAt:f.get("due") }) });
       await loadPayables();
       toast("Payable added"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't add payable"); }
@@ -5236,7 +5257,7 @@ function openEditPayable(id){
     <form id="f-edit-payable"><div class="modal-body">
       ${paidSoFar>0?`<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${inr(paidSoFar)} already recorded against this payable — amount can't be edited below that.</div></div>`:''}
       <div class="field-row">
-        <div><label class="field-label">Category</label><select class="field-input" name="category">${CLEAR_ORDER.map(c=>`<option ${c===p.category?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div><label class="field-label">Category</label><select class="field-input" name="accountId">${p.accountId?'':'<option value="" selected disabled>Choose an account…</option>'}${payableCoaOptions(p.accountId)}</select></div>
         <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="${paidSoFar||0}" required value="${p.amount}"></div>
       </div>
       <div><label class="field-label">Payee / Purpose</label><input class="field-input" name="payee" required value="${esc(p.payee)}"></div>
@@ -5249,7 +5270,7 @@ function openEditPayable(id){
     const f = new FormData(e.target);
     const amount = Math.max(paidSoFar||0, Number(f.get("amount")));
     try{
-      await apiJson(`/api/finance/payables/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ category:TITLECASE_TO_API(f.get("category")), payee:f.get("payee"), amount, dueAt:f.get("due") }) });
+      await apiJson(`/api/finance/payables/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId:f.get("accountId")||undefined, payee:f.get("payee"), amount, dueAt:f.get("due") }) });
       await loadPayables();
       toast("Payable updated"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't update payable"); }
@@ -5259,9 +5280,9 @@ function openRecordPayablePayment(id){
   const p = payables.find(x=>x.id===id);
   const bal = payableBalance(p);
   showModal(`
-    <div class="modal-head"><h3>Record payment — ${esc(p.category)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h3>Record payment — ${esc(payableAccountLabel(p))}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-pay-payable"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(p.payee)} · ${inr(p.amount)} owed · <b>${inr(bal)}</b> balance remaining · liability account <b>${esc(liabilityAccountFor(p.category))}</b></div></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(p.payee)} · ${inr(p.amount)} owed · <b>${inr(bal)}</b> balance remaining · liability account <b>${esc(payableAccountLabel(p))}</b></div></div>
       <div class="field-row">
         <div><label class="field-label">Amount paid (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${bal}" step="1" required value="${bal}"></div>
         <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>

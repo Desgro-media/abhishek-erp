@@ -5,6 +5,7 @@ import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
 import { isFinanceAdmin } from "../../middleware/financeAccess";
 import { sumAmounts, payableStatus } from "../../services/finance/calc";
+import { resolvePayableAccount } from "../../services/finance/payableAccounts";
 import { payableCreateSchema, payableUpdateSchema, payablePaymentSchema } from "../../validation/finance.schemas";
 
 function withComputed(p: { amount: unknown; payments: { amount: unknown }[] }) {
@@ -23,7 +24,7 @@ export const listPayables: RequestHandler = asyncHandler(async (req, res) => {
     where: admin
       ? { category: req.query.category as any }
       : { category: { in: ["COMMISSION", "SALES_BONUS"] }, salesPerson: req.user!.name },
-    include: { payments: true },
+    include: { payments: true, account: { select: { id: true, name: true } } },
     orderBy: { dueAt: "desc" },
   });
   res.json({ payables: payables.map(withComputed) });
@@ -34,8 +35,12 @@ export const createPayable: RequestHandler = asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
+  const resolved = await resolvePayableAccount(prisma, d.accountId);
+  if ("error" in resolved) return res.status(400).json({ error: resolved.error });
+
   const payable = await prisma.payable.create({
-    data: { category: d.category, payee: d.payee, salesPerson: d.salesPerson, amount: d.amount, dueAt: new Date(d.dueAt) },
+    include: { account: { select: { id: true, name: true } } },
+    data: { category: resolved.category, accountId: d.accountId, payee: d.payee, salesPerson: d.salesPerson, amount: d.amount, dueAt: new Date(d.dueAt) },
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_PAYABLE_CREATE", entityType: "Payable", entityId: payable.id, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
@@ -53,10 +58,17 @@ export const updatePayable: RequestHandler = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Amount can't be less than what's already been paid" });
   }
 
+  let derived: { category: any; accountId: string } | undefined;
+  if (d.accountId) {
+    const resolved = await resolvePayableAccount(prisma, d.accountId);
+    if ("error" in resolved) return res.status(400).json({ error: resolved.error });
+    derived = { category: resolved.category, accountId: d.accountId };
+  }
+
   const payable = await prisma.payable.update({
     where: { id: req.params.id },
-    data: { category: d.category, payee: d.payee, salesPerson: d.salesPerson, amount: d.amount, dueAt: d.dueAt ? new Date(d.dueAt) : undefined },
-    include: { payments: true },
+    data: { ...derived, payee: d.payee, salesPerson: d.salesPerson, amount: d.amount, dueAt: d.dueAt ? new Date(d.dueAt) : undefined },
+    include: { payments: true, account: { select: { id: true, name: true } } },
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_PAYABLE_UPDATE", entityType: "Payable", entityId: payable.id, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });

@@ -587,7 +587,13 @@ model InvoicePendingPayment {
 
 model Payable {
   id          String          @id @default(uuid())
+  // Internal "kind" — still drives commission/bonus automation and reports. Derived server-side from
+  // the chosen Chart-of-Accounts liability account for manual entries; to be retired in a follow-up.
   category    PayableCategory
+  // The real Liability account in the Chart of Accounts this payable sits on. Nullable only so legacy
+  // rows that couldn't be confidently matched stay visible for manual review.
+  accountId   String?         @map("account_id")
+  account     ChartOfAccount? @relation(fields: [accountId], references: [id])
   payee       String
   // Only set on Commission-category rows — see commission auto-creation in
   // the invoice/quote payment-approval controllers.
@@ -606,6 +612,7 @@ model Payable {
   payments PayablePayment[]
 
   @@index([category])
+  @@index([accountId])
   @@index([sourcePaymentId])
   @@map("payables")
 }
@@ -731,6 +738,7 @@ model ChartOfAccount {
 
   journalLines JournalLine[]
   expenses     Expense[]
+  payables     Payable[]
 
   @@map("chart_of_accounts")
 }

@@ -41,8 +41,10 @@ export const invoicePendingApprovalSchema = z.object({
   commissionRate: z.number().min(0).max(100).optional(),
 });
 
+// The client picks a Chart-of-Accounts Liability account; the server validates it is one and derives
+// the internal category from it — the client never sends a category.
 export const payableCreateSchema = z.object({
-  category: z.enum(["SALARY", "RENT", "COMMISSION", "SALES_BONUS", "INTERNAL_LOAN", "VENDOR"]),
+  accountId: z.string().uuid(),
   payee: z.string().min(1),
   salesPerson: z.string().optional(),
   amount: z.number().positive(),
