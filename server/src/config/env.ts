@@ -27,6 +27,16 @@ const envSchema = z.object({
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
   LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   LOGIN_LOCK_MINUTES: z.coerce.number().positive().default(15),
+
+  // Mail notifications via Brevo SMTP. One shared SMTP login/key; the "from"
+  // address differs per mailbox (both must be verified senders in Brevo).
+  // Leave SMTP_PASS unset to disable — sending is then a logged no-op.
+  SMTP_HOST: z.string().default("smtp-relay.brevo.com"),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  HR_MAIL_USER: z.string().default("hr@desgromedia.com"),
+  COMPANY_MAIL_USER: z.string().default("Official@desgromedia.com"),
 });
 
 const parsed = envSchema.safeParse(process.env);

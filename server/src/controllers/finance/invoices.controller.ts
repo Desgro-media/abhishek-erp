@@ -16,6 +16,7 @@ import {
   invoicePendingPaymentSchema,
   invoicePendingApprovalSchema,
 } from "../../validation/finance.schemas";
+import { sendMail, detailsHtml, COMPANY_MAIL } from "../../services/mail.service";
 
 function withComputed(inv: { items: { amount: unknown }[]; payments: { amount: unknown; paidDate: Date }[]; dueAt: Date }) {
   const total = invoiceTotal(inv.items);
@@ -66,7 +67,9 @@ export const createInvoice: RequestHandler = asyncHandler(async (req, res) => {
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_CREATE", entityType: "Invoice", entityId: invoice.id, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
-  res.status(201).json({ invoice: withComputed(invoice) });
+  const created = withComputed(invoice);
+  sendMail("company", { to: COMPANY_MAIL(), subject: `Invoice created: ${invoice.invoiceNo}`, html: detailsHtml("A new invoice was created.", { Invoice: invoice.invoiceNo, Total: created.total, Due: d.dueAt }) });
+  res.status(201).json({ invoice: created });
 });
 
 export const updateInvoice: RequestHandler = asyncHandler(async (req, res) => {
@@ -119,6 +122,7 @@ export const recordInvoicePayment: RequestHandler = asyncHandler(async (req, res
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT", entityType: "Invoice", entityId: invoiceId, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  sendMail("company", { to: COMPANY_MAIL(), subject: `Payment received: ${invoice.invoiceNo}`, html: detailsHtml("A payment was recorded against an invoice.", { Invoice: invoice.invoiceNo, Amount: d.amount, "Paid on": d.paidDate, "Balance left": Math.max(0, balance - d.amount) }) });
   res.status(201).json({ payment });
 });
 

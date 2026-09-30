@@ -11,6 +11,7 @@ import {
   candidateCreateSchema,
   candidateUpdateSchema,
 } from "../../validation/hr.schemas";
+import { sendMail, detailsHtml, HR_MAIL } from "../../services/mail.service";
 
 // Everything in this file is HR/Admin only (mounted behind requireHRAdmin).
 
@@ -67,6 +68,7 @@ export const createCandidate: RequestHandler = asyncHandler(async (req, res) => 
   });
 
   await recordAudit({ userId: req.user!.sub, action: "HR_CANDIDATE_CREATE", entityType: "Candidate", entityId: candidate.id, afterData: d });
+  sendMail("hr", { to: HR_MAIL(), subject: `New candidate: ${d.name}`, html: detailsHtml("A candidate was added.", { Name: d.name, Position: position.role, Email: d.email, Phone: d.phone }) });
   res.status(201).json({ candidate });
 });
 
@@ -87,6 +89,18 @@ export const updateCandidate: RequestHandler = asyncHandler(async (req, res) => 
     beforeData: { stage: before.stage },
     afterData: parsed.data,
   });
+
+  if (candidate.email && before.stage !== candidate.stage) {
+    const msg: Partial<Record<string, [string, string]>> = {
+      SHORTLISTED: ["You have been shortlisted", "Good news — you have been shortlisted for the next stage. We will be in touch shortly."],
+      INTERVIEW: ["Interview invitation", "We would like to invite you for an interview. HR will contact you with the schedule."],
+      OFFER: ["Job offer", "We are pleased to extend you an offer. HR will contact you with the details."],
+      HIRED: ["Welcome to DesGro Media", "Welcome aboard! HR will share your onboarding details soon."],
+      REJECTED: ["Update on your application", "Thank you for your interest in DesGro Media. We will not be moving forward with your application at this time."],
+    };
+    const m = msg[candidate.stage];
+    if (m) sendMail("hr", { to: candidate.email, cc: HR_MAIL(), subject: m[0], html: detailsHtml(`Hi ${candidate.name}, ${m[1]}`, {}) });
+  }
   res.json({ candidate });
 });
 
