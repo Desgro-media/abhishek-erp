@@ -7,24 +7,23 @@ const log = pino({ name: "mail" });
 // "hr" sends leave/hiring mail, "company" sends finance mail.
 export type Mailbox = "hr" | "company";
 
-const transports: Partial<Record<Mailbox, Transporter>> = {};
+let transport: Transporter | null | undefined;
 
-function credentials(box: Mailbox) {
-  return box === "hr"
-    ? { user: env.HR_MAIL_USER, pass: env.HR_MAIL_PASS }
-    : { user: env.COMPANY_MAIL_USER, pass: env.COMPANY_MAIL_PASS };
+function getTransport(): Transporter | null {
+  if (transport !== undefined) return transport;
+  transport =
+    env.SMTP_USER && env.SMTP_PASS
+      ? nodemailer.createTransport({
+          host: env.SMTP_HOST,
+          port: env.SMTP_PORT,
+          secure: env.SMTP_PORT === 465,
+          auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
+        })
+      : null;
+  return transport;
 }
 
-function transportFor(box: Mailbox): Transporter | null {
-  const { user, pass } = credentials(box);
-  if (!pass) return null;
-  return (transports[box] ??= nodemailer.createTransport({
-    host: env.SMTP_HOST,
-    port: env.SMTP_PORT,
-    secure: env.SMTP_PORT === 465,
-    auth: { user, pass },
-  }));
-}
+const fromAddress = (box: Mailbox) => (box === "hr" ? env.HR_MAIL_USER : env.COMPANY_MAIL_USER);
 
 function escapeHtml(v: string): string {
   return v.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -42,14 +41,12 @@ export function detailsHtml(intro: string, rows: Record<string, string | number 
 // Fire-and-forget: a mail failure must never fail or slow the API request that
 // triggered it, so this never throws and callers don't await it.
 export function sendMail(box: Mailbox, opts: { to: string | string[]; subject: string; html: string; cc?: string | string[] }): void {
-  const transport = transportFor(box);
-  if (!transport) {
-    log.debug({ box, subject: opts.subject }, "mail skipped — mailbox password not configured");
+  const t = getTransport();
+  if (!t) {
+    log.debug({ box, subject: opts.subject }, "mail skipped — SMTP not configured");
     return;
   }
-  const { user } = credentials(box);
-  transport
-    .sendMail({ from: `"DesGro Media" <${user}>`, ...opts })
+  t.sendMail({ from: `"DesGro Media" <${fromAddress(box)}>`, ...opts })
     .catch((err) => log.error({ err, box, subject: opts.subject }, "mail send failed"));
 }
 
