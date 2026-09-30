@@ -172,3 +172,11 @@ export const approvedReceiptUpdateSchema = z
     note: z.string().nullable().optional(),
   })
   .refine((d) => Object.values(d).some((v) => v !== undefined), { message: "Nothing to change" });
+
+export const commissionSettleSchema = z.object({
+  salesPerson: z.string().min(1),
+  accountId: z.string().uuid(),
+  paidDate: dateStr,
+  // Omit to settle the person's whole outstanding commission; otherwise applied oldest-first.
+  amount: z.number().positive().optional(),
+});
