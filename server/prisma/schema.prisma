@@ -959,6 +959,9 @@ model Client {
   onboardedAt    DateTime     @map("onboarded_at") @db.Date
   accountManager String?      @map("account_manager")
   salesPerson    String?      @map("sales_person")
+  // List visibility, independent of `status` (Active/Paused/Churned describes the relationship;
+  // this describes whether the client shows in the working lists). Null = not archived.
+  archivedAt     DateTime?    @map("archived_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
