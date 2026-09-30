@@ -1894,8 +1894,15 @@ function viewDashboard(){
   const receivable = invoices.reduce((s,i)=>s+invoiceBalance(i),0);
   const overdueInv = invoices.filter(i=>invoiceStatus(i)==="Overdue").reduce((s,i)=>s+invoiceBalance(i),0);
   const payableOutstanding = payables.reduce((s,p)=>s+payableBalance(p),0);
-  const revenueMTD = invoices.filter(i=>i.issued.slice(0,7)==="2026-09").reduce((s,i)=>s+invoiceTotal(i),0);
-  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)==="2026-09").length;
+  const thisMonth = TODAY.slice(0,7);
+  // Same figure as Accounts → Overview "Total Revenue": Finance-approved payments received this
+  // month, net of sales commission (server report, not a local re-sum of invoices). If that month's
+  // report isn't cached yet (e.g. the Accounts page was left on another month), fetch and redraw.
+  const revenueMTD = deptProfitability(thisMonth).rows.reduce((sum,r)=>sum+r.revenue,0);
+  if(!financeReportsCache.deptProfit[thisMonth] && isFinanceAdminUser(currentUser)){
+    loadFinanceReports(thisMonth).then(()=>{ if(nav.module==="dashboard") render(); }).catch(err=>console.error("Couldn't load dashboard revenue", err));
+  }
+  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)===thisMonth).length;
 
   const needsReview = [
     ...leaveRequests.filter(l=>l.status==="Pending").map(l=>({txt:`${byId(l.empId).name} requested ${l.days} day${l.days>1?'s':''} ${l.type.toLowerCase()} leave`, sub:`applied ${fmtDateShort(l.applied)}`})),
@@ -1925,9 +1932,9 @@ function viewDashboard(){
       <div class="kpi-sub">${overdueTasks} overdue</div>
     </div>
     <div class="kpi-card hero">
-      <div class="kpi-top"><span class="kpi-label">Revenue — September</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-receipt"/></svg></div></div>
+      <div class="kpi-top"><span class="kpi-label">Revenue — ${MONTH_LABEL[thisMonth]||thisMonth}</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-receipt"/></svg></div></div>
       <div class="kpi-value mono">${inr(revenueMTD)}</div>
-      <div class="kpi-sub">invoiced this month</div>
+      <div class="kpi-sub">received this month, net of commission</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-top"><span class="kpi-label">Active Clients</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-building"/></svg></div></div>
@@ -3893,7 +3900,7 @@ function openRecordPayment(id){
 function mktOverview(){
   const activeContent = contentItems.filter(c=>c.stage!=="Published").length;
   const overdueContent = contentItems.filter(c=>c.stage!=="Published" && c.due<TODAY).length;
-  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)==="2026-09").length;
+  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)===TODAY.slice(0,7)).length;
   const adRows = metaAdsCampaigns.map(adMetrics);
   const totalAdSpend = adRows.reduce((s,r)=>s+r.spend,0);
   const totalAdLeads = adRows.reduce((s,r)=>s+r.leads,0);
