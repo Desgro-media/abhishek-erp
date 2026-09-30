@@ -3651,8 +3651,8 @@ function openPayslip(id, readOnly){
       <div class="calc-line"><span>Special allowance</span><span class="mono">${inr(c.special)}</span></div>
       <div class="calc-line total"><span>Gross pay</span><span class="mono">${inr(c.gross)}</span></div>
       <div class="section-label">Deductions</div>
-      <div class="calc-line"><span>Provident fund</span><span class="mono">−${inr(c.pf)}</span></div>
-      <div class="calc-line"><span>Professional tax</span><span class="mono">−${inr(c.pt)}</span></div>
+      ${c.pf ? `<div class="calc-line"><span>Provident fund</span><span class="mono">−${inr(c.pf)}</span></div>` : ""}
+      ${c.pt ? `<div class="calc-line"><span>Professional tax</span><span class="mono">−${inr(c.pt)}</span></div>` : ""}
       ${c.advDeduction>0?`<div class="calc-line"><span>Advance recovery</span><span class="mono">−${inr(c.advDeduction)}</span></div>`:""}
       ${c.lopDeduction>0?`<div class="calc-line"><span>Loss of Pay (${c.lopDays} day${c.lopDays===1?"":"s"} · ${MONTH_LABEL[month]} has ${c.monthWorkingDays} working days)</span><span class="mono" style="color:var(--neg);">−${inr(c.lopDeduction)}</span></div>`:""}
       <div class="calc-line total"><span>Net pay</span><span class="mono">${inr(c.net)}</span></div>
