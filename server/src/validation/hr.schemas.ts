@@ -189,3 +189,13 @@ export const leaveAdjustmentSchema = z.object({
   days: z.number().min(-31).max(31).refine((n) => n !== 0 && Number.isInteger(n * 2), "Days must be non-zero, in half-day steps"),
   note: z.string().trim().min(3, "Give a reason"),
 });
+
+export const offerLetterSchema = z.object({
+  name: z.string().min(1),
+  role: z.string().min(1),
+  dept: z.string().min(1),
+  salary: z.number().nonnegative(),
+  joinDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  probationMonths: z.number().int().nonnegative(),
+  reportingTo: z.string().min(1),
+});

@@ -5,13 +5,15 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { nextSequentialCode } from "../../utils/sequentialCode";
 import { RESUMES_DIR } from "../../config/uploads";
+import { buildOfferLetterPdf } from "../../services/hr/offerLetter";
 import {
   positionCreateSchema,
   positionUpdateSchema,
   candidateCreateSchema,
   candidateUpdateSchema,
+  offerLetterSchema,
 } from "../../validation/hr.schemas";
-import { sendMail, detailsHtml, HR_MAIL } from "../../services/mail.service";
+import { sendMail, sendMailNow, detailsHtml, HR_MAIL } from "../../services/mail.service";
 
 // Everything in this file is HR/Admin only (mounted behind requireHRAdmin).
 
@@ -94,7 +96,6 @@ export const updateCandidate: RequestHandler = asyncHandler(async (req, res) => 
     const msg: Partial<Record<string, [string, string]>> = {
       SHORTLISTED: ["You have been shortlisted", "Good news — you have been shortlisted for the next stage. We will be in touch shortly."],
       INTERVIEW: ["Interview invitation", "We would like to invite you for an interview. HR will contact you with the schedule."],
-      OFFER: ["Job offer", "We are pleased to extend you an offer. HR will contact you with the details."],
       HIRED: ["Welcome to DesGro Media", "Welcome aboard! HR will share your onboarding details soon."],
       REJECTED: ["Update on your application", "Thank you for your interest in DesGro Media. We will not be moving forward with your application at this time."],
     };
@@ -116,4 +117,40 @@ export const downloadCandidateResume: RequestHandler = asyncHandler(async (req, 
   res.download(path.join(RESUMES_DIR, path.basename(candidate.resumeFilename)), candidate.resumeOriginalName || "resume.pdf", (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: "Resume file is missing" });
   });
+});
+
+// Renders the offer letter as a PDF for download (works for manual entry too — no candidate needed).
+export const offerLetterPdf: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = offerLetterSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const pdf = await buildOfferLetterPdf(parsed.data);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", 'attachment; filename="offer-letter.pdf"');
+  res.send(pdf);
+});
+
+// Emails the PDF to the candidate's address from the HR mailbox, HR copied.
+export const sendOfferLetter: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = offerLetterSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const candidate = await prisma.candidate.findUnique({ where: { id: req.params.id } });
+  if (!candidate) return res.status(404).json({ error: "Candidate not found" });
+  if (!candidate.email) return res.status(400).json({ error: "This candidate has no email address on file" });
+
+  const d = parsed.data;
+  const pdf = await buildOfferLetterPdf(d);
+  try {
+    await sendMailNow("hr", {
+      to: candidate.email,
+      cc: HR_MAIL(),
+      subject: `Offer letter — ${d.role} at DesGro Media`,
+      html: detailsHtml(`Hi ${d.name}, please find your offer letter attached. Reply to this email to confirm your acceptance.`, {}),
+      attachments: [{ filename: `Offer letter - ${d.name}.pdf`, content: pdf, contentType: "application/pdf" }],
+    });
+  } catch (err) {
+    return res.status(502).json({ error: err instanceof Error ? err.message : "Couldn't send the email" });
+  }
+
+  await recordAudit({ userId: req.user!.sub, action: "HR_OFFER_LETTER_SEND", entityType: "Candidate", entityId: candidate.id, afterData: { to: candidate.email, role: d.role } });
+  res.json({ sent: true, to: candidate.email });
 });
