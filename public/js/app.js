@@ -462,7 +462,7 @@ function setPayablesMonthFilter(v){ payablesMonthFilter = v; render(); }
 let expensesMonthFilter = "All";
 function setExpensesMonthFilter(v){ expensesMonthFilter = v; render(); }
 let commissionsMonthFilter = "All";
-function setCommissionsMonthFilter(v){ commissionsMonthFilter = v; render(); }
+function setCommissionsMonthFilter(v){ commissionsMonthFilter = v; loadCommissionSummary().then(render).catch(err=>toast(err.message||"Couldn't load commissions")); }
 let journalMonthFilter = "All";
 function setJournalMonthFilter(v){ journalMonthFilter = v; render(); }
 let advancesMonthFilter = "All";
@@ -696,7 +696,19 @@ function mapCommissionWithdrawal(w){
 function bankAccountBalance(accountId){ const b = bankById(accountId); return b ? b.balance : 0; }
 
 async function loadInvoices(){ invoices = (await apiJson("/api/finance/invoices")).invoices.map(mapInvoice); }
-async function loadPayables(){ payables = (await apiJson("/api/finance/payables")).payables.map(mapPayable); }
+async function loadPayables(){
+  payables = (await apiJson("/api/finance/payables")).payables.map(mapPayable);
+  // Commission entries are Payables, so any payment/delete here changes the commission numbers too.
+  if(isFinanceAdminUser(currentUser)) await loadCommissionSummary();
+}
+// Sales Commissions page numbers (previous balance / earned / paid / balance / entries) are computed
+// on the server from the real commission + payment records for the chosen period — see
+// getCommissionSummary(). The browser only displays them.
+let commissionSummary = { period:"all", months:[], totals:{earned:0,paid:0,balance:0,entries:0,salesPersons:0}, rows:[] };
+async function loadCommissionSummary(){
+  const period = commissionsMonthFilter==="All" ? "all" : commissionsMonthFilter==="Today" ? "today" : commissionsMonthFilter;
+  commissionSummary = await apiJson(`/api/finance/commissions/summary?period=${encodeURIComponent(period)}`);
+}
 async function loadExpenses(){ expenses = (await apiJson("/api/finance/expenses")).expenses.map(mapExpense); }
 async function loadBankAccounts(){ bankAccounts = (await apiJson("/api/finance/bank-accounts")).accounts.map(mapBankAccount); }
 async function loadCommissionWithdrawals(){
@@ -1686,6 +1698,7 @@ const TAB_REFRESH = {
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
   "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():null],
   "accounts/overview":[()=>isFinanceAdminUser(currentUser)?refreshFinanceReports():null],
+  "accounts/commissions":[()=>isFinanceAdminUser(currentUser)?loadCommissionSummary():null],
 };
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
@@ -5164,29 +5177,24 @@ function salesLeaderboardRows(){
   }).sort((a,b)=>b.earned-a.earned);
 }
 function acctCommissions(){
+  // Everything numeric comes from commissionSummary (server-computed). "Commission by sales person"
+  // follows the Show filter; the KPI cards use the summary's all-time totals; "Previous balance" is the
+  // still-unpaid balance of entries due before the selected period.
+  const rows = commissionSummary.rows;
+  const filtered = commissionsMonthFilter!=="All";
+  const totalEarned = commissionSummary.totals.earned, totalPaid = commissionSummary.totals.paid, totalBalance = commissionSummary.totals.balance;
+  const salesCount = commissionSummary.totals.salesPersons, entryCount = commissionSummary.totals.entries;
+  // Only for the "Monthly sales target & bonus" table below, which is pinned to the current month
+  // (targets/bonuses are a this-month standing, not something that has a history) — not the filter.
   const commissionPayables = payables.filter(p=>p.category==="Commission");
-  const salesNames = [...new Set(commissionPayables.map(p=>p.salesPerson).filter(Boolean))];
-  // "Commission by sales person" below respects the month filter (by each entry's due date); the KPI
-  // cards above stay all-time, same as Total Receivable does on Accounts > Invoices. Filtered locally
-  // rather than through commissionRowsByPerson(), which stays unfiltered — it's shared with a Sales
-  // sign-in's own My Commission / Leaderboard tabs, which should always show their real running balance.
-  const filteredPayables = commissionPayables.filter(p=>matchesDateFilter(p.due, commissionsMonthFilter));
-  const filteredNames = [...new Set(filteredPayables.map(p=>p.salesPerson).filter(Boolean))];
-  const rows = filteredNames.map(name=>{
-    const mine = filteredPayables.filter(p=>p.salesPerson===name);
-    return {name, mine, earned: mine.reduce((s,p)=>s+p.amount,0), paid: mine.reduce((s,p)=>s+payablePaid(p),0), balance: mine.reduce((s,p)=>s+payableBalance(p),0)};
-  }).sort((a,b)=> b.balance-a.balance || b.earned-a.earned);
-  const totalEarned = commissionPayables.reduce((s,p)=>s+p.amount,0);
-  const totalPaid = commissionPayables.reduce((s,p)=>s+payablePaid(p),0);
-  const totalBalance = commissionPayables.reduce((s,p)=>s+payableBalance(p),0);
   const pendingWithdrawals = commissionWithdrawals.filter(w=>w.status==="Pending").slice().sort((a,b)=>a.requested.localeCompare(b.requested));
   const decidedWithdrawals = commissionWithdrawals.filter(w=>w.status!=="Pending").slice().sort((a,b)=>b.requested.localeCompare(a.requested)).slice(0,8);
   return `
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Sales earns ${Math.round(SALES_COMMISSION_RATE*100)}% commission on every payment Finance approves — from a quote or from a client's existing invoice. Each entry below is its own Commission payable, so it pays out in full or in installments exactly like any other payable — record a partial payment here and the balance updates immediately. A sales person can also request a withdrawal themselves — approve it below to pay it out.</div></div>
   <div class="kpi-grid">
-    <div class="kpi-card hero"><div class="kpi-label">Outstanding Commission</div><div class="kpi-value mono ${totalBalance>0?'warn':''}">${inr(totalBalance)}</div><div class="kpi-sub">across ${salesNames.length} sales person${salesNames.length===1?'':'s'}</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Outstanding Commission</div><div class="kpi-value mono ${totalBalance>0?'warn':''}">${inr(totalBalance)}</div><div class="kpi-sub">across ${salesCount} sales person${salesCount===1?'':'s'}</div></div>
     <div class="kpi-card"><div class="kpi-label">Paid Out</div><div class="kpi-value mono pos">${inr(totalPaid)}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Total Earned</div><div class="kpi-value mono">${inr(totalEarned)}</div><div class="kpi-sub">${commissionPayables.length} commission entr${commissionPayables.length===1?'y':'ies'}, all time</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Earned</div><div class="kpi-value mono">${inr(totalEarned)}</div><div class="kpi-sub">${entryCount} commission entr${entryCount===1?'y':'ies'}, all time</div></div>
   </div>
   <div class="panel">
     <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;">
@@ -5222,36 +5230,67 @@ function acctCommissions(){
     </table></div>
   </div>`:''}
   <div class="panel">
-    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionPayables.map(p=>p.due), commissionsMonthFilter)}</select></div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">Earned</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th></tr></thead>
-      <tbody>${rows.length?rows.map(r=>{ const statusLabel = r.balance<=0?'Settled':(r.paid>0?'Partially Paid':'Outstanding'); return `<tr><td colspan="5" style="padding:0;border-bottom:1px solid var(--line);">
+    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine, or settle everything at once${filtered?` · showing ${commissionsMonthFilter==='Today'?'today':monthLabel(commissionsMonthFilter)}, plus what was carried over from before`:''}</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionSummary.months.map(m=>m+'-01'), commissionsMonthFilter)}</select></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">Previous balance</th><th class="num">Earned</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows.length?rows.map((r,i)=>{ const owed = r.totalOutstanding; const statusLabel = owed<=0.005?'Settled':(r.paid>0?'Partially Paid':'Outstanding'); return `<tr><td colspan="7" style="padding:0;border-bottom:1px solid var(--line);">
         <details class="report-details">
-          <summary class="report-line" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;align-items:center;padding:10px 14px;">
-            <span class="name" style="font-weight:700;color:var(--ink);"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(r.name)}</span>
+          <summary class="report-line" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr 1.3fr;align-items:center;padding:10px 14px;">
+            <span class="name" style="font-weight:700;color:var(--ink);"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(r.salesPerson)}</span>
+            <span class="num mono ${r.previousBalance>0?'warn':'muted'}" title="Unpaid from entries due before this period">${r.previousBalance>0?inr(r.previousBalance):'—'}</span>
             <span class="num mono">${inr(r.earned)}</span>
             <span class="num mono muted">${r.paid>0?inr(r.paid):'—'}</span>
             <span class="num mono" style="${r.balance>0?'color:var(--neg);font-weight:700;':''}">${r.balance>0?inr(r.balance):'—'}</span>
-            <span>${pill(statusLabel, r.balance<=0?'pos':'warn')}</span>
+            <span>${pill(statusLabel, owed<=0.005?'pos':'warn')}</span>
+            <span style="display:flex;justify-content:flex-end;">${owed>0.005?`<button class="btn btn-sm primary" onclick="event.preventDefault();event.stopPropagation();openSettleCommission(${i})" title="Pay every outstanding entry for ${esc(r.salesPerson)}, or an amount applied oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle all · ${inr(owed)}</button>`:''}</span>
           </summary>
           <div class="report-detail">
-            ${groupCommissionsByMonth(r.mine).map(g=>`<div class="report-detail-month">
+            ${r.entries.length ? groupCommissionsByMonth(r.entries).map(g=>`<div class="report-detail-month">
               <div class="report-detail-row" style="font-weight:700;color:var(--ink-soft);">
                 <span>${esc(g.label)}</span><span class="amt mono">${inr(g.total)}</span>
               </div>
-              ${g.items.map(p=>{ const bal=payableBalance(p); return `<div class="report-detail-row" style="align-items:center;padding-left:10px;">
+              ${g.items.map(p=>{ const bal=p.balance; return `<div class="report-detail-row" style="align-items:center;padding-left:10px;">
                 <span>${esc(p.payee)} <span class="faint">· ${fmtDateShort(p.due)}</span></span>
                 <span style="display:flex;gap:10px;align-items:center;">
                   <span class="amt mono">${inr(p.amount)}${bal>0 && bal<p.amount?` <span class="faint">(${inr(bal)} left)</span>`:''}</span>
                   ${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11px;">paid in full</span>`}
-                  ${(p.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}
+                  ${p.hasPayments?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}
                 </span>
               </div>`; }).join('')}
-            </div>`).join('')}
+            </div>`).join('') : `<div class="report-detail-row faint">No entries due in this period${r.previousBalance>0?' — only the '+inr(r.previousBalance)+' carried over from earlier months':''}.</div>`}
           </div>
         </details>
-      </td></tr>`; }).join(""):`<tr><td colspan="5"><div class="empty">No commission earned${commissionsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
+      </td></tr>`; }).join(""):`<tr><td colspan="7"><div class="empty">No commission earned${commissionsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
+}
+function openSettleCommission(i){
+  const r = commissionSummary.rows[i]; if(!r) return;
+  const owed = r.totalOutstanding;
+  showModal(`
+    <div class="modal-head"><h3>Settle commission — ${esc(r.salesPerson)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-settle-commission"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>${inr(owed)}</b> outstanding across all of ${esc(r.salesPerson)}'s commission entries. Each entry gets its own payment record, <b>oldest due date first</b>. Enter less than the full amount to pay only the oldest entries that it covers.</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Amount to pay (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${owed}" step="0.01" required value="${owed}"></div>
+        <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>
+      </div>
+      <div><label class="field-label">Paid from account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Settle</button></div></div>
+    </form>`);
+  document.getElementById("f-settle-commission").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const amount = Number(f.get("amount"));
+    const body = { salesPerson:r.salesPerson, accountId:f.get("accountId"), paidDate:f.get("date") };
+    if(amount < owed - 0.005) body.amount = amount;   // omitted = settle everything
+    try{
+      const res = await apiJson("/api/finance/commissions/settle", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      await Promise.all([loadPayables(), loadBankAccounts()]);
+      toast(`Paid ${inr(res.paid)} to ${r.salesPerson} across ${res.payments.length} entr${res.payments.length===1?'y':'ies'}` + (res.remaining>0 ? ` — ${inr(res.remaining)} still outstanding` : ' — fully settled'));
+      closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't settle commission"); }
+  });
 }
 function openEditSalesPolicy(){
   showModal(`
