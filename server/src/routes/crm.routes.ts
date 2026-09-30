@@ -25,6 +25,8 @@ router.get("/tasks", requireClientsUser, tasks.listTasks);
 router.use(requireCrmUser);
 router.post("/clients", clients.createClient);
 router.patch("/clients/:id", clients.updateClient);
+router.patch("/clients/:id/archive", clients.archiveClient);
+router.patch("/clients/:id/restore", clients.restoreClient);
 router.delete("/clients/:id", clients.deleteClient);
 
 router.get("/leads", leads.listLeads);

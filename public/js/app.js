@@ -482,6 +482,9 @@ const COMPLAINT_CATEGORIES = ["Workplace Behavior","Harassment","Management / Le
    clientById()/leadById() just match against the cached array's real id). */
 let clients = [];
 const clientById = id => clients.find(c=>c.id===id);
+// `clients` keeps archived rows too (invoices, quotes and tasks still resolve their client through
+// clientById). Every working list, count and dropdown goes through this instead.
+const liveClients = () => clients.filter(c=>!c.archivedAt);
 function clientCell(id){ const c=clientById(id); if(!c) return "—"; return `<div><div style="font-weight:700;font-size:13px;">${esc(c.name)}</div><div class="subtext">${esc(c.city)}</div></div>`; }
 
 // Enums that round-trip cleanly through the generic TITLECASE helpers
@@ -502,6 +505,7 @@ function mapClient(c){
     services: c.services||[], status: TITLECASE_FROM_API(c.status),
     billingType: TITLECASE_FROM_API(c.billingType),
     onboarded: isoDate(c.onboardedAt), accountManager: c.accountManager||"", salesPerson: c.salesPerson||"",
+    archivedAt: c.archivedAt ? isoDate(c.archivedAt) : null,
   };
 }
 async function loadClients(){ clients = (await apiJson("/api/crm/clients")).clients.map(mapClient); }
@@ -1762,7 +1766,7 @@ const TOPBAR_TITLES = {
   },
   clients: {
     overview:["Clients Overview","Activity and delivery status across clients"],
-    all:["All Clients", ()=>clients.length+" on record"],
+    all:["All Clients", ()=>liveClients().length+" on record"],
   },
   accounts: {
     overview:["Accounts Overview","Revenue, receivables and payables"],
@@ -1888,7 +1892,7 @@ function render(){
 function viewDashboard(){
   const openTasks = clientTasks.filter(t=>t.status!=="Done").length;
   const overdueTasks = clientTasks.filter(t=>t.status!=="Done" && t.due && t.due<TODAY).length;
-  const activeClients = clients.filter(c=>c.status==="Active").length;
+  const activeClients = liveClients().filter(c=>c.status==="Active").length;
   const pendingLeave = leaveRequests.filter(l=>l.status==="Pending").length;
   const pendingAdvances = advances.filter(a=>a.status==="Pending").length;
   const receivable = invoices.reduce((s,i)=>s+invoiceBalance(i),0);
@@ -1939,7 +1943,7 @@ function viewDashboard(){
     <div class="kpi-card">
       <div class="kpi-top"><span class="kpi-label">Active Clients</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-building"/></svg></div></div>
       <div class="kpi-value mono">${activeClients}</div>
-      <div class="kpi-sub">of ${clients.length} total on record</div>
+      <div class="kpi-sub">of ${liveClients().length} total on record</div>
     </div>
   </div>
 
@@ -2049,12 +2053,12 @@ function dashboardModuleOverviews(){
   }
 
   if(vis.has("clients")){
-    const active = clients.filter(c=>c.status==="Active").length;
+    const active = liveClients().filter(c=>c.status==="Active").length;
     const overdueClients = new Set(invoices.filter(i=>invoiceStatus(i)==="Overdue").map(i=>i.clientId)).size;
     const cutoff = new Date(Date.now()-30*864e5).toISOString().slice(0,10);
-    const recent = clients.filter(c=>c.onboarded && c.onboarded>=cutoff).sort((a,b)=>b.onboarded.localeCompare(a.onboarded));
+    const recent = liveClients().filter(c=>c.onboarded && c.onboarded>=cutoff).sort((a,b)=>b.onboarded.localeCompare(a.onboarded));
     cards.push(dashCard("clients","Clients","i-building",[
-      dashStat("active clients", `${active}<span style="font-size:12px;color:var(--ink-soft);font-family:Manrope;"> / ${clients.length}</span>`),
+      dashStat("active clients", `${active}<span style="font-size:12px;color:var(--ink-soft);font-family:Manrope;"> / ${liveClients().length}</span>`),
       dashStat("with overdue invoices", overdueClients, overdueClients?"neg":""),
       dashStat("added in last 30 days", recent.length),
     ], recent[0] ? `Latest: ${esc(recent[0].name)} · ${fmtDateShort(recent[0].onboarded)}` : ""));
@@ -4078,16 +4082,43 @@ function clientsAll(){
   // The server already scopes `clients` to just this Sales caller's own book when they're a plain
   // Sales role (see listClients) — this just labels the view to match what's actually being shown.
   const isSalesViewer = isSalesRepRole(currentUser);
-  const filtered = clients.filter(c=>clientsMonthFilter==='All' || c.onboarded.slice(0,7)===clientsMonthFilter);
+  const live = liveClients();
+  const filtered = live.filter(c=>clientsMonthFilter==='All' || c.onboarded.slice(0,7)===clientsMonthFilter);
+  const archived = clients.filter(c=>c.archivedAt).sort((a,b)=>b.archivedAt.localeCompare(a.archivedAt));
   const hidePayment = isStaffRole(currentUser);
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Onboarded</span><select class="select-sm" onchange="setClientsMonthFilter(this.value)">${monthFilterOptions(clients.map(c=>c.onboarded), clientsMonthFilter)}</select></div><button class="btn primary" onclick="openAddClient()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add client</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Onboarded</span><select class="select-sm" onchange="setClientsMonthFilter(this.value)">${monthFilterOptions(live.map(c=>c.onboarded), clientsMonthFilter)}</select></div><button class="btn primary" onclick="openAddClient()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add client</button></div>
   <div class="panel">
-    <div class="panel-head"><h3>${isSalesViewer?'My clients':'Clients'}</h3><div class="sub">${filtered.length} of ${clients.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}</div></div>
+    <div class="panel-head"><h3>${isSalesViewer?'My clients':'Clients'}</h3><div class="sub">${filtered.length} of ${live.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th>${hidePayment?'':'<th class="num">Payment Due</th>'}<th>Status</th><th></th></tr></thead>
-      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openEditClient('${c.id}')" title="Edit client"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${canDeleteClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openConfirmDelete('client','${c.id}')" title="Delete client"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?6:7}"><div class="empty">${isSalesViewer?'No clients assigned to you yet.':'No clients onboarded that month.'}</div></td></tr>`}</tbody>
+      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openEditClient('${c.id}')" title="Edit client"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="event.stopPropagation();archiveClient('${c.id}')" title="Archive client — hides them from the working lists, keeps every invoice, quote and payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Archive</button>${canDeleteClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openConfirmDelete('client','${c.id}')" title="Delete client (only for records added by mistake)"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?6:7}"><div class="empty">${isSalesViewer?'No clients assigned to you yet.':'No clients onboarded that month.'}</div></td></tr>`}</tbody>
     </table></div>
-  </div>`;
+  </div>
+  ${archived.length ? `
+  <details class="panel" style="margin-top:14px;" ${clientsArchivedOpen?'open':''} ontoggle="clientsArchivedOpen=this.open">
+    <summary class="panel-head" style="cursor:pointer;list-style:none;"><div><h3>Archived clients</h3><div class="sub">${archived.length} out of the working lists · invoices, quotes and payments are kept</div></div><span class="sub">Show / hide</span></summary>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th><th>Status</th><th>Archived</th><th></th></tr></thead>
+      <tbody>${archived.map(c=>`<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td><td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td class="muted">${fmtDate(c.archivedAt)}</td><td><div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();restoreClient('${c.id}')">Restore</button></div></td></tr>`).join("")}</tbody>
+    </table></div>
+  </details>` : ""}`;
+}
+let clientsArchivedOpen = false;
+async function archiveClient(id){
+  const c = clientById(id); if(!c) return;
+  if(!confirm(`Archive ${c.name}?\n\nThey'll disappear from the working lists and dropdowns, but every invoice, quote and payment stays. You can restore them any time.`)) return;
+  try{
+    await apiJson(`/api/crm/clients/${id}/archive`, { method:"PATCH" });
+    await loadClients(); clientsArchivedOpen = true;
+    toast(c.name+" archived"); render();
+  }catch(err){ toast(err.message || "Couldn't archive client"); }
+}
+async function restoreClient(id){
+  const c = clientById(id); if(!c) return;
+  try{
+    await apiJson(`/api/crm/clients/${id}/restore`, { method:"PATCH" });
+    await loadClients();
+    toast(c.name+" restored"); render();
+  }catch(err){ toast(err.message || "Couldn't restore client"); }
 }
 // Mirrors deleteClient() server-side: only Admin / Sales Head may delete (a Sales rep can still edit).
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
@@ -4287,7 +4318,7 @@ function partyOptions(selectedValue){
   // the server — see listClients).
   const isSalesCreator = isSalesRepRole(currentUser);
   const leadPool = isSalesCreator ? marketingLeads.filter(l=>l.leadOwner===currentUser.name) : marketingLeads;
-  const clientOpts = clients.map(c=>`<option value="client:${c.id}" ${selectedValue==='client:'+c.id?'selected':''}>${esc(c.name)}</option>`).join('');
+  const clientOpts = liveClients().map(c=>`<option value="client:${c.id}" ${selectedValue==='client:'+c.id?'selected':''}>${esc(c.name)}</option>`).join('');
   const leadOpts = leadPool.map(l=>`<option value="lead:${l.id}" ${selectedValue==='lead:'+l.id?'selected':''}>${esc(l.name)} — lead</option>`).join('');
   return `<optgroup label="Existing clients">${clientOpts}</optgroup><optgroup label="Leads (not yet a client)">${leadOpts}</optgroup>`;
 }
@@ -4327,7 +4358,7 @@ function mktQuotes(){
 // have none yet. Anything Prepaid (the default) with zero invoices raised against it is a gap
 // Sales/Finance should close.
 function clientsMissingInvoice(){
-  return clients.filter(c => (c.billingType||"Prepaid")!=="Postpaid" && !invoices.some(i=>i.clientId===c.id));
+  return liveClients().filter(c => (c.billingType||"Prepaid")!=="Postpaid" && !invoices.some(i=>i.clientId===c.id));
 }
 // Invoices are Finance's ledger — the server only lets Finance/Admin edit or delete them (Sales can log payments).
 function canEditInvoices(){ return isFinanceAdminUser(currentUser); }
@@ -4539,11 +4570,11 @@ function openEditLead(id){
 
 /* ===================== CLIENTS OVERVIEW ===================== */
 function clientsOverview(){
-  const activeClients = clients.filter(c=>c.status==="Active").length;
+  const activeClients = liveClients().filter(c=>c.status==="Active").length;
   const openTasks = clientTasks.filter(t=>t.status!=="Done");
   const overdueTasks = clientTasks.filter(t=>t.status!=="Done" && t.due && t.due<TODAY);
   const doneTasks = clientTasks.filter(t=>t.status==="Done").length;
-  const deptCounts = SERVICE_DEPARTMENTS.map(d=>({d,n:clients.filter(c=>c.status==="Active" && c.services.includes(d)).length})).filter(x=>x.n>0).sort((a,b)=>b.n-a.n);
+  const deptCounts = SERVICE_DEPARTMENTS.map(d=>({d,n:liveClients().filter(c=>c.status==="Active" && c.services.includes(d)).length})).filter(x=>x.n>0).sort((a,b)=>b.n-a.n);
   const maxDept = Math.max(...deptCounts.map(x=>x.n),1);
   return `
   <div class="kpi-grid">
@@ -5129,7 +5160,7 @@ function salesLeaderboardRows(){
   const commission = commissionRowsByPerson();
   return assignableEmployees().filter(e=>e.dept==='Sales').map(e=>{
     const row = commission.find(r=>r.name===e.name);
-    return { emp:e, name:e.name, earned: row?row.earned:0, clients: clients.filter(c=>c.salesPerson===e.name).length };
+    return { emp:e, name:e.name, earned: row?row.earned:0, clients: liveClients().filter(c=>c.salesPerson===e.name).length };
   }).sort((a,b)=>b.earned-a.earned);
 }
 function acctCommissions(){
@@ -5266,7 +5297,7 @@ function openAddInvoice(preselectClientId){
   showModal(`
     <div class="modal-head"><h3>New invoice</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-add-invoice"><div class="modal-body">
-      <div><label class="field-label">Client</label><select class="field-input" name="clientId">${clients.map(c=>`<option value="${c.id}" ${preselectClientId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label class="field-label">Client</label><select class="field-input" name="clientId">${clients.filter(c=>!c.archivedAt||c.id===preselectClientId).map(c=>`<option value="${c.id}" ${preselectClientId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
       <div class="section-label">Services — priced independently, total shown below</div>
       ${quoteServiceRows([])}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>₹0</b></div>
@@ -5298,7 +5329,7 @@ function openEditInvoice(id){
     <div class="modal-head"><h3>Edit invoice</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-edit-invoice"><div class="modal-body">
       ${paidSoFar>0?`<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${inr(paidSoFar)} already received against this invoice — total can't be edited below that.</div></div>`:''}
-      <div><label class="field-label">Client</label><select class="field-input" name="clientId">${clients.map(c=>`<option value="${c.id}" ${c.id===i.clientId?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label class="field-label">Client</label><select class="field-input" name="clientId">${clients.filter(c=>!c.archivedAt||c.id===i.clientId).map(c=>`<option value="${c.id}" ${c.id===i.clientId?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
       <div class="section-label">Services — priced independently, total shown below</div>
       ${quoteServiceRows(i.items||[])}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>${inr(invoiceTotal(i))}</b></div>

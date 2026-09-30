@@ -83,3 +83,28 @@ export const deleteClient: RequestHandler = asyncHandler(async (req, res) => {
   await recordAudit({ userId: req.user!.sub, action: "CRM_CLIENT_DELETE", entityType: "Client", entityId: client.id, beforeData: { clientCode: client.clientCode, name: client.name, tasksDeleted: client._count.tasks } });
   res.status(204).send();
 });
+
+// Archive / restore only flips archivedAt — the client row, its invoices, quotes and payments stay
+// exactly as they were. Gated exactly like updateClient: Admin / Sales Head for anyone, a plain
+// Sales rep only for their own clients.
+async function setArchived(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], archive: boolean) {
+  const existing = await prisma.client.findUnique({ where: { id: req.params.id } });
+  if (!existing) return res.status(404).json({ error: "Client not found" });
+  if (!seesWholeSalesTeam(req.user?.roles) && existing.salesPerson !== req.user!.name) {
+    return res.status(403).json({ error: "Forbidden — not your client" });
+  }
+  if (archive === !!existing.archivedAt) return res.status(409).json({ error: archive ? "Already archived" : "Not archived" });
+
+  const client = await prisma.client.update({ where: { id: existing.id }, data: { archivedAt: archive ? new Date() : null } });
+  await recordAudit({
+    userId: req.user!.sub,
+    action: archive ? "CRM_CLIENT_ARCHIVE" : "CRM_CLIENT_RESTORE",
+    entityType: "Client",
+    entityId: client.id,
+    beforeData: { archivedAt: existing.archivedAt },
+    afterData: { archivedAt: client.archivedAt },
+  });
+  res.json({ client });
+}
+export const archiveClient: RequestHandler = asyncHandler((req, res) => setArchived(req, res, true));
+export const restoreClient: RequestHandler = asyncHandler((req, res) => setArchived(req, res, false));
