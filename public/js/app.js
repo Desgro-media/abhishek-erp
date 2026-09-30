@@ -1894,8 +1894,15 @@ function viewDashboard(){
   const receivable = invoices.reduce((s,i)=>s+invoiceBalance(i),0);
   const overdueInv = invoices.filter(i=>invoiceStatus(i)==="Overdue").reduce((s,i)=>s+invoiceBalance(i),0);
   const payableOutstanding = payables.reduce((s,p)=>s+payableBalance(p),0);
-  const revenueMTD = invoices.filter(i=>i.issued.slice(0,7)==="2026-09").reduce((s,i)=>s+invoiceTotal(i),0);
-  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)==="2026-09").length;
+  const thisMonth = TODAY.slice(0,7);
+  // Same figure as Accounts → Overview "Total Revenue": Finance-approved payments received this
+  // month, net of sales commission (server report, not a local re-sum of invoices). If that month's
+  // report isn't cached yet (e.g. the Accounts page was left on another month), fetch and redraw.
+  const revenueMTD = deptProfitability(thisMonth).rows.reduce((sum,r)=>sum+r.revenue,0);
+  if(!financeReportsCache.deptProfit[thisMonth] && isFinanceAdminUser(currentUser)){
+    loadFinanceReports(thisMonth).then(()=>{ if(nav.module==="dashboard") render(); }).catch(err=>console.error("Couldn't load dashboard revenue", err));
+  }
+  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)===thisMonth).length;
 
   const needsReview = [
     ...leaveRequests.filter(l=>l.status==="Pending").map(l=>({txt:`${byId(l.empId).name} requested ${l.days} day${l.days>1?'s':''} ${l.type.toLowerCase()} leave`, sub:`applied ${fmtDateShort(l.applied)}`})),
@@ -1925,9 +1932,9 @@ function viewDashboard(){
       <div class="kpi-sub">${overdueTasks} overdue</div>
     </div>
     <div class="kpi-card hero">
-      <div class="kpi-top"><span class="kpi-label">Revenue — September</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-receipt"/></svg></div></div>
+      <div class="kpi-top"><span class="kpi-label">Revenue — ${MONTH_LABEL[thisMonth]||thisMonth}</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-receipt"/></svg></div></div>
       <div class="kpi-value mono">${inr(revenueMTD)}</div>
-      <div class="kpi-sub">invoiced this month</div>
+      <div class="kpi-sub">received this month, net of commission</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-top"><span class="kpi-label">Active Clients</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-building"/></svg></div></div>
@@ -1974,7 +1981,98 @@ function viewDashboard(){
         <div class="panel-body">${needsReview.length ? needsReview.map(n=>`<div class="feed-item"><div class="feed-dot"></div><div><div class="feed-text"><strong>${n.txt}</strong></div><div class="feed-time">${n.sub}</div></div></div>`).join("") : '<div class="empty">All caught up.</div>'}</div>
       </div>
     </div>
+  </div>
+  ${dashboardModuleOverviews()}`;
+}
+
+/* ---- Dashboard: per-module overview cards ----
+   Everything here reads the same in-memory arrays (and the same invoiceBalance / invoiceStatus /
+   payableBalance helpers) that each module's own page renders from — all of which are fetched once,
+   in parallel, at sign-in — so there is no extra request and nothing to drift out of sync. A card is
+   only built for modules visibleModules() says this user can open; clicking it goes to that module. */
+function dashStat(label, value, tone){ return `<div class="mod-stat"><div class="v mono ${tone||''}">${value}</div><div class="l">${label}</div></div>`; }
+function dashCard(mid, title, icon, stats, note){
+  return `<div class="panel mod-card" onclick="setModule('${mid}')" title="Open ${esc(title)}">
+    <div class="panel-head"><div style="display:flex;align-items:center;gap:8px;"><svg class="icon" style="width:15px;height:15px"><use href="#${icon}"/></svg><h3>${esc(title)}</h3></div><span class="sub" style="color:var(--brand);">View all →</span></div>
+    <div class="panel-body"><div class="mod-stats">${stats.join("")}</div>${note?`<div class="mod-note">${note}</div>`:""}</div>
   </div>`;
+}
+// Next occurrence of a month/day (from a YYYY-MM-DD) within `days` of today; null if none.
+function dashUpcoming(iso, days){
+  if(!iso) return null;
+  const now = new Date(TODAY+"T00:00:00Z");
+  let d = new Date(Date.UTC(now.getUTCFullYear(), +iso.slice(5,7)-1, +iso.slice(8,10)));
+  if(d<now) d = new Date(Date.UTC(now.getUTCFullYear()+1, +iso.slice(5,7)-1, +iso.slice(8,10)));
+  const diff = Math.round((d-now)/864e5);
+  return diff<=days ? {date:d.toISOString().slice(0,10), diff} : null;
+}
+function dashboardModuleOverviews(){
+  const vis = new Set(visibleModules().map(m=>m.id));
+  const month = TODAY.slice(0,7);
+  const cards = [];
+
+  if(vis.has("workspace") && currentUser){
+    const mine = clientTasks.filter(t=>t.assignedTo===currentUser.name);
+    const weekAgo = new Date(Date.now()-6*864e5).toISOString().slice(0,10);
+    const open = mine.filter(t=>t.status!=="Done").length;
+    const overdue = mine.filter(t=>t.status!=="Done" && t.due && t.due<TODAY).length;
+    const doneWeek = mine.filter(t=>t.status==="Done" && t.doneDate && t.doneDate>=weekAgo).length;
+    cards.push(dashCard("workspace","My Workspace","i-briefcase",[
+      dashStat("open tasks", open), dashStat("overdue", overdue, overdue?"neg":""), dashStat("completed this week", doneWeek, doneWeek?"pos":""),
+    ]));
+  }
+
+  if(vis.has("hr")){
+    const pendingLeave = leaveRequests.filter(l=>l.status==="Pending").length;
+    const joiners = employees.filter(e=>e.joined && e.joined.slice(0,7)===month).length;
+    const bdays = employees.map(e=>({e, u:dashUpcoming(e.dob,30)})).filter(x=>x.u).sort((a,b)=>a.u.diff-b.u.diff);
+    const annis = employees.filter(e=>e.joined && +e.joined.slice(0,4)<+TODAY.slice(0,4)).map(e=>({e, u:dashUpcoming(e.joined,30)})).filter(x=>x.u).sort((a,b)=>a.u.diff-b.u.diff);
+    const next = bdays[0] ? `Next birthday: ${esc(bdays[0].e.name)} · ${fmtDateShort(bdays[0].u.date)}` : "";
+    cards.push(dashCard("hr","HR — People","i-users",[
+      dashStat("people", employees.length), dashStat("pending leave requests", pendingLeave, pendingLeave?"warn":""),
+      dashStat("new joiners this month", joiners), dashStat("birthdays · anniversaries (30 days)", bdays.length+" · "+annis.length),
+    ], next));
+  }
+
+  if(vis.has("marketing")){
+    const inFlight = contentItems.filter(c=>c.stage!=="Published").length;
+    const lead = s=>marketingLeads.filter(l=>l.status===s).length;
+    const quote = s=>quotes.filter(q=>q.status===s).length;
+    const soldMTD = salesTargets.reduce((s,r)=>s+r.monthlySales,0);
+    const targetMTD = salesTargets.reduce((s,r)=>s+r.target,0);
+    cards.push(dashCard("marketing","Marketing and Sales","i-megaphone",[
+      dashStat("content in progress", inFlight),
+      dashStat("sales vs target (month)", targetMTD ? `${inr(soldMTD)}<span style="font-size:12px;color:var(--ink-soft);font-family:Manrope;"> / ${inr(targetMTD)}</span>` : "—"),
+      dashStat("leads: new · contacted · qualified", `${lead("New")} · ${lead("Contacted")} · ${lead("Qualified")}`),
+      dashStat("quotes: draft · sent · with finance", `${quote("Draft")} · ${quote("Sent")} · ${quote("Submitted to Finance")}`),
+    ]));
+  }
+
+  if(vis.has("clients")){
+    const active = clients.filter(c=>c.status==="Active").length;
+    const overdueClients = new Set(invoices.filter(i=>invoiceStatus(i)==="Overdue").map(i=>i.clientId)).size;
+    const cutoff = new Date(Date.now()-30*864e5).toISOString().slice(0,10);
+    const recent = clients.filter(c=>c.onboarded && c.onboarded>=cutoff).sort((a,b)=>b.onboarded.localeCompare(a.onboarded));
+    cards.push(dashCard("clients","Clients","i-building",[
+      dashStat("active clients", `${active}<span style="font-size:12px;color:var(--ink-soft);font-family:Manrope;"> / ${clients.length}</span>`),
+      dashStat("with overdue invoices", overdueClients, overdueClients?"neg":""),
+      dashStat("added in last 30 days", recent.length),
+    ], recent[0] ? `Latest: ${esc(recent[0].name)} · ${fmtDateShort(recent[0].onboarded)}` : ""));
+  }
+
+  if(vis.has("accounts")){
+    const receivable = invoices.reduce((s,i)=>s+invoiceBalance(i),0);
+    const overdueInv = invoices.filter(i=>invoiceStatus(i)==="Overdue").reduce((s,i)=>s+invoiceBalance(i),0);
+    const payable = payables.reduce((s,p)=>s+payableBalance(p),0);
+    const overduePay = payables.filter(p=>p.due<TODAY).reduce((s,p)=>s+payableBalance(p),0);
+    const receivedMTD = invoices.reduce((s,i)=>s+i.payments.filter(p=>p.date.slice(0,7)===month).reduce((a,p)=>a+p.amount,0),0);
+    cards.push(dashCard("accounts","Accounts","i-coins",[
+      dashStat("receivables", inr(receivable)), dashStat("payables", inr(payable), payable?"warn":""),
+      dashStat("overdue receivables", inr(overdueInv), overdueInv?"neg":""), dashStat("approved payments this month", inr(receivedMTD), receivedMTD?"pos":""),
+    ], overduePay ? `${inr(overduePay)} of payables are past due` : ""));
+  }
+
+  return cards.length ? `<div class="mod-grid">${cards.join("")}</div>` : "";
 }
 
 /* ===================== MY WORKSPACE (Staff / Sales self-service) ===================== */
@@ -3802,7 +3900,7 @@ function openRecordPayment(id){
 function mktOverview(){
   const activeContent = contentItems.filter(c=>c.stage!=="Published").length;
   const overdueContent = contentItems.filter(c=>c.stage!=="Published" && c.due<TODAY).length;
-  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)==="2026-09").length;
+  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)===TODAY.slice(0,7)).length;
   const adRows = metaAdsCampaigns.map(adMetrics);
   const totalAdSpend = adRows.reduce((s,r)=>s+r.spend,0);
   const totalAdLeads = adRows.reduce((s,r)=>s+r.leads,0);
