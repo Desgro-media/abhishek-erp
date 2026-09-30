@@ -7,6 +7,7 @@ import { isFinanceAdmin } from "../../middleware/financeAccess";
 import { sumAmounts, payableStatus } from "../../services/finance/calc";
 import { resolvePayableAccount } from "../../services/finance/payableAccounts";
 import { payableCreateSchema, payableUpdateSchema, payablePaymentSchema } from "../../validation/finance.schemas";
+import { sendMail, detailsHtml, COMPANY_MAIL } from "../../services/mail.service";
 
 function withComputed(p: { amount: unknown; payments: { amount: unknown }[] }) {
   const amount = Number(p.amount);
@@ -44,6 +45,7 @@ export const createPayable: RequestHandler = asyncHandler(async (req, res) => {
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_PAYABLE_CREATE", entityType: "Payable", entityId: payable.id, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  sendMail("company", { to: COMPANY_MAIL(), subject: `Payable created: ${d.payee}`, html: detailsHtml("A new payable was booked.", { Payee: d.payee, Amount: d.amount, Due: d.dueAt, Account: payable.account?.name }) });
   res.status(201).json({ payable: withComputed({ ...payable, payments: [] }) });
 });
 

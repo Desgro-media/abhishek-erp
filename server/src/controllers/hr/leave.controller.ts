@@ -6,6 +6,8 @@ import { isHRAdmin, resolveScopedEmployeeId } from "../../middleware/hrAccess";
 import { leaveRequestCreateSchema, leaveDecisionSchema } from "../../validation/hr.schemas";
 import { computeMonthlyLeaveUsage, getLeaveLedger, ensureCarryForward, thisMonth } from "../../services/hr/leaveBalance";
 import { leaveAdjustmentSchema } from "../../validation/hr.schemas";
+import { sendMail, detailsHtml, HR_MAIL } from "../../services/mail.service";
+
 
 function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
@@ -93,6 +95,14 @@ export const createLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
     userAgent: req.headers["user-agent"] ?? null,
   });
 
+  const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { name: true, email: true } });
+  if (emp) {
+    const span = d.fromDate === d.toDate ? d.fromDate : `${d.fromDate} to ${d.toDate}`;
+    const rows = { Employee: emp.name, Type: d.type, Dates: span, Days: d.days, Reason: d.reason };
+    sendMail("hr", { to: HR_MAIL(), subject: `Leave request: ${emp.name} (${span})`, html: detailsHtml("A new leave request is waiting for approval.", rows) });
+    sendMail("hr", { to: emp.email, subject: "Your leave request was submitted", html: detailsHtml("HR has received your leave request and will review it.", rows) });
+  }
+
   res.status(201).json({ leaveRequest });
 });
 
@@ -142,6 +152,18 @@ export const decideLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"] ?? null,
   });
+
+  const emp = await prisma.employee.findUnique({ where: { id: before.employeeId }, select: { name: true, email: true } });
+  if (emp) {
+    const verdict = d.status === "APPROVED" ? "approved" : "rejected";
+    sendMail("hr", {
+      to: emp.email,
+      subject: `Your leave request was ${verdict}`,
+      html: detailsHtml(`Your leave request has been ${verdict}.`, {
+        Type: before.type, From: before.fromDate.toISOString().slice(0, 10), To: before.toDate.toISOString().slice(0, 10), Days: Number(before.days), Note: d.note,
+      }),
+    });
+  }
 
   res.json({ leaveRequest });
 });

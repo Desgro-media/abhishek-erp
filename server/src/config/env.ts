@@ -27,6 +27,17 @@ const envSchema = z.object({
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
   LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   LOGIN_LOCK_MINUTES: z.coerce.number().positive().default(15),
+
+  // Mail notifications (Google Workspace SMTP). Two mailboxes: HR mail sends
+  // leave/hiring mails, the company mailbox sends finance mails. Each needs a
+  // Google App Password (2-Step Verification on). Leave unset to disable —
+  // sending is then a logged no-op, never an error.
+  SMTP_HOST: z.string().default("smtp.gmail.com"),
+  SMTP_PORT: z.coerce.number().default(465),
+  HR_MAIL_USER: z.string().default("hr@desgromedia.com"),
+  HR_MAIL_PASS: z.string().optional(),
+  COMPANY_MAIL_USER: z.string().default("Official@desgromedia.com"),
+  COMPANY_MAIL_PASS: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
