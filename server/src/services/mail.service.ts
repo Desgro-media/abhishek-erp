@@ -38,16 +38,30 @@ export function detailsHtml(intro: string, rows: Record<string, string | number 
   return `<div style="font-family:Arial,sans-serif;font-size:14px"><p>${escapeHtml(intro)}</p><table>${body}</table><p style="color:#999;font-size:12px">Sent automatically by DesGro ERP.</p></div>`;
 }
 
+export interface MailOptions {
+  to: string | string[];
+  subject: string;
+  html: string;
+  cc?: string | string[];
+  attachments?: { filename: string; content: Buffer; contentType?: string }[];
+}
+
+// For callers that must tell the user whether it went out (e.g. an offer letter):
+// rejects if SMTP isn't configured or the send fails.
+export async function sendMailNow(box: Mailbox, opts: MailOptions): Promise<void> {
+  const t = getTransport();
+  if (!t) throw new Error("Email isn't configured on the server (SMTP_USER / SMTP_PASS missing)");
+  await t.sendMail({ from: `"DesGro Media" <${fromAddress(box)}>`, ...opts });
+}
+
 // Fire-and-forget: a mail failure must never fail or slow the API request that
 // triggered it, so this never throws and callers don't await it.
-export function sendMail(box: Mailbox, opts: { to: string | string[]; subject: string; html: string; cc?: string | string[] }): void {
-  const t = getTransport();
-  if (!t) {
+export function sendMail(box: Mailbox, opts: MailOptions): void {
+  if (!getTransport()) {
     log.debug({ box, subject: opts.subject }, "mail skipped — SMTP not configured");
     return;
   }
-  t.sendMail({ from: `"DesGro Media" <${fromAddress(box)}>`, ...opts })
-    .catch((err) => log.error({ err, box, subject: opts.subject }, "mail send failed"));
+  sendMailNow(box, opts).catch((err) => log.error({ err, box, subject: opts.subject }, "mail send failed"));
 }
 
 export const HR_MAIL = () => env.HR_MAIL_USER;

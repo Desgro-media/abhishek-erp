@@ -3596,7 +3596,7 @@ function openOfferLetter(candidateId){
       try{ await apiJson(`/api/hr/candidates/${cId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ stage:"OFFER" }) }); await loadHiring(); }
       catch(err){ toast(err.message || "Couldn't update candidate stage"); }
     }
-    showOfferLetterPreview(data);
+    showOfferLetterPreview(data, cId);
   });
 }
 function buildOfferLetterText(d){
@@ -3628,15 +3628,45 @@ Warm regards,
 HR Team
 DesGro Media`;
 }
-function showOfferLetterPreview(d){
+let currentOffer = null;
+function showOfferLetterPreview(d, candidateId){
+  currentOffer = { data:d, candidateId:candidateId||null };
+  const cand = candidateId ? candidates.find(c=>c.id===candidateId) : null;
   const text = buildOfferLetterText(d);
+  const canSend = !!(cand && cand.email);
   showModal(`
     <div class="modal-head"><h3>Offer letter — ${esc(d.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
       <textarea class="field-input" id="offer-letter-textarea" rows="18" readonly style="resize:vertical;font-family:inherit;white-space:pre-wrap;">${esc(text)}</textarea>
+      <div class="muted" style="font-size:12px;margin-top:8px;">${canSend ? `Will be emailed as a PDF to <b>${esc(cand.email)}</b> (HR copied).` : (cand ? "This candidate has no email address, so it can't be sent." : "Manual entry — pick a candidate to email it.")}</div>
     </div>
-    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn primary" onclick="copyApplyText('offer-letter-textarea','Offer letter copied')"><svg class="icon" style="width:13px;height:13px"><use href="#i-link"/></svg>Copy letter</button></div>`, true);
+    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Close</button><div style="display:flex;gap:8px;"><button class="btn ghost" onclick="copyApplyText('offer-letter-textarea','Offer letter copied')"><svg class="icon" style="width:13px;height:13px"><use href="#i-link"/></svg>Copy</button><button class="btn ghost" onclick="downloadOfferLetterPdf()"><svg class="icon" style="width:13px;height:13px"><use href="#i-download"/></svg>Download PDF</button><button class="btn primary" id="btn-send-offer" ${canSend?"":"disabled"} onclick="sendOfferLetter()">Send to candidate</button></div></div>`, true);
   toast(`Offer letter ready for ${d.name}`);
+}
+async function downloadOfferLetterPdf(){
+  if(!currentOffer) return;
+  try{
+    const res = await Auth.apiFetch("/api/hr/offer-letter/pdf", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(currentOffer.data) });
+    if(!res.ok){ const d = await res.json().catch(()=>({})); throw new Error(d.error || "Couldn't generate the PDF"); }
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = "Offer letter - " + currentOffer.data.name.replace(/[^\w.-]+/g,"_") + ".pdf";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }catch(err){ toast(err.message || "Couldn't generate the PDF"); }
+}
+async function sendOfferLetter(){
+  if(!currentOffer || !currentOffer.candidateId) return;
+  const btn = document.getElementById("btn-send-offer");
+  if(btn){ btn.disabled = true; btn.textContent = "Sending…"; }
+  try{
+    const r = await apiJson(`/api/hr/candidates/${currentOffer.candidateId}/offer-letter/send`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(currentOffer.data) });
+    toast("Offer letter sent to " + r.to);
+    closeModal();
+  }catch(err){
+    toast(err.message || "Couldn't send the offer letter");
+    if(btn){ btn.disabled = false; btn.textContent = "Send to candidate"; }
+  }
 }
 function openPayslip(id, readOnly){
   const e = byId(id); const month = payroll.selectedMonth; const c = computePayrollRow(e, month);
