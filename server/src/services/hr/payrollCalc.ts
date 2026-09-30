@@ -21,8 +21,10 @@ export async function computePayrollRow(employeeId: string, month: string, db: P
   const basic = Math.round(gross * 0.6);
   const hra = Math.round(gross * 0.2);
   const special = gross - basic - hra;
-  const pf = Math.round(basic * 0.12);
-  const pt = 200;
+  // PF and professional tax are not deducted (company decision) — kept as 0 so the
+  // payslip/API shape doesn't change.
+  const pf = 0;
+  const pt = 0;
 
   const recoveringAdvances = await db.advance.findMany({ where: { employeeId, status: "RECOVERING" } });
   const advDeduction = recoveringAdvances.reduce((sum, a) => sum + Math.min(Number(a.monthlyDeduction), Number(a.balance)), 0);
