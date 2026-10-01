@@ -41,7 +41,7 @@ export const quoteCreateSchema = z.object({
   clientId: z.string().uuid().optional(),
   leadId: z.string().uuid().optional(),
   items: z.array(quoteItemSchema).min(1),
-  title: z.string().min(1),
+  // No title: it's generated server-side (QT/DDMMYY/serial) and any client-sent value is dropped.
 }).refine((d) => !!d.clientId !== !!d.leadId, { message: "Exactly one of clientId or leadId is required" });
 export const quoteUpdateSchema = z.object({
   // Explicit null (not just omission) clears the other party field when
@@ -49,7 +49,6 @@ export const quoteUpdateSchema = z.object({
   clientId: z.string().uuid().nullable().optional(),
   leadId: z.string().uuid().nullable().optional(),
   items: z.array(quoteItemSchema).min(1).optional(),
-  title: z.string().min(1).optional(),
 }).refine((d) => d.clientId === undefined || d.leadId === undefined || !(d.clientId && d.leadId), { message: "A quote can't have both a client and a lead" });
 
 export const quotePendingPaymentSchema = z.object({

@@ -1,4 +1,5 @@
 import { RequestHandler } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { seesWholeSalesTeam } from "../../middleware/crmAccess";
@@ -49,15 +50,30 @@ export const listQuotes: RequestHandler = asyncHandler(async (req, res) => {
   res.json({ quotes });
 });
 
+// QT/DDMMYY/serial — serial resets each day (IST). Runs inside the create transaction; the counter row
+// is bumped with one atomic upsert, so two simultaneous creates always get different serials.
+async function nextQuoteTitle(tx: Prisma.TransactionClient): Promise<string> {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", day: "2-digit", month: "2-digit", year: "2-digit" }).formatToParts(new Date());
+  const get = (t: string) => parts.find((p) => p.type === t)!.value;
+  const day = `${get("day")}${get("month")}${get("year")}`;
+  const rows = await tx.$queryRaw<{ last: number }[]>`
+    INSERT INTO quote_daily_counters (day, last) VALUES (${day}, 1)
+    ON CONFLICT (day) DO UPDATE SET last = quote_daily_counters.last + 1
+    RETURNING last`;
+  return `QT/${day}/${String(rows[0].last).padStart(3, "0")}`;
+}
+
 export const createQuote: RequestHandler = asyncHandler(async (req, res) => {
   const parsed = quoteCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
-  const quote = await prisma.quote.create({
-    data: { quoteCode: await nextQuoteCode(), clientId: d.clientId, leadId: d.leadId, title: d.title, createdBy: req.user!.name, items: { create: d.items } },
-    include: INCLUDE,
-  });
+  const quoteCode = await nextQuoteCode();
+  const quote = await prisma.$transaction(async (tx) =>
+    tx.quote.create({
+      data: { quoteCode, clientId: d.clientId, leadId: d.leadId, title: await nextQuoteTitle(tx), createdBy: req.user!.name, items: { create: d.items } },
+      include: INCLUDE,
+    }));
 
   await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_CREATE", entityType: "Quote", entityId: quote.id, afterData: d });
   res.status(201).json({ quote });
@@ -84,7 +100,7 @@ export const updateQuote: RequestHandler = asyncHandler(async (req, res) => {
     if (d.items) await tx.quoteItem.deleteMany({ where: { quoteId: before.id } });
     return tx.quote.update({
       where: { id: before.id },
-      data: { clientId: d.clientId, leadId: d.leadId, title: d.title, items: d.items ? { create: d.items } : undefined },
+      data: { clientId: d.clientId, leadId: d.leadId, items: d.items ? { create: d.items } : undefined },
       include: INCLUDE,
     });
   });
