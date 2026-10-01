@@ -108,7 +108,7 @@ function mapAdvance(a){
   return {
     id: a.id, empId: employeeCodeByDbId[a.employeeId] || a.employeeId,
     amount: Number(a.amount), reason: a.reason, requested: isoDate(a.requestedAt),
-    installments: a.installments, status: TITLECASE_FROM_API(a.status),
+    installments: a.installments, deductFromMonth: a.deductFromMonth||"", status: TITLECASE_FROM_API(a.status),
     monthlyDeduction: Number(a.monthlyDeduction), balance: Number(a.balance),
     paidDate: a.paidDate ? isoDate(a.paidDate) : undefined,
   };
@@ -1547,6 +1547,7 @@ const MODULES = [
     {id:"attendance", label:"My Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
+    {id:"advance", label:"Advance Salary", icon:"i-coins", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length:0},
     {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
     {id:"complaints", label:"Complaints", icon:"i-megaphone"},
   ]},
@@ -1627,6 +1628,7 @@ const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
   {id:"attendance", label:"My Attendance", icon:"i-attendance"},
   {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
+  {id:"advance", label:"Advance Salary", icon:"i-coins", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length:0},
   {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
   {id:"commission", label:"My Commission", icon:"i-percent", count:()=>currentUser?payables.filter(p=>p.category==="Commission" && p.salesPerson===currentUser.name && payableBalance(p)>0).length:0},
   {id:"leaderboard", label:"Leaderboard", icon:"i-target"},
@@ -1709,7 +1711,7 @@ function visibleModulesLegacy(){
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
-  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
+  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
   "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():null],
@@ -1764,6 +1766,7 @@ const TOPBAR_TITLES = {
     attendance:["My Attendance","Your check-in status and this month's record"],
     leave:["Leave", ()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id).length+" request(s) on record":""],
     payroll:["My Payroll", ()=>{ const m=myPayroll[0]; return m ? MONTH_LABEL[m.month]+" · "+m.payStatus : "Your salary and requests"; }],
+    advance:["Advance Salary", ()=>currentUser?advances.filter(a=>a.empId===currentUser.id).length+" request(s) on record":""],
     payments:["Payment Requests", ()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id).length+" request(s) on record":""],
     commission:["My Commission", ()=>{ if(!currentUser) return ""; const mine=commissionRowsByPerson().find(r=>r.name===currentUser.name); return mine&&mine.balance>0 ? inr(mine.balance)+" outstanding" : "All settled"; }],
     leaderboard:["Leaderboard", ()=>salesLeaderboardRows().length+" sales team member(s)"],
@@ -1908,7 +1911,7 @@ function render(){
   }
   renderTopbar();
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
@@ -2467,14 +2470,45 @@ function workspaceAttendance(){
     <div class="panel-body"><div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Attendance</div><div class="kpi-value mono">${present}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${mtdWorkingDays} working days</span></div><div class="kpi-sub">${present>=mtdWorkingDays?'full attendance this month':(mtdWorkingDays-present)+' day(s) missed'}</div></div></div>
   </div>`;
 }
+// Employee-facing Advance Salary page: same requests as My Payroll's list (one source — the HR advances
+// API), just on its own page with the recovery plan visible. Approval is HR's (Pending → Recovering), Finance
+// pays it out, and the monthly deduction comes off payroll automatically.
+function workspaceAdvance(){
+  if(!currentUser) return '';
+  const mine = advances.filter(a=>a.empId===currentUser.id).slice().sort((a,b)=>b.requested.localeCompare(a.requested));
+  const outstanding = mine.filter(a=>a.status==="Recovering").reduce((s,a)=>s+a.balance,0);
+  const kind = st => st==="Pending"?"warn":st==="Rejected"?"neg":st==="Recovering"?"blue":"pos";
+  return `
+  ${hasEmployeeRecord() ? `<div class="toolbar"><div></div><button class="btn primary" onclick="openRequestAdvance()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Request advance</button></div>` : noEmployeeRecordBanner("advance")}
+  <div class="kpi-grid">
+    <div class="kpi-card hero"><div class="kpi-label">Still to recover</div><div class="kpi-value mono ${outstanding>0?'warn':''}">${inr(outstanding)}</div><div class="kpi-sub">deducted from your payroll</div></div>
+    <div class="kpi-card"><div class="kpi-label">Requests</div><div class="kpi-value mono">${mine.length}</div><div class="kpi-sub">${mine.filter(a=>a.status==="Pending").length} awaiting HR</div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h3>Your advances</h3><div class="sub">Request history and recovery</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Requested</th><th class="num">Amount</th><th>Reason</th><th>Recovery plan</th><th class="num">Balance</th><th>Status</th></tr></thead>
+      <tbody>${mine.length ? mine.map(a=>`<tr><td class="muted">${fmtDate(a.requested)}</td><td class="num mono">${inr(a.amount)}</td><td class="muted" style="max-width:240px;">${esc(a.reason)}</td><td class="muted">${a.deductFromMonth?`Deduct from ${monthLabel(a.deductFromMonth)}${a.installments>1?` · ${inr(a.monthlyDeduction)} × ${a.installments} months`:''}`:(a.installments>1?`${inr(a.monthlyDeduction)} × ${a.installments} months`:'Full, next payroll')}</td><td class="num mono">${a.status==="Recovering"?inr(a.balance):'—'}</td><td>${pill(a.status,kind(a.status))}</td></tr>`).join("") : `<tr><td colspan="6"><div class="empty">No advance requests yet.</div></td></tr>`}</tbody>
+    </table></div>
+  </div>`;
+}
+// Salary months an advance can be deducted from: this month and the next three, minus any month whose
+// payroll for this employee already has money paid against it (own payroll only — the server re-checks).
+// The first remaining month is the default.
+function advanceMonthOptions(selected, empCode){
+  const now = new Date();
+  const closed = new Set(empCode===undefined ? myPayroll.filter(r=>r.payStatus!=="Unpaid").map(r=>r.month) : []);
+  const months = [0,1,2,3].map(i=>{ const d=new Date(now.getFullYear(), now.getMonth()+i, 1); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }).filter(m=>!closed.has(m) || m===selected);
+  const pick = selected || months[0];
+  return months.map(m=>`<option value="${m}" ${m===pick?'selected':''}>${monthLabel(m)}</option>`).join("");
+}
 function openRequestAdvance(){
   showModal(`
     <div class="modal-head"><h3>Request advance salary</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-request-advance"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval — once approved, it recovers automatically from your payroll over the months you choose.</div></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval — once approved, it is deducted automatically from the salary month you choose.</div></div>
       <div class="field-row">
         <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="500" step="500" required placeholder="10000"></div>
-        <div><label class="field-label">Recovery in (months)</label><input class="field-input" type="number" name="installments" min="1" max="6" value="2" required></div>
+        <div><label class="field-label">Deduct from salary of</label><select class="field-input" name="deductMonth" required>${advanceMonthOptions()}</select></div>
       </div>
       <div><label class="field-label">Reason</label><textarea class="field-input" name="reason" required placeholder="Brief reason for the request"></textarea></div>
     </div>
@@ -2483,9 +2517,9 @@ function openRequestAdvance(){
   document.getElementById("f-request-advance").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    const amount = Number(f.get("amount")); const installments = Number(f.get("installments"));
+    const amount = Number(f.get("amount")); const deductFromMonth = f.get("deductMonth");
     try{
-      await apiJson("/api/hr/advances", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, reason:f.get("reason"), installments }) });
+      await apiJson("/api/hr/advances", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, reason:f.get("reason"), deductFromMonth }) });
       advances = (await apiJson(`/api/hr/advances?employeeId=${currentUser._dbId}`)).advances.map(mapAdvance);
       toast("Advance request submitted"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't submit advance request"); }
@@ -2952,8 +2986,8 @@ function hrAdvances(){
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Amount</th><th>Reason</th><th>Requested</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${sorted.map(a=>{
         const emp=byId(a.empId);
-        const actions = a.status==="Pending" ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="decideAdvance('${a.id}','Recovering')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm danger" onclick="decideAdvance('${a.id}','Rejected')">Reject</button></div>` : a.status==='Rejected' ? `<span class="faint" style="font-size:11.5px;">${a.note||''}</span>` : `<span class="faint" style="font-size:11.5px;">${inr(a.monthlyDeduction)}/mo</span>${a.paidDate?`<div class="subtext">Paid out ${fmtDateShort(a.paidDate)}</div>`:`<div class="subtext" style="color:var(--warn);">Awaiting payout — Accounts &gt; Payment Requests</div>`}`;
-        return `<tr><td>${personCell(emp)}</td><td class="num mono">${inr(a.amount)}</td><td class="muted">${esc(a.reason)}</td><td class="muted">${fmtDate(a.requested)}</td><td class="num mono">${a.status==='Rejected'?'—':inr(a.balance)}</td><td>${pill(a.status,statusKind(a.status))}</td><td>${actions}</td></tr>`;
+        const actions = a.status==="Pending" ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="openApproveAdvance('${a.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm danger" onclick="decideAdvance('${a.id}','Rejected')">Reject</button></div>` : a.status==='Rejected' ? `<span class="faint" style="font-size:11.5px;">${a.note||''}</span>` : `<span class="faint" style="font-size:11.5px;">${inr(a.monthlyDeduction)}/mo</span>${a.paidDate?`<div class="subtext">Paid out ${fmtDateShort(a.paidDate)}</div>`:`<div class="subtext" style="color:var(--warn);">Awaiting payout — Accounts &gt; Payment Requests</div>`}`;
+        return `<tr><td>${personCell(emp)}</td><td class="num mono">${inr(a.amount)}</td><td class="muted">${esc(a.reason)}${a.deductFromMonth?`<div class="subtext">Deduct from ${monthLabel(a.deductFromMonth)} salary</div>`:''}</td><td class="muted">${fmtDate(a.requested)}</td><td class="num mono">${a.status==='Rejected'?'—':inr(a.balance)}</td><td>${pill(a.status,statusKind(a.status))}</td><td>${actions}</td></tr>`;
       }).join("")}</tbody>
     </table></div>
   </div>`;
@@ -3612,7 +3646,7 @@ function openAddAdvance(){
       <div><label class="field-label">Employee</label><select class="field-input" name="empId">${employees.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join("")}</select></div>
       <div class="field-row">
         <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="500" step="500" required placeholder="10000"></div>
-        <div><label class="field-label">Recovery in (months)</label><input class="field-input" type="number" name="installments" min="1" max="6" value="2" required></div>
+        <div><label class="field-label">Deduct from salary of</label><select class="field-input" name="deductMonth" required>${advanceMonthOptions(null,"hr")}</select></div>
       </div>
       <div><label class="field-label">Reason</label><textarea class="field-input" name="reason" required placeholder="Brief reason for the request"></textarea></div>
     </div>
@@ -3621,10 +3655,10 @@ function openAddAdvance(){
   document.getElementById("f-add-advance").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    const amount = Number(f.get("amount")); const installments = Number(f.get("installments"));
+    const amount = Number(f.get("amount")); const deductFromMonth = f.get("deductMonth");
     try{
       await apiJson("/api/hr/advances", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
-        employeeId: employeeDbIdByCode[f.get("empId")], amount, reason:f.get("reason"), installments,
+        employeeId: employeeDbIdByCode[f.get("empId")], amount, reason:f.get("reason"), deductFromMonth,
       })});
       await loadAdvances();
       toast("Advance request submitted"); closeModal(); render();
@@ -3839,9 +3873,27 @@ async function decideLeave(id,decision){
     toast(`Leave request ${decision.toLowerCase()}`); render();
   }catch(err){ toast(err.message || "Couldn't update leave request"); }
 }
-async function decideAdvance(id,decision){
+// Approving opens a small confirm step so HR sees (and can change) the month the employee asked for.
+function openApproveAdvance(id){
+  const a = advances.find(x=>x.id===id); if(!a) return;
+  showModal(`
+    <div class="modal-head"><h3>Approve advance — ${esc(byId(a.empId).name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-approve-advance"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${inr(a.amount)} — ${esc(a.reason)}. ${a.deductFromMonth?`Requested to be deducted from <b>${monthLabel(a.deductFromMonth)}</b> salary.`:'No deduction month was chosen.'} Change it below if that month's payroll is tight.</div></div>
+      <div><label class="field-label">Deduct from salary of</label><select class="field-input" name="deductMonth">${advanceMonthOptions(a.deductFromMonth||null,"hr")}</select></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Approve</button></div></div>
+    </form>`);
+  document.getElementById("f-approve-advance").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await decideAdvance(id, "Recovering", f.get("deductMonth"));
+  });
+}
+async function decideAdvance(id,decision,deductFromMonth){
   try{
-    await apiJson(`/api/hr/advances/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ status: TITLECASE_TO_API(decision) }) });
+    await apiJson(`/api/hr/advances/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ status: TITLECASE_TO_API(decision), deductFromMonth: deductFromMonth||undefined }) });
+    closeModal();
     await loadAdvances();
     toast(decision==="Recovering"?"Advance approved":"Advance rejected"); render();
   }catch(err){ toast(err.message || "Couldn't update advance"); }

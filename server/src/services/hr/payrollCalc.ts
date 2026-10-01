@@ -10,6 +10,10 @@ import { workingDaysInMonth } from "./workingDays";
 // own client so the whole calculation runs on that one connection — otherwise a burst of
 // concurrent transactions each holding a connection while waiting for a second one can
 // exhaust the pool and stall.
+// An advance only comes off a payroll month on/after the one the employee asked for (YYYY-MM strings compare
+// correctly). No month on file (older requests) = recover from whichever month is processed next.
+const dueInMonth = (a: { deductFromMonth: string | null }, month: string) => !a.deductFromMonth || a.deductFromMonth <= month;
+
 export async function computePayrollRow(employeeId: string, month: string, db: Prisma.TransactionClient = prisma) {
   const entry = await db.payrollEntry.findUnique({
     where: { employeeId_month: { employeeId, month } },
@@ -26,7 +30,7 @@ export async function computePayrollRow(employeeId: string, month: string, db: P
   const pf = 0;
   const pt = 0;
 
-  const recoveringAdvances = await db.advance.findMany({ where: { employeeId, status: "RECOVERING" } });
+  const recoveringAdvances = (await db.advance.findMany({ where: { employeeId, status: "RECOVERING" } })).filter((a) => dueInMonth(a, month));
   const advDeduction = recoveringAdvances.reduce((sum, a) => sum + Math.min(Number(a.monthlyDeduction), Number(a.balance)), 0);
 
   const monthWorkingDays = await workingDaysInMonth(month, db);
@@ -72,8 +76,8 @@ export async function computePayrollRow(employeeId: string, month: string, db: P
 // already taken out of net pay, so this is what actually pays the advance down.
 // Shared by HR's manual payroll payment and by an approved withdrawal request
 // that happens to clear the balance, so the two can never drift apart.
-export async function applyAdvanceRecovery(db: Pick<Prisma.TransactionClient, "advance">, employeeId: string): Promise<void> {
-  const recovering = await db.advance.findMany({ where: { employeeId, status: "RECOVERING" } });
+export async function applyAdvanceRecovery(db: Pick<Prisma.TransactionClient, "advance">, employeeId: string, month: string): Promise<void> {
+  const recovering = (await db.advance.findMany({ where: { employeeId, status: "RECOVERING" } })).filter((a) => dueInMonth(a, month));
   for (const a of recovering) {
     const newBalance = Math.max(0, Number(a.balance) - Number(a.monthlyDeduction));
     await db.advance.update({

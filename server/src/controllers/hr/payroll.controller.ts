@@ -103,7 +103,7 @@ export const recordPayrollPayment: RequestHandler = asyncHandler(async (req, res
     },
   });
 
-  if (isFull) await applyAdvanceRecovery(prisma, employeeId);
+  if (isFull) await applyAdvanceRecovery(prisma, employeeId, month);
 
   await recordAudit({
     userId: req.user!.sub,
