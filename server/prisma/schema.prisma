@@ -1012,6 +1012,15 @@ enum QuoteStatus {
   LOST
 }
 
+// One row per day (IST, DDMMYY) — the quote title serial resets daily. Bumped with a single atomic
+// INSERT … ON CONFLICT DO UPDATE inside the quote-create transaction, so concurrent creates can't collide.
+model QuoteDailyCounter {
+  day  String @id
+  last Int    @default(0)
+
+  @@map("quote_daily_counters")
+}
+
 model Quote {
   id        String      @id @default(uuid())
   quoteCode String      @unique @map("quote_code")

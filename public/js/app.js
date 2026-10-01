@@ -432,6 +432,15 @@ let quotesMonthFilter = "All";
 function setQuotesMonthFilter(v){ quotesMonthFilter = v; render(); }
 let clientsMonthFilter = "All";
 function setClientsMonthFilter(v){ clientsMonthFilter = v; render(); }
+// All Clients filters (client-side, AND-combined with the Onboarded month). "All" = no filter.
+let clientsFilters = { manager:"All", sales:"All", service:"All", status:"All" };
+function setClientsFilter(key, v){ clientsFilters[key] = v; render(); }
+function clearClientsFilters(){ clientsMonthFilter = "All"; clientsFilters = { manager:"All", sales:"All", service:"All", status:"All" }; render(); }
+function clientsFilterSelect(label, key, values){
+  const cur = clientsFilters[key];
+  const opts = values.includes(cur) || cur==="All" ? values : [...values, cur];
+  return `<div class="filter-group"><span class="filter-label">${label}</span><select class="select-sm" onchange="setClientsFilter('${key}',this.value)"><option value="All">All</option>${opts.map(v=>`<option value="${esc(v)}" ${v===cur?'selected':''}>${esc(v)}</option>`).join('')}</select></div>`;
+}
 // "Today / month-wise / All time" filter — a superset of monthFilterOptions
 // above (adds a Today option) for lists where "just today" is a common ask
 // (Advances, Expenses, Invoices, Payables, Commissions, Journal, Client Task
@@ -485,6 +494,13 @@ const clientById = id => clients.find(c=>c.id===id);
 // `clients` keeps archived rows too (invoices, quotes and tasks still resolve their client through
 // clientById). Every working list, count and dropdown goes through this instead.
 const liveClients = () => clients.filter(c=>!c.archivedAt);
+// Clickable client name → that client's detail page. A missing client record (deleted, or an
+// informal name that never mapped to one) renders as plain text, never a dead link.
+function clientLink(id, fallback){
+  const c = id ? clientById(id) : null;
+  if(!c) return esc(fallback || "—");
+  return `<a class="client-link" href="#" onclick="event.stopPropagation();event.preventDefault();openClientDetail('${c.id}')">${esc(c.name)}</a>`;
+}
 function clientCell(id){ const c=clientById(id); if(!c) return "—"; return `<div><div style="font-weight:700;font-size:13px;">${esc(c.name)}</div><div class="subtext">${esc(c.city)}</div></div>`; }
 
 // Enums that round-trip cleanly through the generic TITLECASE helpers
@@ -4096,15 +4112,22 @@ function clientsAll(){
   // Sales role (see listClients) — this just labels the view to match what's actually being shown.
   const isSalesViewer = isSalesRepRole(currentUser);
   const live = liveClients();
-  const filtered = live.filter(c=>clientsMonthFilter==='All' || c.onboarded.slice(0,7)===clientsMonthFilter);
+  const F = clientsFilters;
+  const filtered = live.filter(c=>(clientsMonthFilter==='All' || c.onboarded.slice(0,7)===clientsMonthFilter)
+    && (F.manager==='All' || c.accountManager===F.manager)
+    && (F.sales==='All' || c.salesPerson===F.sales)
+    && (F.service==='All' || (c.services||[]).includes(F.service))
+    && (F.status==='All' || c.status===F.status));
+  const distinct = arr => [...new Set(arr.filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const anyFilter = clientsMonthFilter!=='All' || Object.values(F).some(v=>v!=='All');
   const archived = clients.filter(c=>c.archivedAt).sort((a,b)=>b.archivedAt.localeCompare(a.archivedAt));
   const hidePayment = isStaffRole(currentUser);
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Onboarded</span><select class="select-sm" onchange="setClientsMonthFilter(this.value)">${monthFilterOptions(live.map(c=>c.onboarded), clientsMonthFilter)}</select></div><button class="btn primary" onclick="openAddClient()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add client</button></div>
+  <div class="toolbar"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;"><div class="filter-group"><span class="filter-label">Onboarded</span><select class="select-sm" onchange="setClientsMonthFilter(this.value)">${monthFilterOptions(live.map(c=>c.onboarded), clientsMonthFilter)}</select></div>${clientsFilterSelect('Account Manager','manager',distinct(live.map(c=>c.accountManager)))}${clientsFilterSelect('Sales Person','sales',distinct(live.map(c=>c.salesPerson)))}${clientsFilterSelect('Service','service',distinct(live.flatMap(c=>c.services||[])))}${clientsFilterSelect('Status','status',distinct(live.map(c=>c.status)))}${anyFilter?'<button class="btn ghost" onclick="clearClientsFilters()">Clear filters</button>':''}</div><button class="btn primary" onclick="openAddClient()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add client</button></div>
   <div class="panel">
-    <div class="panel-head"><h3>${isSalesViewer?'My clients':'Clients'}</h3><div class="sub">${filtered.length} of ${live.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}</div></div>
+    <div class="panel-head"><h3>${isSalesViewer?'My clients':'Clients'}</h3><div class="sub">${filtered.length} of ${live.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}${Object.values(F).some(v=>v!=='All')?' · filtered':''}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th>${hidePayment?'':'<th class="num">Payment Due</th>'}<th>Status</th><th></th></tr></thead>
-      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openEditClient('${c.id}')" title="Edit client"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="event.stopPropagation();archiveClient('${c.id}')" title="Archive client — hides them from the working lists, keeps every invoice, quote and payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Archive</button>${canDeleteClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openConfirmDelete('client','${c.id}')" title="Delete client (only for records added by mistake)"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?6:7}"><div class="empty">${isSalesViewer?'No clients assigned to you yet.':'No clients onboarded that month.'}</div></td></tr>`}</tbody>
+      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openEditClient('${c.id}')" title="Edit client"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="event.stopPropagation();archiveClient('${c.id}')" title="Archive client — hides them from the working lists, keeps every invoice, quote and payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Archive</button>${canDeleteClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openConfirmDelete('client','${c.id}')" title="Delete client (only for records added by mistake)"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?6:7}"><div class="empty">${isSalesViewer&&!anyFilter?'No clients assigned to you yet.':'No clients match these filters.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>
   ${archived.length ? `
@@ -4174,6 +4197,10 @@ function clientDetailPage(id){
       ${clientInvoices.length?`<div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Issued</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
         <tbody>${clientInvoices.map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i), pendingAmt=invoicePendingAmount(i); return `<tr><td class="mono">${esc(i.invoiceNo)}</td><td class="muted">${fmtDateShort(i.issued)}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}${pendingAmt>0?' '+pill(inr(pendingAmt)+' pending Finance','warn'):''}</td><td><div style="display:flex;gap:6px;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm ghost" onclick="openSubmitInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Log payment</button>`:''}<button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}</div></td></tr>`; }).join("")}</tbody>
       </table></div>`:`<div class="empty">No invoice raised for this client yet.</div>`}`}`}
+      ${(()=>{ const cq = quotes.filter(q=>q.clientId===id); return cq.length ? `<div class="section-label">Quotes</div>
+      <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>Services</th><th class="num">Total</th>${hidePayment?'':'<th class="num">Paid</th>'}<th>Status</th></tr></thead>
+        <tbody>${cq.map(q=>`<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td>${hidePayment?'':`<td class="num mono">${quoteApprovedPaid(q)>0?inr(quoteApprovedPaid(q)):'<span class="faint">—</span>'}</td>`}<td>${pill(q.status,quoteStatusKind(q.status))}</td></tr>`).join("")}</tbody>
+      </table></div>` : ''; })()}
       <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">Workflow<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;">${boardTasksFiltered.length} of ${boardTasks.length}${dateFilterSuffix(boardFilter)}</span></div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -4270,13 +4297,13 @@ function mktLeads(){
       ${pill(openLeads.length+" open", "warn")}
     </div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Service Interested</th><th>Source</th><th>Created</th><th></th></tr></thead>
-      <tbody>${openLeads.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div><div class="subtext">${esc(l.email)}</div></td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("")}</tbody>
+      <tbody>${openLeads.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("")}</tbody>
     </table></div>
   </div>` : ''}
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My leads':'Lead pipeline'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Service Interested</th><th>Source</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
-      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div><div class="subtext">${esc(l.email)}</div></td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?5:6}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?5:6}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4362,7 +4389,7 @@ function mktQuotes(){
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My quotes':'Quotes'}</h3><div class="sub">${filtered.length} of ${quotes.length}${dateFilterSuffix(quotesMonthFilter)}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th>Service(s)</th><th class="num">Amount</th><th>Prepared by</th><th>Status</th><th></th></tr></thead>
-      <tbody>${sorted.map(q=>{ const party=quoteParty(q); return `<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="muted">${esc(q.createdBy)}</td><td>${pill(q.status,quoteStatusKind(q.status))}</td><td>${quoteActionsMkt(q)}</td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">${isSalesViewer?'No quotes prepared by you yet.':'No quotes that month.'}</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(q=>{ const party=quoteParty(q); return `<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${party.kind==='client'?clientLink(party.id):esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="muted">${esc(q.createdBy)}</td><td>${pill(q.status,quoteStatusKind(q.status))}</td><td>${quoteActionsMkt(q)}</td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">${isSalesViewer?'No quotes prepared by you yet.':'No quotes that month.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4397,9 +4424,15 @@ function mktInvoices(){
   <div class="panel">
     <div class="panel-head"><h3>All invoices</h3><div class="sub">${filtered.length} of ${invoices.length}${dateFilterSuffix(invoicesMonthFilter,'issued in')} · log a payment you've collected here and push it to Finance for confirmation</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th>Service(s)</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${sorted.map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i), pendingAmt=invoicePendingAmount(i); return `<tr><td class="mono">${esc(i.invoiceNo)}</td><td class="muted">${clientById(i.clientId).name}</td><td class="muted">${(i.items||[]).map(it=>esc(it.dept)).join(', ')||'<span class="faint">—</span>'}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openSubmitInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Log payment</button>`:''}${pendingAmt>0?`<span class="faint" style="font-size:11.5px;">${inr(pendingAmt)} awaiting Finance</span>`:''}<button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}${canEditInvoices()?`<button class="btn btn-sm ghost" onclick="openEditInvoice('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${(i.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('invoice','${i.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No invoices yet.</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i), pendingAmt=invoicePendingAmount(i); return `<tr><td class="mono">${esc(i.invoiceNo)}</td><td class="muted">${clientLink(i.clientId)}</td><td class="muted">${(i.items||[]).map(it=>esc(it.dept)).join(', ')||'<span class="faint">—</span>'}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openSubmitInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Log payment</button>`:''}${pendingAmt>0?`<span class="faint" style="font-size:11.5px;">${inr(pendingAmt)} awaiting Finance</span>`:''}<button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:''}${canEditInvoices()?`<button class="btn btn-sm ghost" onclick="openEditInvoice('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${(i.payments||[]).length?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('invoice','${i.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No invoices yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
+}
+// Read-only preview of the number the server will assign (serial is final only on save).
+function quoteTitlePreview(){
+  const p = new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Kolkata",day:"2-digit",month:"2-digit",year:"2-digit"}).formatToParts(new Date());
+  const g = t=>p.find(x=>x.type===t).value;
+  return `QT/${g("day")}${g("month")}${g("year")}/<span class="faint">NNN</span>`;
 }
 function openAddQuote(){
   showModal(`
@@ -4409,7 +4442,7 @@ function openAddQuote(){
       <div class="section-label">Services — priced independently, total shown below</div>
       ${quoteServiceRows([])}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>₹0</b></div>
-      <div><label class="field-label">Title / description</label><input class="field-input" name="title" required placeholder="e.g. Q4 SMM Retainer"></div>
+      <div><label class="field-label">Quote number</label><div class="field-input" style="background:var(--surface-sunk);color:var(--ink-soft);">${quoteTitlePreview()}</div><div class="subtext">Assigned automatically when you save.</div></div>
       <div class="subtext">Prepared by ${currentUser?esc(currentUser.name):'you'} — the real signed-in account, not a free-typed name.</div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save as draft</button></div></div>
@@ -4422,7 +4455,7 @@ function openAddQuote(){
     for(let i=1;i<=4;i++){ const dept=f.get("dept"+i), amount=Number(f.get("amount"+i))||0; if(dept && amount>0) items.push({dept, amount}); }
     if(!items.length){ toast("Add at least one service with an amount"); return; }
     try{
-      await apiJson("/api/crm/quotes", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId: kind==='client'?partyId:undefined, leadId: kind==='lead'?partyId:undefined, items, title:f.get("title") }) });
+      await apiJson("/api/crm/quotes", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId: kind==='client'?partyId:undefined, leadId: kind==='lead'?partyId:undefined, items }) });
       await loadQuotes();
       toast("Quote saved as draft"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't save quote"); }
@@ -4438,7 +4471,7 @@ function openEditQuote(id){
       <div class="section-label">Services — priced independently, total shown below</div>
       ${quoteServiceRows(q.items)}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>${inr(quoteTotal(q))}</b></div>
-      <div><label class="field-label">Title / description</label><input class="field-input" name="title" required value="${esc(q.title)}"></div>
+      <div><label class="field-label">Quote number</label><div class="field-input" style="background:var(--surface-sunk);color:var(--ink-soft);">${esc(q.title)}</div></div>
       <div class="subtext">Prepared by ${esc(q.createdBy||'—')}.</div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save changes</button></div></div>
@@ -4455,7 +4488,7 @@ function openEditQuote(id){
       // anyway) clears whichever party field isn't the one selected here —
       // otherwise reassigning a quote from a lead to a client would leave
       // the stale leadId in place server-side.
-      await apiJson(`/api/crm/quotes/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId: kind==='client'?partyId:null, leadId: kind==='lead'?partyId:null, items, title:f.get("title") }) });
+      await apiJson(`/api/crm/quotes/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId: kind==='client'?partyId:null, leadId: kind==='lead'?partyId:null, items }) });
       await loadQuotes();
       toast("Quote updated"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't update quote"); }
@@ -4530,10 +4563,7 @@ function openAddLead(){
     <div class="modal-head"><h3>New lead</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-add-lead"><div class="modal-body">
       <div><label class="field-label">Name / business</label><input class="field-input" name="name" required placeholder="e.g. Coastal Spice Exports"></div>
-      <div class="field-row">
-        <div><label class="field-label">Phone</label><input class="field-input" name="phone" required placeholder="9847xxxxxx"></div>
-        <div><label class="field-label">Email</label><input class="field-input" type="email" name="email" required></div>
-      </div>
+      <div><label class="field-label">Phone</label><input class="field-input" name="phone" required placeholder="9847xxxxxx"></div>
       <div class="field-row">
         <div><label class="field-label">Source</label><select class="field-input" name="source">${LEAD_SOURCES.map(s=>`<option>${s}</option>`).join('')}</select></div>
         <div><label class="field-label">Service Interested</label><select class="field-input" name="serviceInterested">${SERVICE_DEPARTMENTS.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
@@ -4546,7 +4576,7 @@ function openAddLead(){
     e.preventDefault();
     const f = new FormData(e.target);
     try{
-      await apiJson("/api/crm/leads", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name:f.get("name"), phone:f.get("phone"), email:f.get("email"), source:f.get("source"), serviceInterested:f.get("serviceInterested"), leadOwner:f.get("leadOwner")||undefined }) });
+      await apiJson("/api/crm/leads", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name:f.get("name"), phone:f.get("phone"), source:f.get("source"), serviceInterested:f.get("serviceInterested"), leadOwner:f.get("leadOwner")||undefined }) });
       await loadLeads();
       toast(f.get("leadOwner") ? "Lead added" : "Lead added as open"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't add lead"); }
@@ -4560,7 +4590,7 @@ function openEditLead(id){
       <div><label class="field-label">Name / business</label><input class="field-input" name="name" required value="${esc(l.name)}"></div>
       <div class="field-row">
         <div><label class="field-label">Phone</label><input class="field-input" name="phone" required value="${esc(l.phone)}"></div>
-        <div><label class="field-label">Email</label><input class="field-input" type="email" name="email" required value="${esc(l.email)}"></div>
+        <div><label class="field-label">Email</label><input class="field-input" type="email" name="email" placeholder="Optional" value="${esc(l.email)}"></div>
       </div>
       <div class="field-row">
         <div><label class="field-label">Source</label><select class="field-input" name="source">${LEAD_SOURCES.map(s=>`<option ${s===l.source?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -4574,7 +4604,7 @@ function openEditLead(id){
     e.preventDefault();
     const f = new FormData(e.target);
     try{
-      await apiJson(`/api/crm/leads/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name:f.get("name"), phone:f.get("phone"), email:f.get("email"), source:f.get("source"), serviceInterested:f.get("serviceInterested"), leadOwner:f.get("leadOwner")||null }) });
+      await apiJson(`/api/crm/leads/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name:f.get("name"), phone:f.get("phone"), email:f.get("email")||undefined, source:f.get("source"), serviceInterested:f.get("serviceInterested"), leadOwner:f.get("leadOwner")||null }) });
       await loadLeads();
       toast("Lead updated"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't update lead"); }
@@ -4669,7 +4699,7 @@ function openTaskArchive(clientId){
     <div class="modal-head"><h3>Completed tasks archive</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
       ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Task</th>${clientId?'':'<th>Client</th>'}<th>Assignee</th><th>Completed</th></tr></thead>
-        <tbody>${list.map(t=>`<tr><td style="font-weight:700;">${esc(t.title)}</td>${clientId?'':`<td class="muted">${esc(clientById(t.clientId).name)}</td>`}<td class="muted">${esc(t.assignedTo)}</td><td class="muted">${fmtDateShort(t.doneDate)}</td></tr>`).join("")}</tbody>
+        <tbody>${list.map(t=>`<tr><td style="font-weight:700;">${esc(t.title)}</td>${clientId?'':`<td class="muted">${clientLink(t.clientId)}</td>`}<td class="muted">${esc(t.assignedTo)}</td><td class="muted">${fmtDateShort(t.doneDate)}</td></tr>`).join("")}</tbody>
       </table></div>` : `<div class="empty">Nothing archived yet — completed tasks move here 3 days after they're marked Done.</div>`}
     </div>
     <div class="modal-foot"><div></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
@@ -5017,7 +5047,7 @@ function acctApprovedReceipts(){
     <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">Amount</th><th>Pushed by</th><th>Approved by</th><th>Bank account</th><th>Commission</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map(r=>`<tr>
         <td class="mono">${esc(r.invoiceNo)}<div class="subtext">${r.source==='Direct'?pill('Direct','neutral'):r.source==='Quote'?'Quote '+esc(r.quoteCode||''):'Invoice'}</div></td>
-        <td class="muted">${esc(r.clientName)}</td>
+        <td class="muted">${clientLink(r.clientId, r.clientName)}</td>
         <td class="num mono">${inr(r.amount)}<div class="subtext" style="white-space:nowrap;">paid ${fmtDateShort(isoDate(r.paidDate))}</div></td>
         <td class="muted">${r.pushedBy?esc(r.pushedBy):dash}</td>
         <td class="muted">${r.approvedBy?esc(r.approvedBy):dash}<div class="subtext" style="white-space:nowrap;">${fmtDateTime(r.approvedAt)}</div></td>
@@ -5096,9 +5126,9 @@ function acctPendingReceipts(){
       <tbody>${rows.length?rows.map(r=>{
         if(r.source==='quote'){
           const party = quoteParty(r.q);
-          return `<tr><td class="mono">${esc(r.q.title)}<div class="subtext">Quote</div></td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(quoteTotal(r.q))}</td><td class="muted">${esc(r.q.createdBy)}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${r.q.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('quote','${r.q.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
+          return `<tr><td class="mono">${esc(r.q.title)}<div class="subtext">Quote</div></td><td class="muted">${party.kind==='client'?clientLink(party.id):esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(quoteTotal(r.q))}</td><td class="muted">${esc(r.q.createdBy)}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${r.q.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('quote','${r.q.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
         }
-        return `<tr><td class="mono">${esc(r.inv.invoiceNo)}<div class="subtext">Invoice</div></td><td class="muted">${esc(clientById(r.inv.clientId).name)}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(invoiceBalance(r.inv))}</td><td class="muted">${esc(r.p.salesPerson||'—')}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${r.inv.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${r.inv.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
+        return `<tr><td class="mono">${esc(r.inv.invoiceNo)}<div class="subtext">Invoice</div></td><td class="muted">${clientLink(r.inv.clientId)}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(invoiceBalance(r.inv))}</td><td class="muted">${esc(r.p.salesPerson||'—')}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${r.inv.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${r.inv.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
       }).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
     </table></div>
   </div>`;
@@ -5117,7 +5147,7 @@ function acctInvoices(){
   <div class="panel">
     <div class="panel-head"><h3>Invoices</h3><div class="sub">${filtered.length} of ${invoices.length}${dateFilterSuffix(invoicesMonthFilter,'issued in')}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Invoice</th><th>Client</th><th>Issued</th><th>Due</th><th class="num">Amount</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${filtered.slice().sort((a,b)=>b.issued.localeCompare(a.issued)).map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i); return `<tr><td class="mono">${i.invoiceNo}</td><td class="muted">${clientById(i.clientId).name}</td><td class="muted">${fmtDateShort(i.issued)}</td><td class="muted">${fmtDateShort(i.due)}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditInvoice('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:`<button class="btn btn-sm ghost" onclick="openConfirmDelete('invoice','${i.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="8"><div class="empty">No invoices${invoicesMonthFilter==='All'?'':' for this range'}.</div></td></tr>`}</tbody>
+      <tbody>${filtered.slice().sort((a,b)=>b.issued.localeCompare(a.issued)).map(i=>{ const st=invoiceStatus(i), bal=invoiceBalance(i); return `<tr><td class="mono">${i.invoiceNo}</td><td class="muted">${clientLink(i.clientId)}</td><td class="muted">${fmtDateShort(i.issued)}</td><td class="muted">${fmtDateShort(i.due)}</td><td class="num mono">${inr(invoiceTotal(i))}</td><td class="num mono">${bal>0?inr(bal):'<span class="faint">—</span>'}</td><td>${pill(st,invStatusKind(st))}</td><td><div style="display:flex;gap:6px;flex-wrap:wrap;">${bal>0?`<button class="btn btn-sm" onclick="openRecordInvoicePayment('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11.5px;">paid in full</span>`}<button class="btn btn-sm ghost" onclick="openEditInvoice('${i.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="downloadInvoice('${i.id}')" title="Download invoice"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${(i.payments||[]).length?`<button class="btn btn-sm ghost" onclick="openInvoicePayments('${i.id}')" title="Payment receipts"><svg class="icon" style="width:12px;height:12px"><use href="#i-receipt"/></svg>Payments</button>`:`<button class="btn btn-sm ghost" onclick="openConfirmDelete('invoice','${i.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="8"><div class="empty">No invoices${invoicesMonthFilter==='All'?'':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -5757,7 +5787,7 @@ function acctQuotes(){
   <div class="panel">
     <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>All quotes</h3><div class="sub">${filtered.length} of ${quotes.length}${quotesMonthFilter!=='All'?' in '+monthLabel(quotesMonthFilter):' total'}</div></div><div class="filter-group"><span class="filter-label">Month</span><select class="select-sm" onchange="setQuotesMonthFilter(this.value)">${monthFilterOptions(quotes.map(q=>q.createdDate), quotesMonthFilter)}</select></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>For</th><th>Service(s)</th><th class="num">Amount</th><th class="num">Approved so far</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rest.map(q=>{ const party=quoteParty(q); const paid=quoteApprovedPaid(q); return `<tr><td>${esc(q.title)}</td><td class="muted">${esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="num mono">${paid>0?inr(paid):'<span class="faint">—</span>'}</td><td>${pill(q.status,quoteStatusKind(q.status))}${q.status==='Invoiced'&&q.invoiceId?` <span class="faint" style="font-size:11px;">${esc(q.invoiceId)}</span>`:''}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="downloadQuote('${q.id}')" title="Download quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${q.invoiceId?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('quote','${q.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No quotes that month.</div></td></tr>`}</tbody>
+      <tbody>${rest.map(q=>{ const party=quoteParty(q); const paid=quoteApprovedPaid(q); return `<tr><td>${esc(q.title)}</td><td class="muted">${party.kind==='client'?clientLink(party.id):esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td><td class="num mono">${paid>0?inr(paid):'<span class="faint">—</span>'}</td><td>${pill(q.status,quoteStatusKind(q.status))}${q.status==='Invoiced'&&q.invoiceId?` <span class="faint" style="font-size:11px;">${esc(q.invoiceId)}</span>`:''}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="downloadQuote('${q.id}')" title="Download quote"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Download</button>${q.invoiceId?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('quote','${q.id}')" title="Delete"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`}</div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No quotes that month.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
