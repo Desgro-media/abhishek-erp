@@ -3864,7 +3864,7 @@ async function openAddPayrollEntry(id){
       ${wfhExcessDays>0 ? `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance</span><span class="mono" style="color:var(--neg);">${wfhExcessDays} day${wfhExcessDays===1?"":"s"} · est. −${inr(wfhDeduction)} (paid at 75%)</span></div>` : `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance</span><span class="mono faint">none</span></div>`}
       <div class="field-row" style="margin-top:10px;">
         <div><label class="field-label">Master monthly gross</label><div class="mono">${inr(e.salary)}</div></div>
-        <div><label class="field-label">Gross for ${MONTH_LABEL[month]} (₹)</label><input class="field-input" type="number" name="gross" min="0" step="500" required value="${startGross}"></div>
+        <div><label class="field-label">Gross for ${MONTH_LABEL[month]} (₹)</label><input class="field-input" type="number" name="gross" min="0" step="any" required value="${startGross}"></div>
       </div>
       <div class="subtext">Adjust this if the month's pay differs from the master salary — unpaid leave deductions, a mid-month joiner, or a pending salary revision. Loss of Pay for excess leave and the 75%-pay cut for excess WFH are both applied automatically once added. Once added, this employee's figures appear in the payroll list below and can be paid in full or in parts.</div>
     </div>
