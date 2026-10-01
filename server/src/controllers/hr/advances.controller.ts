@@ -5,6 +5,17 @@ import { recordAudit } from "../../services/audit.service";
 import { isHRAdmin, resolveScopedEmployeeId } from "../../middleware/hrAccess";
 import { advanceCreateSchema, advanceDecisionSchema } from "../../validation/hr.schemas";
 
+// The month an advance is deducted from must still be open: not before the current calendar month, and
+// the employee's payroll for it must not have any payment against it yet. Returns an error message or null.
+async function deductMonthError(employeeId: string, month: string): Promise<string | null> {
+  const now = new Date();
+  const current = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  if (month < current) return "Pick the current month or a later one — that payroll period has already passed";
+  const paid = await prisma.payrollPayment.count({ where: { payrollEntry: { employeeId, month } } });
+  if (paid > 0) return "Payroll for that month has already been paid — pick a later month";
+  return null;
+}
+
 export const listAdvances: RequestHandler = asyncHandler(async (req, res) => {
   const requestedEmployeeId = req.query.employeeId as string | undefined;
   const scoped = resolveScopedEmployeeId(req, requestedEmployeeId);
@@ -33,6 +44,10 @@ export const createAdvance: RequestHandler = asyncHandler(async (req, res) => {
     });
   }
 
+  if (d.deductFromMonth) {
+    const err = await deductMonthError(employeeId, d.deductFromMonth);
+    if (err) return res.status(400).json({ error: err });
+  }
   const monthlyDeduction = Math.ceil(d.amount / d.installments);
   const advance = await prisma.advance.create({
     data: {
@@ -40,6 +55,7 @@ export const createAdvance: RequestHandler = asyncHandler(async (req, res) => {
       amount: d.amount,
       reason: d.reason,
       installments: d.installments,
+      deductFromMonth: d.deductFromMonth,
       monthlyDeduction,
       balance: d.amount,
       status: "PENDING",
@@ -69,9 +85,16 @@ export const decideAdvance: RequestHandler = asyncHandler(async (req, res) => {
   if (!before) return res.status(404).json({ error: "Advance not found" });
   if (before.status !== "PENDING") return res.status(409).json({ error: "This advance has already been decided" });
 
+  if (d.status === "RECOVERING" && d.deductFromMonth && d.deductFromMonth !== before.deductFromMonth) {
+    const err = await deductMonthError(before.employeeId, d.deductFromMonth);
+    if (err) return res.status(400).json({ error: err });
+  }
   const advance = await prisma.advance.update({
     where: { id: req.params.id },
-    data: { status: d.status, decidedBy: req.user!.sub, decidedAt: new Date() },
+    data: {
+      status: d.status, decidedBy: req.user!.sub, decidedAt: new Date(),
+      ...(d.status === "RECOVERING" && d.deductFromMonth ? { deductFromMonth: d.deductFromMonth } : {}),
+    },
   });
 
   await recordAudit({
@@ -80,7 +103,7 @@ export const decideAdvance: RequestHandler = asyncHandler(async (req, res) => {
     entityType: "Advance",
     entityId: advance.id,
     beforeData: { status: before.status },
-    afterData: { status: d.status },
+    afterData: { status: d.status, deductFromMonth: advance.deductFromMonth },
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"] ?? null,
   });

@@ -100,11 +100,15 @@ export const advanceCreateSchema = z.object({
   employeeId: z.string().uuid().optional(), // HR only — self-service infers from the caller
   amount: z.number().positive(),
   reason: z.string().min(1),
-  installments: z.number().int().positive(),
+  installments: z.number().int().positive().default(1),
+  // Salary month (YYYY-MM) the advance should be deducted from.
+  deductFromMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
 });
 
 export const advanceDecisionSchema = z.object({
   status: z.enum(["RECOVERING", "REJECTED"]),
+  // HR may move the recovery month when approving (e.g. that month's payroll is tight or already paid).
+  deductFromMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
 });
 
 export const complaintCreateSchema = z.object({

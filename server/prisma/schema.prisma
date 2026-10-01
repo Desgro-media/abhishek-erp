@@ -327,6 +327,9 @@ model Advance {
   requestedAt      DateTime      @default(now()) @map("requested_at")
   installments     Int
   monthlyDeduction Decimal       @map("monthly_deduction") @db.Decimal(12, 2)
+  // "YYYY-MM": the salary month the employee asked for it to come off. Recovery only starts from this
+  // payroll month onward. Null on older requests = recover from whichever month is paid next.
+  deductFromMonth  String?       @map("deduct_from_month")
   balance          Decimal       @db.Decimal(12, 2)
   status           AdvanceStatus @default(PENDING)
   decidedBy        String?       @map("decided_by")

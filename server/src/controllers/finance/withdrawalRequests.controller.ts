@@ -129,7 +129,7 @@ export const approveWithdrawalRequest: RequestHandler = asyncHandler(async (req,
     // Same side effect as HR clearing the balance by hand: this month's advance
     // deduction was already taken out of net pay, so it must now be applied.
     const clearsBalance = amount >= row.balance - EPS;
-    if (clearsBalance) await applyAdvanceRecovery(tx, request.employeeId);
+    if (clearsBalance) await applyAdvanceRecovery(tx, request.employeeId, request.month);
 
     const updated = await tx.withdrawalRequest.update({
       where: { id },
