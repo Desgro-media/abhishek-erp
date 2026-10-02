@@ -14,6 +14,7 @@ import {
   offerLetterSchema,
 } from "../../validation/hr.schemas";
 import { sendMail, sendMailNow, detailsHtml, HR_MAIL } from "../../services/mail.service";
+import { hiringEmail } from "../../services/hr/hiringEmails";
 
 // Everything in this file is HR/Admin only (mounted behind requireHRAdmin).
 
@@ -70,6 +71,7 @@ export const createCandidate: RequestHandler = asyncHandler(async (req, res) => 
   });
 
   await recordAudit({ userId: req.user!.sub, action: "HR_CANDIDATE_CREATE", entityType: "Candidate", entityId: candidate.id, afterData: d });
+  if (d.email) sendMail("hr", { to: d.email, cc: HR_MAIL(), ...hiringEmail("APPLIED", { name: d.name, role: position.role, candidateId: candidate.id }) });
   sendMail("hr", { to: HR_MAIL(), subject: `New candidate: ${d.name}`, html: detailsHtml("A candidate was added.", { Name: d.name, Position: position.role, Email: d.email, Phone: d.phone }) });
   res.status(201).json({ candidate });
 });
@@ -92,15 +94,11 @@ export const updateCandidate: RequestHandler = asyncHandler(async (req, res) => 
     afterData: parsed.data,
   });
 
-  if (candidate.email && before.stage !== candidate.stage) {
-    const msg: Partial<Record<string, [string, string]>> = {
-      SHORTLISTED: ["You have been shortlisted", "Good news — you have been shortlisted for the next stage. We will be in touch shortly."],
-      INTERVIEW: ["Interview invitation", "We would like to invite you for an interview. HR will contact you with the schedule."],
-      HIRED: ["Welcome to DesGro Media", "Welcome aboard! HR will share your onboarding details soon."],
-      REJECTED: ["Update on your application", "Thank you for your interest in DesGro Media. We will not be moving forward with your application at this time."],
-    };
-    const m = msg[candidate.stage];
-    if (m) sendMail("hr", { to: candidate.email, cc: HR_MAIL(), subject: m[0], html: detailsHtml(`Hi ${candidate.name}, ${m[1]}`, {}) });
+  // APPLIED/SHORTLISTED/INTERVIEW/HIRED/REJECTED each send a templated email (see hiringEmails.ts). OFFER sends
+  // nothing here — the offer-letter email (sendOfferLetter) is the one the candidate gets at that stage.
+  if (candidate.email && before.stage !== candidate.stage && candidate.stage !== "OFFER") {
+    const position = await prisma.openPosition.findUnique({ where: { id: candidate.positionId }, select: { role: true } });
+    sendMail("hr", { to: candidate.email, cc: HR_MAIL(), ...hiringEmail(candidate.stage, { name: candidate.name, role: position?.role, candidateId: candidate.id }) });
   }
   res.json({ candidate });
 });
@@ -143,8 +141,7 @@ export const sendOfferLetter: RequestHandler = asyncHandler(async (req, res) => 
     await sendMailNow("hr", {
       to: candidate.email,
       cc: HR_MAIL(),
-      subject: `Offer letter — ${d.role} at DesGro Media`,
-      html: detailsHtml(`Hi ${d.name}, please find your offer letter attached. Reply to this email to confirm your acceptance.`, {}),
+      ...hiringEmail("OFFER", { name: d.name, role: d.role, candidateId: candidate.id }),
       attachments: [{ filename: `Offer letter - ${d.name}.pdf`, content: pdf, contentType: "application/pdf" }],
     });
   } catch (err) {
