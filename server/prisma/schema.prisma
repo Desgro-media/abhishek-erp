@@ -265,6 +265,12 @@ model AttendanceRecord {
   @@map("attendance_records")
 }
 
+// Which balance a ledger row belongs to. WFH rows are adjustments only (WFH never carries forward).
+enum LeaveBucket {
+  PAID_LEAVE
+  WFH
+}
+
 enum LeaveLedgerKind {
   CARRY_FORWARD
   ADJUSTMENT
@@ -294,6 +300,10 @@ model LeaveLedgerEntry {
   createdBy    String?         @map("created_by")
   createdAt    DateTime        @default(now()) @map("created_at")
   supersededAt DateTime?       @map("superseded_at")
+  bucket       LeaveBucket     @default(PAID_LEAVE)
+  // Update Balances audit: the month's remaining balance before / after HR's override (days = the delta).
+  oldValue     Decimal?        @map("old_value") @db.Decimal(5, 2)
+  newValue     Decimal?        @map("new_value") @db.Decimal(5, 2)
 
   @@index([employeeId, month])
   @@map("leave_ledger_entries")

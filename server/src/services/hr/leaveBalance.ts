@@ -38,7 +38,7 @@ export async function ensureCarryForward(
   const last = upToMonth < thisMonth() ? upToMonth : thisMonth();
   if (first > last) return;
 
-  const entries = await db.leaveLedgerEntry.findMany({ where: { employeeId, supersededAt: null, month: { gte: prevMonth(first), lte: last } } });
+  const entries = await db.leaveLedgerEntry.findMany({ where: { employeeId, bucket: "PAID_LEAVE", supersededAt: null, month: { gte: prevMonth(first), lte: last } } });
   const carry: Record<string, (typeof entries)[number]> = {};
   const adj: Record<string, number> = {};
   for (const e of entries) {
@@ -97,10 +97,20 @@ export async function leaveCapFor(employeeId: string, month: string, db: Prisma.
   const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
   const base = policy?.paidLeavesPerMonth ?? 1;
   await ensureCarryForward(employeeId, month, db);
-  const rows = await db.leaveLedgerEntry.findMany({ where: { employeeId, month, supersededAt: null } });
+  const rows = await db.leaveLedgerEntry.findMany({ where: { employeeId, month, bucket: "PAID_LEAVE", supersededAt: null } });
   const carriedIn = rows.filter((r) => r.kind === "CARRY_FORWARD").reduce((s, r) => s + num(r.days), 0);
   const adjustment = rows.filter((r) => r.kind === "ADJUSTMENT").reduce((s, r) => s + num(r.days), 0);
   return { base, carriedIn, adjustment, cap: Math.max(0, base + carriedIn + adjustment) };
+}
+
+// Paid-WFH days available in one month: the org-wide monthly allowance plus any HR adjustments for that month.
+// WFH never carries forward, so there is no carry-in — an adjustment only ever changes the month it names.
+export async function wfhCapFor(employeeId: string, month: string, db: Prisma.TransactionClient = prisma) {
+  const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
+  const base = policy?.paidWfhPerMonth ?? 1;
+  const rows = await db.leaveLedgerEntry.findMany({ where: { employeeId, month, bucket: "WFH", supersededAt: null } });
+  const adjustment = rows.reduce((s, r) => s + num(r.days), 0);
+  return { base, adjustment, cap: Math.max(0, base + adjustment) };
 }
 
 // Loss-of-pay days for a given employee + payroll month = days marked
@@ -125,8 +135,7 @@ export async function computeLopDays(employeeId: string, month: string, db: Pris
 // computePayrollRow(). Counted from actual attendance records, same
 // "derive from real history" approach computeLopDays takes for leave.
 export async function computeWfhExcessDays(employeeId: string, month: string, db: Prisma.TransactionClient = prisma): Promise<number> {
-  const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
-  const cap = policy?.paidWfhPerMonth ?? 1;
+  const { cap } = await wfhCapFor(employeeId, month, db);
   const { start, end } = monthRange(month);
 
   const [wfhCount, partialCount] = await Promise.all([
@@ -147,7 +156,8 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
   const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
   const leave = await leaveCapFor(employeeId, month, db);
   const leaveCap = leave.cap;
-  const wfhCap = policy?.paidWfhPerMonth ?? 1;
+  const wfh = await wfhCapFor(employeeId, month, db);
+  const wfhCap = wfh.cap;
   const { start, end } = monthRange(month);
 
   const grouped = await db.attendanceRecord.groupBy({
@@ -159,8 +169,24 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
   const wfhDays = grouped.find((g) => g.status === "WFH")?._count._all ?? 0;
   const partialWfhDays = grouped.find((g) => g.status === "WFH_PARTIAL")?._count._all ?? 0;
 
+  // Requests still awaiting a decision — shown beside the balance, never deducted from it until approved.
+  const pendingReqs = await db.leaveRequest.findMany({
+    where: { employeeId, status: "PENDING", fromDate: { lt: end }, toDate: { gte: start } },
+    select: { type: true, duration: true, fromDate: true, toDate: true, days: true },
+  });
+  let pendingLeaveDays = 0, pendingWfhDays = 0;
+  for (const r of pendingReqs) {
+    const lo = Math.max(r.fromDate.getTime(), start.getTime()), hi = Math.min(r.toDate.getTime(), end.getTime() - 86400000);
+    const inMonth = r.duration === "FULL_DAY" ? Math.max(0, Math.round((hi - lo) / 86400000) + 1) : num(r.days);
+    if (r.type === "CASUAL_SICK") pendingLeaveDays += inMonth; else pendingWfhDays += inMonth;
+  }
+
   return {
     month,
+    pendingLeaveDays,
+    pendingWfhDays,
+    wfhBaseCap: wfh.base,
+    wfhAdjustment: wfh.adjustment,
     leaveDays,
     leaveBaseCap: leave.base,
     leaveCarriedIn: leave.carriedIn,
@@ -196,7 +222,7 @@ export async function getLeaveLedger(employeeId: string, months = 6, db: Prisma.
 
   const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
   const maxCarry = policy?.carryForwardMaxDays ?? 0;
-  const entries = await db.leaveLedgerEntry.findMany({ where: { employeeId, month: { gte: from } }, orderBy: [{ month: "desc" }, { createdAt: "desc" }] });
+  const entries = await db.leaveLedgerEntry.findMany({ where: { employeeId, bucket: "PAID_LEAVE", month: { gte: from } }, orderBy: [{ month: "desc" }, { createdAt: "desc" }] });
   const { start } = monthRange(from);
   const { end } = monthRange(current);
   const leaveRecords = await db.attendanceRecord.findMany({ where: { employeeId, status: "ON_LEAVE", date: { gte: start, lt: end } }, select: { date: true } });
@@ -230,5 +256,21 @@ export async function getLeaveLedger(employeeId: string, months = 6, db: Prisma.
       unusedDays: e.unusedDays == null ? null : num(e.unusedDays), lapsedDays: e.lapsedDays == null ? null : num(e.lapsedDays),
       capApplied: e.capApplied, note: e.note, createdBy: e.createdBy, createdAt: e.createdAt, superseded: !!e.supersededAt,
     })),
+    // Every manual balance change (paid leave and WFH): who, when, old → new, reason.
+    overrides: await getBalanceOverrides(employeeId, db),
   };
+}
+
+// Audit trail of HR's manual balance changes, newest first. Old/new are the month's *remaining* balance
+// before and after; `days` is the signed adjustment actually stored on top of the computed value.
+export async function getBalanceOverrides(employeeId: string, db: Prisma.TransactionClient = prisma) {
+  const rows = await db.leaveLedgerEntry.findMany({ where: { employeeId, kind: "ADJUSTMENT" }, orderBy: { createdAt: "desc" }, take: 50 });
+  const ids = [...new Set(rows.map((r) => r.createdBy).filter((x): x is string => !!x))];
+  const users = ids.length ? await db.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }) : [];
+  const nameById = new Map(users.map((u) => [u.id, u.name]));
+  return rows.map((r) => ({
+    id: r.id, bucket: r.bucket, month: r.month, days: num(r.days),
+    oldValue: r.oldValue == null ? null : num(r.oldValue), newValue: r.newValue == null ? null : num(r.newValue),
+    note: r.note, by: (r.createdBy && nameById.get(r.createdBy)) || null, at: r.createdAt,
+  }));
 }
