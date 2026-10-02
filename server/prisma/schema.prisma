@@ -1027,6 +1027,15 @@ model QuoteDailyCounter {
   @@map("quote_daily_counters")
 }
 
+// One row per day (IST, DDMMYY) — the invoice number serial (DG/DDMMYY/serial) resets daily. Bumped atomically
+// inside the invoice-create transaction, same as QuoteDailyCounter.
+model InvoiceDailyCounter {
+  day  String @id
+  last Int    @default(0)
+
+  @@map("invoice_daily_counters")
+}
+
 model Quote {
   id        String      @id @default(uuid())
   quoteCode String      @unique @map("quote_code")

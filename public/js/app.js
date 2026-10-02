@@ -5425,7 +5425,7 @@ function openAddInvoice(preselectClientId){
       ${quoteServiceRows([])}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>₹0</b></div>
       <div class="field-row">
-        <div><label class="field-label">Invoice No.</label><input class="field-input" name="invoiceNo" required placeholder="DG-2026-1049"></div>
+        <div><label class="field-label">Invoice No.</label><div class="field-input" style="color:var(--ink-soft);background:var(--surface-sunk);cursor:default;">Auto-generated on save</div></div>
         <div><label class="field-label">Issued</label><input class="field-input" type="date" name="issued" value="${TODAY}" required></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" required></div>
       </div>
@@ -5439,7 +5439,7 @@ function openAddInvoice(preselectClientId){
     for(let n=1;n<=4;n++){ const dept=f.get("dept"+n), amount=Number(f.get("amount"+n))||0; if(dept && amount>0) items.push({dept, amount}); }
     if(!items.length){ toast("Add at least one service with an amount"); return; }
     try{
-      await apiJson("/api/finance/invoices", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), invoiceNo:f.get("invoiceNo"), issuedAt:f.get("issued"), dueAt:f.get("due"), items }) });
+      await apiJson("/api/finance/invoices", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), issuedAt:f.get("issued"), dueAt:f.get("due"), items }) });
       await loadInvoices();
       toast("Invoice created"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't create invoice"); }
@@ -5457,7 +5457,7 @@ function openEditInvoice(id){
       ${quoteServiceRows(i.items||[])}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>${inr(invoiceTotal(i))}</b></div>
       <div class="field-row">
-        <div><label class="field-label">Invoice No.</label><input class="field-input" name="invoiceNo" required value="${esc(i.invoiceNo)}"></div>
+        <div><label class="field-label">Invoice No.</label><div class="field-input mono" style="color:var(--ink-soft);background:var(--surface-sunk);cursor:default;">${esc(i.invoiceNo)}</div></div>
         <div><label class="field-label">Issued</label><input class="field-input" type="date" name="issued" value="${i.issued}" required></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" value="${i.due}" required></div>
       </div>
@@ -5473,7 +5473,7 @@ function openEditInvoice(id){
     const newTotal = items.reduce((s,it)=>s+it.amount,0);
     if(newTotal < paidSoFar){ toast("Total can't be less than "+inr(paidSoFar)+" already received"); return; }
     try{
-      await apiJson(`/api/finance/invoices/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), items, invoiceNo:f.get("invoiceNo"), issuedAt:f.get("issued"), dueAt:f.get("due") }) });
+      await apiJson(`/api/finance/invoices/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), items, issuedAt:f.get("issued"), dueAt:f.get("due") }) });
       await loadInvoices();
       toast("Invoice updated"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't update invoice"); }

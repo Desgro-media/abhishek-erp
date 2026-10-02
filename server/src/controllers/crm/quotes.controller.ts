@@ -9,6 +9,7 @@ import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
 import { lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
+import { nextInvoiceNo } from "../../services/finance/invoiceNumber";
 import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   quoteCreateSchema,
@@ -27,16 +28,6 @@ const notYourQuote = (req: { user?: { roles?: string[]; name: string } }, quote:
 async function nextQuoteCode(): Promise<string> {
   return nextSequentialCode("QUO-", (await prisma.quote.findMany({ select: { quoteCode: true } })).map((q) => q.quoteCode));
 }
-// Highest existing number for the year + 1 — NOT count + 1. Deleting an invoice (or numbering one by hand)
-// leaves gaps, so a count-based number eventually lands on one that's already taken and the unique
-// constraint turns the convert/approve into a 500.
-async function nextAutoInvoiceNo(): Promise<string> {
-  const prefix = `DG-${new Date().getFullYear()}-`;
-  const existing = await prisma.invoice.findMany({ where: { invoiceNo: { startsWith: prefix } }, select: { invoiceNo: true } });
-  const highest = existing.reduce((m, i) => Math.max(m, Number(i.invoiceNo.slice(prefix.length)) || 0), 1000);
-  return `${prefix}${highest + 1}`;
-}
-
 // Mounted behind requireCrmUser (ADMIN, SALES_HEAD or SALES). A plain Sales caller only
 // ever sees the quotes they personally prepared (createdBy) — same
 // "narrow self-service slice" as listClients/listInvoices — ADMIN and the Sales Head see everyone's.
@@ -167,7 +158,7 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
 
     const invoice = await tx.invoice.create({
       data: {
-        clientId: clientId!, invoiceNo: await nextAutoInvoiceNo(),
+        clientId: clientId!, invoiceNo: await nextInvoiceNo(tx),
         issuedAt: new Date(d.issuedAt), dueAt: new Date(d.dueAt),
         items: { create: quote.items.map((i) => ({ dept: i.dept, amount: i.amount })) },
       },
@@ -278,7 +269,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
     if (!invoiceId) {
       const invoice = await tx.invoice.create({
         data: {
-          clientId: clientId!, invoiceNo: d.invoiceNo || (await nextAutoInvoiceNo()),
+          clientId: clientId!, invoiceNo: await nextInvoiceNo(tx),
           issuedAt: date, dueAt: date, items: { create: quote.items.map((i) => ({ dept: i.dept, amount: i.amount })) },
         },
       });
