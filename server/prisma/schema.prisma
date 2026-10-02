@@ -133,6 +133,8 @@ enum AttendanceStatus {
   ABSENT
   ON_LEAVE
   WFH
+  // Partially Paid WFH: always paid at 75% (a 25% cut), independent of the free-WFH allowance.
+  WFH_PARTIAL
 }
 
 // Simplified from CASUAL/SICK/EARNED/UNPAID — Loss of Pay is now a monthly
@@ -144,6 +146,7 @@ enum AttendanceStatus {
 enum LeaveType {
   CASUAL_SICK
   WFH
+  PARTIAL_WFH
 }
 
 enum LeaveDuration {
@@ -1022,6 +1025,15 @@ model QuoteDailyCounter {
   last Int    @default(0)
 
   @@map("quote_daily_counters")
+}
+
+// One row per day (IST, DDMMYY) — the invoice number serial (DG/DDMMYY/serial) resets daily. Bumped atomically
+// inside the invoice-create transaction, same as QuoteDailyCounter.
+model InvoiceDailyCounter {
+  day  String @id
+  last Int    @default(0)
+
+  @@map("invoice_daily_counters")
 }
 
 model Quote {

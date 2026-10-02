@@ -59,7 +59,6 @@ export const quotePendingPaymentSchema = z.object({
 export const quoteApprovalSchema = z.object({
   accountId: z.string().uuid(),
   date: dateStr.optional(),
-  invoiceNo: z.string().optional(), // required only when this approval creates the first invoice
   commissionRate: z.number().min(0).max(100).optional(),
 });
 export const quoteConvertSchema = z.object({

@@ -1,4 +1,5 @@
 import { RequestHandler } from "express";
+import { nextInvoiceNo } from "../../services/finance/invoiceNumber";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
@@ -55,16 +56,15 @@ export const createInvoice: RequestHandler = asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
-  const existing = await prisma.invoice.findUnique({ where: { invoiceNo: d.invoiceNo } });
-  if (existing) return res.status(409).json({ error: "That invoice number is already in use" });
-
-  const invoice = await prisma.invoice.create({
-    data: {
-      clientId: d.clientId, invoiceNo: d.invoiceNo, issuedAt: new Date(d.issuedAt), dueAt: new Date(d.dueAt),
-      items: { create: d.items },
-    },
-    include: INCLUDE,
-  });
+  // The number is always generated here, in the create transaction — never taken from the client.
+  const invoice = await prisma.$transaction(async (tx) =>
+    tx.invoice.create({
+      data: {
+        clientId: d.clientId, invoiceNo: await nextInvoiceNo(tx), issuedAt: new Date(d.issuedAt), dueAt: new Date(d.dueAt),
+        items: { create: d.items },
+      },
+      include: INCLUDE,
+    }));
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_CREATE", entityType: "Invoice", entityId: invoice.id, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   const created = withComputed(invoice);
@@ -88,7 +88,7 @@ export const updateInvoice: RequestHandler = asyncHandler(async (req, res) => {
     return tx.invoice.update({
       where: { id: before.id },
       data: {
-        clientId: d.clientId, invoiceNo: d.invoiceNo, issuedAt: d.issuedAt ? new Date(d.issuedAt) : undefined,
+        clientId: d.clientId, issuedAt: d.issuedAt ? new Date(d.issuedAt) : undefined,
         dueAt: d.dueAt ? new Date(d.dueAt) : undefined,
         items: d.items ? { create: d.items } : undefined,
       },

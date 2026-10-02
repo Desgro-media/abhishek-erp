@@ -108,7 +108,7 @@ export const createLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
 
 // HR/Admin only (mounted behind requireHRAdmin). Approving a Full Day
 // request writes Attendance for every date in range (ON_LEAVE for
-// CASUAL_SICK, WFH for WFH) in the same transaction as the decision —
+// CASUAL_SICK, WFH for WFH, WFH_PARTIAL for PARTIAL_WFH) in the same transaction as the decision —
 // Loss of Pay/WFH pay-cut are computed from Attendance, not from this
 // request, so the two must never be left to drift apart as separate facts.
 // Half/Quarter Day requests don't touch Attendance at all — there's no
@@ -129,7 +129,7 @@ export const decideLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
     });
 
     if (d.status === "APPROVED" && before.duration === "FULL_DAY") {
-      const attendanceStatus = before.type === "WFH" ? "WFH" : "ON_LEAVE";
+      const attendanceStatus = before.type === "WFH" ? "WFH" : before.type === "PARTIAL_WFH" ? "WFH_PARTIAL" : "ON_LEAVE";
       for (const date of eachDateInclusive(before.fromDate, before.toDate)) {
         await tx.attendanceRecord.upsert({
           where: { employeeId_date: { employeeId: before.employeeId, date } },

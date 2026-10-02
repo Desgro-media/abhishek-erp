@@ -77,13 +77,13 @@ export const salaryRevisionSchema = z.object({
 export const attendanceMarkSchema = z.object({
   employeeId: z.string().uuid(),
   date: dateStr,
-  status: z.enum(["PRESENT", "LATE", "HALF_DAY", "ABSENT", "ON_LEAVE", "WFH"]),
+  status: z.enum(["PRESENT", "LATE", "HALF_DAY", "ABSENT", "ON_LEAVE", "WFH", "WFH_PARTIAL"]),
   checkIn: z.string().optional(),
 });
 
 export const leaveRequestCreateSchema = z.object({
   employeeId: z.string().uuid().optional(), // HR only — self-service infers from the caller
-  type: z.enum(["CASUAL_SICK", "WFH"]),
+  type: z.enum(["CASUAL_SICK", "WFH", "PARTIAL_WFH"]),
   duration: z.enum(["FULL_DAY", "HALF_DAY", "QUARTER_DAY"]).default("FULL_DAY"),
   fromDate: dateStr,
   toDate: dateStr,

@@ -76,12 +76,12 @@ const TITLECASE_FROM_API = s => s==null ? s : String(s).split('_').map(w=>w.char
 const TITLECASE_TO_API = s => s==null ? s : String(s).toUpperCase().replace(/ /g,'_');
 // Attendance is the one enum that doesn't round-trip through a simple case
 // transform (old "half"/"leave" vs API "HALF_DAY"/"ON_LEAVE").
-const ATTENDANCE_FROM_API = {PRESENT:"present", LATE:"late", HALF_DAY:"half", ABSENT:"absent", ON_LEAVE:"leave", WFH:"wfh"};
-const ATTENDANCE_TO_API = {present:"PRESENT", late:"LATE", half:"HALF_DAY", absent:"ABSENT", leave:"ON_LEAVE", wfh:"WFH"};
+const ATTENDANCE_FROM_API = {PRESENT:"present", LATE:"late", HALF_DAY:"half", ABSENT:"absent", ON_LEAVE:"leave", WFH:"wfh", WFH_PARTIAL:"wfhp"};
+const ATTENDANCE_TO_API = {present:"PRESENT", late:"LATE", half:"HALF_DAY", absent:"ABSENT", leave:"ON_LEAVE", wfh:"WFH", wfhp:"WFH_PARTIAL"};
 // LeaveRequest.type doesn't round-trip through TITLECASE either (WFH is an
 // all-caps abbreviation, not a title-cased word).
-const LEAVE_TYPE_FROM_API = {CASUAL_SICK:"Casual/Sick", WFH:"WFH"};
-const LEAVE_TYPE_TO_API = {"Casual/Sick":"CASUAL_SICK", WFH:"WFH"};
+const LEAVE_TYPE_FROM_API = {CASUAL_SICK:"Casual/Sick", WFH:"WFH", PARTIAL_WFH:"Partially Paid WFH (75% payout)"};
+const LEAVE_TYPE_TO_API = {"Casual/Sick":"CASUAL_SICK", WFH:"WFH", "Partially Paid WFH (75% payout)":"PARTIAL_WFH"};
 const isoDate = s => s ? String(s).slice(0,10) : s;
 
 function mapEmployee(e){
@@ -352,11 +352,11 @@ function lopDaysFor(empId, month){
   const counts = attendanceMonthSummary[month] && attendanceMonthSummary[month][empId];
   return Math.max(0, (counts?.leave||0) - (counts?.leaveCap ?? hrPolicy.paidLeavesPerMonth));
 }
-// WFH days beyond the monthly paid-WFH allowance — mirrors computeWfhExcessDays, paid at 75% (a 25% cut)
+// WFH days beyond the monthly paid-WFH allowance, plus every Partially Paid WFH day — mirrors computeWfhExcessDays, paid at 75% (a 25% cut)
 // rather than a full Loss of Pay.
 function wfhExcessDaysFor(empId, month){
   const counts = attendanceMonthSummary[month] && attendanceMonthSummary[month][empId];
-  return Math.max(0, (counts?.wfh||0) - hrPolicy.paidWfhPerMonth);
+  return Math.max(0, (counts?.wfh||0) - hrPolicy.paidWfhPerMonth) + (counts?.partialWfh||0);
 }
 // Salary for a month is disbursed on the 5th of the following month, so the most recently CLOSED
 // month (the one before the current calendar month) is always fully earned — this is that month,
@@ -1022,7 +1022,7 @@ function workspacePayroll(){
       <div class="calc-line"><span>Salary</span><span class="mono">${inr(latest.gross)}</span></div>
       <div class="calc-line"><span>Pay cuts</span><span class="mono ${payCuts>0?'':'faint'}" style="${payCuts>0?'color:var(--neg);':''}">${payCuts>0?'−'+inr(payCuts):'none'}</span></div>
       ${latest.lopDeduction>0?`<div class="calc-line" style="padding-left:14px;"><span class="faint" style="font-size:12.5px;">Loss of Pay — ${latest.lopDays} day${latest.lopDays===1?"":"s"} beyond your leave balance</span><span class="mono faint" style="font-size:12.5px;">−${inr(latest.lopDeduction)}</span></div>`:""}
-      ${latest.wfhDeduction>0?`<div class="calc-line" style="padding-left:14px;"><span class="faint" style="font-size:12.5px;">WFH — ${latest.wfhExcessDays} day${latest.wfhExcessDays===1?"":"s"} beyond your paid WFH allowance, at 75% pay</span><span class="mono faint" style="font-size:12.5px;">−${inr(latest.wfhDeduction)}</span></div>`:""}
+      ${latest.wfhDeduction>0?`<div class="calc-line" style="padding-left:14px;"><span class="faint" style="font-size:12.5px;">WFH — ${latest.wfhExcessDays} day${latest.wfhExcessDays===1?"":"s"} paid at 75% (beyond your paid WFH allowance or Partially Paid WFH)</span><span class="mono faint" style="font-size:12.5px;">−${inr(latest.wfhDeduction)}</span></div>`:""}
       <div class="calc-line total"><span>Final salary</span><span class="mono">${inr(latest.net)}</span></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
         <span class="sub">Payment status</span>
@@ -2355,7 +2355,7 @@ function openApplyLeave(){
     <form id="f-apply-leave"><div class="modal-body">
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval. <b>Your balance for ${esc(monthLabel(leaveBalance(currentUser.id).month))}:</b> ${leaveBalance(currentUser.id).leaveRemaining} paid leave day${leaveBalance(currentUser.id).leaveRemaining===1?'':'s'} left${leaveCarryNote(leaveBalance(currentUser.id))} · ${leaveBalance(currentUser.id).wfhRemaining} paid WFH day${leaveBalance(currentUser.id).wfhRemaining===1?'':'s'} left.</div></div>
       <div class="field-row">
-        <div><label class="field-label">Type</label><select class="field-input" id="leave-type" name="type" onchange="updateLeaveImpactNote()"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option></select></div>
+        <div><label class="field-label">Type</label><select class="field-input" id="leave-type" name="type" onchange="updateLeaveImpactNote()"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option><option value="Partially Paid WFH (75% payout)">Partially Paid WFH (75% payout)</option></select></div>
         <div><label class="field-label">Duration</label><select class="field-input" id="leave-duration" name="duration" onchange="updateLeaveImpactNote()"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
       </div>
       <div class="field-row">
@@ -2403,7 +2403,8 @@ async function updateLeaveImpactNote(){
   if(!fromEl || !toEl || !noteEl || !currentUser) return;
   const from = fromEl.value, to = toEl.value;
   const duration = durationEl ? durationEl.value : 'Full Day';
-  const isWfh = typeEl ? typeEl.value === 'WFH' : false;
+  const isPartial = typeEl ? typeEl.value === 'Partially Paid WFH (75% payout)' : false;
+  const isWfh = isPartial || (typeEl ? typeEl.value === 'WFH' : false);
   if(!from || !to || to<from){ noteEl.innerHTML = ''; return; }
   if(from===to && duration!=='Full Day'){
     noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;">
@@ -2436,14 +2437,15 @@ async function updateLeaveImpactNote(){
     const usage = applyLeaveMonthUsage[m];
     if(!usage) return null;
     const newTotal = usage[dayKey] + newDaysByMonth[m];
-    const excess = Math.max(0, newTotal - usage[capKey]);
-    return excess>0 ? {month:m, excess, cap:usage[capKey], cost:Math.round(perDay(m)*excess*(isWfh?0.25:1))} : null;
+    // Partially Paid WFH never uses the free allowance — every requested day is a 25% cut.
+    const excess = isPartial ? newDaysByMonth[m] : Math.max(0, newTotal - usage[capKey]);
+    return excess>0 ? {month:m, excess, cap:usage[capKey], partial:isPartial, cost:Math.round(perDay(m)*excess*(isWfh?0.25:1))} : null;
   }).filter(Boolean);
 
   if(withExcess.length){
     noteEl.innerHTML = `<div class="banner" style="margin-top:2px;margin-bottom:10px;">
       <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-      <div><b>This request will cause a pay cut.</b> ${withExcess.map(m=>`${m.excess} day${m.excess===1?"":"s"} in ${esc(monthLabel(m.month))} beyond your ${m.cap}/month ${isWfh?"paid-WFH":"paid-leave"} allowance — expect ${isWfh?"a 25% pay cut (paid at 75%)":"a Loss of Pay deduction"} for ${m.excess===1?"that day":"those days"} once approved${m.cost>0?` — about <b>−${inr(m.cost)}</b> from that month's pay`:''}.`).join(' ')}</div>
+      <div><b>This request will cause a pay cut.</b> ${withExcess.map(m=>`${m.excess} day${m.excess===1?"":"s"} in ${esc(monthLabel(m.month))} ${m.partial?"of Partially Paid WFH":`beyond your ${m.cap}/month ${isWfh?"paid-WFH":"paid-leave"} allowance`} — expect ${isWfh?"a 25% pay cut (paid at 75%)":"a Loss of Pay deduction"} for ${m.excess===1?"that day":"those days"} once approved${m.cost>0?` — about <b>−${inr(m.cost)}</b> from that month's pay`:''}.`).join(' ')}</div>
     </div>`;
   } else {
     noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;">
@@ -2528,14 +2530,14 @@ function openRequestAdvance(){
 
 /* ===================== HR ===================== */
 function statusKind(s){
-  const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Work From Home":"blue",
+  const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Work From Home":"blue","Partially Paid WFH":"blue",
     Approved:"pos",Pending:"warn",Rejected:"neg",Recovering:"warn",Recovered:"pos",Paid:"pos",Open:"blue",Interview:"warn",Offer:"pos",Hired:"pos",Applied:"neutral",
     Permanent:"pos",Probation:"warn",
     Unpaid:"neg","Partially Paid":"warn","Payments pending":"warn","Adding entries":"neutral",
     New:"warn",Reviewed:"blue",Resolved:"pos"};
   return map[s] || "neutral";
 }
-function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",leave:"On Leave",wfh:"Work From Home"}[s]; }
+function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",leave:"On Leave",wfh:"Work From Home",wfhp:"Partially Paid WFH"}[s]; }
 
 function hrOverview(){
   const present = Object.values(attendanceToday).filter(a=>a.status==="present").length;
@@ -2620,7 +2622,7 @@ let selectedAttendanceEmp = null;
 function setAttendanceEmp(id){ selectedAttendanceEmp=id; render(); }
 async function cycleAttendance(id, date){
   date = date || selectedAttendanceDate;
-  const order=["present","late","half","wfh","absent","leave"];
+  const order=["present","late","half","wfh","wfhp","absent","leave"];
   const dayMap = attendanceByDate[date];
   if(!dayMap) return;
   const cur=dayMap[id];
@@ -2692,7 +2694,7 @@ function hrAttendance(){
   const isToday = date===TODAY;
   const dayMap = attendanceByDate[date] || {};
   const rows = employees.map(e=>({emp:e, a:dayMap[e.id] || {status:"present", in:null}}));
-  const counts = {present:0,late:0,half:0,absent:0,leave:0,wfh:0};
+  const counts = {present:0,late:0,half:0,absent:0,leave:0,wfh:0,wfhp:0};
   rows.forEach(r=>counts[r.a.status]++);
   const selected = byId(selectedAttendanceEmp) || employees[0];
   selectedAttendanceEmp = selected.id;
@@ -2766,7 +2768,7 @@ function hrLeave(){
   <div class="panel">
     <div class="panel-head"><h3>Leave &amp; WFH — ${esc(monthLabel(summaryMonth))}</h3><div class="sub">${hrPolicy.paidLeavesPerMonth} paid leave day${hrPolicy.paidLeavesPerMonth===1?'':'s'} &amp; ${hrPolicy.paidWfhPerMonth} paid WFH day${hrPolicy.paidWfhPerMonth===1?'':'s'} per employee per month — set in HR Settings</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">On Leave</th><th class="num">LOP days</th><th class="num">WFH</th><th class="num">WFH pay-cut days</th><th></th></tr></thead>
-      <tbody>${employees.map(e=>{ const c=summary[e.id]||{leave:0,wfh:0}; const lop=Math.max(0,c.leave-(c.leaveCap ?? hrPolicy.paidLeavesPerMonth)); const wfhCut=Math.max(0,c.wfh-hrPolicy.paidWfhPerMonth); return `<tr><td>${personCell(e)}</td><td class="num">${c.leave||'—'}</td><td class="num ${lop>0?'warn':''}">${lop||'—'}</td><td class="num">${c.wfh||'—'}</td><td class="num ${wfhCut>0?'warn':''}">${wfhCut||'—'}</td><td class="num"><button class="btn btn-sm ghost" onclick="openLeaveBalance('${e.id}')">Balance</button></td></tr>`; }).join("")}</tbody>
+      <tbody>${employees.map(e=>{ const c=summary[e.id]||{leave:0,wfh:0}; const lop=Math.max(0,c.leave-(c.leaveCap ?? hrPolicy.paidLeavesPerMonth)); const wfhCut=Math.max(0,c.wfh-hrPolicy.paidWfhPerMonth)+(c.partialWfh||0); return `<tr><td>${personCell(e)}</td><td class="num">${c.leave||'—'}</td><td class="num ${lop>0?'warn':''}">${lop||'—'}</td><td class="num">${c.wfh||'—'}</td><td class="num ${wfhCut>0?'warn':''}">${wfhCut||'—'}</td><td class="num"><button class="btn btn-sm ghost" onclick="openLeaveBalance('${e.id}')">Balance</button></td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>`;
   })()}`;
@@ -3609,7 +3611,7 @@ function openAddLeave(){
     <form id="f-add-leave"><div class="modal-body">
       <div><label class="field-label">Employee</label><select class="field-input" name="empId">${employees.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join("")}</select></div>
       <div class="field-row">
-        <div><label class="field-label">Type</label><select class="field-input" name="type"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option></select></div>
+        <div><label class="field-label">Type</label><select class="field-input" name="type"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option><option value="Partially Paid WFH (75% payout)">Partially Paid WFH (75% payout)</option></select></div>
         <div><label class="field-label">Duration</label><select class="field-input" name="duration"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
       </div>
       <div class="field-row">
@@ -3929,7 +3931,7 @@ async function openAddPayrollEntry(id){
       <div class="calc-line"><span>Advance salary paid to date</span><span class="mono">${advPaidTotal>0?inr(advPaidTotal):"—"}${advOutstanding>0?` <span class="faint" style="font-size:11.5px;">(${inr(advOutstanding)} still owed)</span>`:""}</span></div>
       <div class="calc-line"><span>Balance payable — ${esc(MONTH_LABEL[eu.month]||eu.month)}</span><span class="mono ${eu.balance>0?'warn':''}">${eu.balance>0?inr(eu.balance):"settled"}</span></div>
       ${lopDays>0 ? `<div class="calc-line"><span>Leave beyond ${hrPolicy.paidLeavesPerMonth}/month allowance</span><span class="mono" style="color:var(--neg);">${lopDays} day${lopDays===1?"":"s"} · est. −${inr(lopDeduction)} LOP</span></div>` : `<div class="calc-line"><span>Leave beyond ${hrPolicy.paidLeavesPerMonth}/month allowance</span><span class="mono faint">none</span></div>`}
-      ${wfhExcessDays>0 ? `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance</span><span class="mono" style="color:var(--neg);">${wfhExcessDays} day${wfhExcessDays===1?"":"s"} · est. −${inr(wfhDeduction)} (paid at 75%)</span></div>` : `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance</span><span class="mono faint">none</span></div>`}
+      ${wfhExcessDays>0 ? `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance + Partially Paid WFH</span><span class="mono" style="color:var(--neg);">${wfhExcessDays} day${wfhExcessDays===1?"":"s"} · est. −${inr(wfhDeduction)} (paid at 75%)</span></div>` : `<div class="calc-line"><span>WFH beyond ${hrPolicy.paidWfhPerMonth}/month allowance</span><span class="mono faint">none</span></div>`}
       <div class="field-row" style="margin-top:10px;">
         <div><label class="field-label">Master monthly gross</label><div class="mono">${inr(e.salary)}</div></div>
         <div><label class="field-label">Gross for ${MONTH_LABEL[month]} (₹)</label><input class="field-input" type="number" name="gross" min="0" step="any" required value="${startGross}"></div>
@@ -5423,7 +5425,7 @@ function openAddInvoice(preselectClientId){
       ${quoteServiceRows([])}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>₹0</b></div>
       <div class="field-row">
-        <div><label class="field-label">Invoice No.</label><input class="field-input" name="invoiceNo" required placeholder="DG-2026-1049"></div>
+        <div><label class="field-label">Invoice No.</label><div class="field-input" style="color:var(--ink-soft);background:var(--surface-sunk);cursor:default;">Auto-generated on save</div></div>
         <div><label class="field-label">Issued</label><input class="field-input" type="date" name="issued" value="${TODAY}" required></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" required></div>
       </div>
@@ -5437,7 +5439,7 @@ function openAddInvoice(preselectClientId){
     for(let n=1;n<=4;n++){ const dept=f.get("dept"+n), amount=Number(f.get("amount"+n))||0; if(dept && amount>0) items.push({dept, amount}); }
     if(!items.length){ toast("Add at least one service with an amount"); return; }
     try{
-      await apiJson("/api/finance/invoices", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), invoiceNo:f.get("invoiceNo"), issuedAt:f.get("issued"), dueAt:f.get("due"), items }) });
+      await apiJson("/api/finance/invoices", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), issuedAt:f.get("issued"), dueAt:f.get("due"), items }) });
       await loadInvoices();
       toast("Invoice created"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't create invoice"); }
@@ -5455,7 +5457,7 @@ function openEditInvoice(id){
       ${quoteServiceRows(i.items||[])}
       <div id="quote-total-indicator" style="font-size:13px;padding-top:2px;">Total: <b>${inr(invoiceTotal(i))}</b></div>
       <div class="field-row">
-        <div><label class="field-label">Invoice No.</label><input class="field-input" name="invoiceNo" required value="${esc(i.invoiceNo)}"></div>
+        <div><label class="field-label">Invoice No.</label><div class="field-input mono" style="color:var(--ink-soft);background:var(--surface-sunk);cursor:default;">${esc(i.invoiceNo)}</div></div>
         <div><label class="field-label">Issued</label><input class="field-input" type="date" name="issued" value="${i.issued}" required></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" value="${i.due}" required></div>
       </div>
@@ -5471,7 +5473,7 @@ function openEditInvoice(id){
     const newTotal = items.reduce((s,it)=>s+it.amount,0);
     if(newTotal < paidSoFar){ toast("Total can't be less than "+inr(paidSoFar)+" already received"); return; }
     try{
-      await apiJson(`/api/finance/invoices/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), items, invoiceNo:f.get("invoiceNo"), issuedAt:f.get("issued"), dueAt:f.get("due") }) });
+      await apiJson(`/api/finance/invoices/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ clientId:f.get("clientId"), items, issuedAt:f.get("issued"), dueAt:f.get("due") }) });
       await loadInvoices();
       toast("Invoice updated"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't update invoice"); }

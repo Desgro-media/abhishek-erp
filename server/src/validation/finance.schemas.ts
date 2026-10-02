@@ -7,7 +7,6 @@ export const invoiceItemSchema = z.object({ dept: z.string().min(1), amount: z.n
 
 export const invoiceCreateSchema = z.object({
   clientId: z.string().min(1),
-  invoiceNo: z.string().min(1),
   issuedAt: dateStr,
   dueAt: dateStr,
   items: z.array(invoiceItemSchema).min(1),
@@ -15,7 +14,6 @@ export const invoiceCreateSchema = z.object({
 
 export const invoiceUpdateSchema = z.object({
   clientId: z.string().min(1).optional(),
-  invoiceNo: z.string().min(1).optional(),
   issuedAt: dateStr.optional(),
   dueAt: dateStr.optional(),
   items: z.array(invoiceItemSchema).min(1).optional(),
