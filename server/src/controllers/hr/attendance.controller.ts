@@ -84,11 +84,15 @@ export const getMonthlySummary: RequestHandler = asyncHandler(async (req, res) =
   // adjustments), so the client's LOP preview matches what payroll will deduct.
   await ensureCarryForwardAll(month);
   const policy = await prisma.hrPolicy.findUnique({ where: { id: 1 } });
-  const ledgerRows = await prisma.leaveLedgerEntry.findMany({ where: { month, supersededAt: null } });
+  const ledgerRows = await prisma.leaveLedgerEntry.findMany({ where: { month, bucket: "PAID_LEAVE", supersededAt: null } });
   const caps: Record<string, number> = {};
   for (const r of ledgerRows) caps[r.employeeId] = (caps[r.employeeId] ?? policy?.paidLeavesPerMonth ?? 1) + Number(r.days);
 
-  res.json({ month, byEmployee, caps });
+  const wfhAdj = await prisma.leaveLedgerEntry.findMany({ where: { month, bucket: "WFH", supersededAt: null } });
+  const wfhCaps: Record<string, number> = {};
+  for (const r of wfhAdj) wfhCaps[r.employeeId] = (wfhCaps[r.employeeId] ?? policy?.paidWfhPerMonth ?? 1) + Number(r.days);
+
+  res.json({ month, byEmployee, caps, wfhCaps });
 });
 
 // HR/Admin can view any employee's history; anyone else only their own.

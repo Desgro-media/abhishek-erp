@@ -194,6 +194,15 @@ export const leaveAdjustmentSchema = z.object({
   note: z.string().trim().min(3, "Give a reason"),
 });
 
+// "Update Balances": HR types the remaining paid-leave / WFH balance they want for one month; the server stores
+// the difference from the computed balance as an adjustment (never overwrites anything). At least one of the two.
+export const balanceUpdateSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, "Expected YYYY-MM"),
+  paidLeaveBalance: z.number().min(-31).max(62).refine((n) => Number.isInteger(n * 2), "Half-day steps only").optional(),
+  wfhBalance: z.number().min(-31).max(62).refine((n) => Number.isInteger(n * 2), "Half-day steps only").optional(),
+  reason: z.string().trim().min(3, "Give a reason"),
+}).refine((d) => d.paidLeaveBalance !== undefined || d.wfhBalance !== undefined, "Enter at least one balance");
+
 export const offerLetterSchema = z.object({
   name: z.string().min(1),
   role: z.string().min(1),

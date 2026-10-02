@@ -5,7 +5,7 @@ import { recordAudit } from "../../services/audit.service";
 import { isHRAdmin, resolveScopedEmployeeId } from "../../middleware/hrAccess";
 import { leaveRequestCreateSchema, leaveDecisionSchema } from "../../validation/hr.schemas";
 import { computeMonthlyLeaveUsage, getLeaveLedger, ensureCarryForward, thisMonth } from "../../services/hr/leaveBalance";
-import { leaveAdjustmentSchema } from "../../validation/hr.schemas";
+import { leaveAdjustmentSchema, balanceUpdateSchema } from "../../validation/hr.schemas";
 import { sendMail, detailsHtml, HR_MAIL } from "../../services/mail.service";
 
 
@@ -198,4 +198,40 @@ export const addLeaveAdjustment: RequestHandler = asyncHandler(async (req, res) 
   await ensureCarryForward(employeeId, thisMonth(), prisma, { reconcile: true });
   await recordAudit({ userId: req.user!.sub, action: "HR_LEAVE_ADJUSTMENT", entityType: "Employee", entityId: employeeId, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(201).json({ entry });
+});
+
+// HR/Admin only — "Update Balances". HR enters the remaining Paid Leave and/or WFH balance they want for a month;
+// we store (target − current remaining) as an ADJUSTMENT on top of the computed value, with old/new/reason/who,
+// so a later Attendance correction still flows through and the audit chain stays intact. The month's usage is
+// still counted from Attendance — nothing here stores "used".
+export const updateLeaveBalances: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = balanceUpdateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const d = parsed.data;
+  const employeeId = req.params.employeeId;
+  const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { id: true } });
+  if (!emp) return res.status(404).json({ error: "Employee not found" });
+
+  const changes = await prisma.$transaction(async (tx) => {
+    const usage = await computeMonthlyLeaveUsage(employeeId, d.month, tx);
+    const out: { bucket: "PAID_LEAVE" | "WFH"; oldValue: number; newValue: number; delta: number }[] = [];
+    const apply = async (bucket: "PAID_LEAVE" | "WFH", target: number | undefined, cap: number, used: number) => {
+      if (target === undefined) return;
+      const oldValue = cap - used; // can go negative: that's LOP / pay-cut territory, which is exactly what HR may be fixing
+      const delta = target - oldValue;
+      if (delta === 0) return;
+      await tx.leaveLedgerEntry.create({
+        data: { employeeId, kind: "ADJUSTMENT", bucket, month: d.month, days: delta, oldValue, newValue: target, note: d.reason, createdBy: req.user!.sub },
+      });
+      out.push({ bucket, oldValue, newValue: target, delta });
+    };
+    await apply("PAID_LEAVE", d.paidLeaveBalance, usage.leaveCap, usage.leaveDays);
+    await apply("WFH", d.wfhBalance, usage.wfhCap, usage.wfhDays);
+    return out;
+  });
+  if (!changes.length) return res.status(400).json({ error: "Those balances are already what the system calculates — nothing to change" });
+
+  await ensureCarryForward(employeeId, thisMonth(), prisma, { reconcile: true });
+  await recordAudit({ userId: req.user!.sub, action: "HR_LEAVE_BALANCE_UPDATE", entityType: "Employee", entityId: employeeId, beforeData: changes.map((c) => ({ bucket: c.bucket, value: c.oldValue })), afterData: { month: d.month, reason: d.reason, changes }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.status(201).json({ changes, balance: await computeMonthlyLeaveUsage(employeeId, d.month) });
 });
