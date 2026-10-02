@@ -6,6 +6,8 @@ import multer from "multer";
 import { prisma } from "../db/prisma";
 import { asyncHandler } from "../utils/asyncHandler";
 import { recordAudit } from "../services/audit.service";
+import { sendMail, HR_MAIL } from "../services/mail.service";
+import { hiringEmail } from "../services/hr/hiringEmails";
 import { candidateCreateSchema } from "../validation/hr.schemas";
 import { RESUMES_DIR, MAX_RESUME_BYTES } from "../config/uploads";
 
@@ -95,6 +97,8 @@ export const submitApplicationPublic: RequestHandler = asyncHandler(async (req, 
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"] ?? null,
   });
+
+  if (d.email) sendMail("hr", { to: d.email, cc: HR_MAIL(), ...hiringEmail("APPLIED", { name: d.name, role: position.role, candidateId: candidate.id }) });
 
   res.status(201).json({ ok: true });
 });
