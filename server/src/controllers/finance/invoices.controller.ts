@@ -56,12 +56,6 @@ export const createInvoice: RequestHandler = asyncHandler(async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
-  // Sales can raise invoices, but only for their own clients (Finance/Admin/Sales Head: any).
-  if (!isFinanceAdmin(req.user?.roles) && !seesWholeSalesTeam(req.user?.roles)) {
-    const client = await prisma.client.findUnique({ where: { id: d.clientId }, select: { salesPerson: true } });
-    if (!client || client.salesPerson !== req.user!.name) return res.status(403).json({ error: "Forbidden — not your client" });
-  }
-
   // The number is always generated here, in the create transaction — never taken from the client.
   const invoice = await prisma.$transaction(async (tx) =>
     tx.invoice.create({
