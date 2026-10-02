@@ -120,7 +120,7 @@ export async function computeLopDays(employeeId: string, month: string, db: Pris
   return Math.max(0, leaveCount - cap);
 }
 
-// WFH days beyond hrPolicy.paidWfhPerMonth in a given payroll month, paid at
+// WFH days beyond hrPolicy.paidWfhPerMonth in a given payroll month (plus every Partially Paid WFH day), paid at
 // 75% (a 25% cut per excess day) instead of a full Loss of Pay — see
 // computePayrollRow(). Counted from actual attendance records, same
 // "derive from real history" approach computeLopDays takes for leave.
@@ -129,11 +129,14 @@ export async function computeWfhExcessDays(employeeId: string, month: string, db
   const cap = policy?.paidWfhPerMonth ?? 1;
   const { start, end } = monthRange(month);
 
-  const wfhCount = await db.attendanceRecord.count({
-    where: { employeeId, status: "WFH", date: { gte: start, lt: end } },
-  });
+  const [wfhCount, partialCount] = await Promise.all([
+    db.attendanceRecord.count({ where: { employeeId, status: "WFH", date: { gte: start, lt: end } } }),
+    db.attendanceRecord.count({ where: { employeeId, status: "WFH_PARTIAL", date: { gte: start, lt: end } } }),
+  ]);
 
-  return Math.max(0, wfhCount - cap);
+  // Partially Paid WFH days are always cut 25% and don't use up the free allowance, so they're
+  // added on top of the plain-WFH excess — one figure, one 25% formula, in payroll and every preview.
+  return Math.max(0, wfhCount - cap) + partialCount;
 }
 
 // Both leave and WFH usage for a month in one shot, against the org-wide
@@ -149,11 +152,12 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
 
   const grouped = await db.attendanceRecord.groupBy({
     by: ["status"],
-    where: { employeeId, status: { in: ["ON_LEAVE", "WFH"] }, date: { gte: start, lt: end } },
+    where: { employeeId, status: { in: ["ON_LEAVE", "WFH", "WFH_PARTIAL"] }, date: { gte: start, lt: end } },
     _count: { _all: true },
   });
   const leaveDays = grouped.find((g) => g.status === "ON_LEAVE")?._count._all ?? 0;
   const wfhDays = grouped.find((g) => g.status === "WFH")?._count._all ?? 0;
+  const partialWfhDays = grouped.find((g) => g.status === "WFH_PARTIAL")?._count._all ?? 0;
 
   return {
     month,
@@ -169,7 +173,9 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
     wfhDays,
     wfhCap,
     wfhRemaining: Math.max(0, wfhCap - wfhDays),
-    wfhExcessDays: Math.max(0, wfhDays - wfhCap),
+    partialWfhDays,
+    // Plain WFH beyond the allowance + every Partially Paid WFH day — each a 25% cut.
+    wfhExcessDays: Math.max(0, wfhDays - wfhCap) + partialWfhDays,
   };
 }
 

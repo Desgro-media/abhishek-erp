@@ -68,14 +68,15 @@ export const getMonthlySummary: RequestHandler = asyncHandler(async (req, res) =
 
   const grouped = await prisma.attendanceRecord.groupBy({
     by: ["employeeId", "status"],
-    where: { date: { gte: start, lt: end }, status: { in: ["ON_LEAVE", "WFH"] } },
+    where: { date: { gte: start, lt: end }, status: { in: ["ON_LEAVE", "WFH", "WFH_PARTIAL"] } },
     _count: { _all: true },
   });
 
-  const byEmployee: Record<string, { leave: number; wfh: number }> = {};
+  const byEmployee: Record<string, { leave: number; wfh: number; partialWfh: number }> = {};
   for (const row of grouped) {
-    byEmployee[row.employeeId] ??= { leave: 0, wfh: 0 };
+    byEmployee[row.employeeId] ??= { leave: 0, wfh: 0, partialWfh: 0 };
     if (row.status === "ON_LEAVE") byEmployee[row.employeeId].leave = row._count._all;
+    else if (row.status === "WFH_PARTIAL") byEmployee[row.employeeId].partialWfh = row._count._all;
     else byEmployee[row.employeeId].wfh = row._count._all;
   }
 
