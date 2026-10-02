@@ -30,7 +30,7 @@ router.post("/transfers", requireFinanceAdmin, bank.createTransfer);
 // slice (list their own, submit a collected payment) — see ACCESS MODEL.
 router.get("/invoices", requireFinanceAdminOrSales, invoices.listInvoices);
 router.get("/invoices/:id", requireFinanceAdminOrSales, invoices.getInvoice);
-router.post("/invoices", requireFinanceAdmin, invoices.createInvoice);
+router.post("/invoices", requireFinanceAdminOrSales, invoices.createInvoice);
 router.patch("/invoices/:id", requireFinanceAdmin, invoices.updateInvoice);
 router.delete("/invoices/:id", requireFinanceAdmin, invoices.deleteInvoice);
 router.post("/invoices/:id/payments", requireFinanceAdmin, invoices.recordInvoicePayment);
