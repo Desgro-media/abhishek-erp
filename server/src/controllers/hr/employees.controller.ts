@@ -237,7 +237,7 @@ export const grantAccess: RequestHandler = asyncHandler(async (req, res) => {
   const wasExisting = !!employee.user;
 
   if (wasExisting) {
-    await prisma.user.update({ where: { id: employee.user!.id }, data: { passwordHash } });
+    await prisma.user.update({ where: { id: employee.user!.id }, data: { passwordHash, failedLoginCount: 0, lockedUntil: null } });
   } else {
     await prisma.user.create({
       data: { name: employee.name, email: employee.email.toLowerCase(), passwordHash, roles: d.roles, employeeId: employee.id },
