@@ -35,8 +35,7 @@ export const leadCreateSchema = z.object({
 export const SERVICE_INTERESTED_OPTIONS = ["Marketing Consultation", "Web Development", "Production", "Graphic Design", "Performance Marketing"] as const;
 export const publicLeadSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  email: z.string().trim().email().max(160).optional().or(z.literal("")),
-  phone: z.string().trim().max(30).regex(/^[0-9+()\-\s]*$/, "Enter a valid phone number").optional().or(z.literal("")),
+  phone: z.string().trim().min(5, "Enter your phone number").max(30).regex(/^[0-9+()\-\s]+$/, "Enter a valid phone number"),
   serviceInterested: z.enum(SERVICE_INTERESTED_OPTIONS),
   notes: z.string().trim().max(1000).optional().or(z.literal("")),
   website: z.string().optional(),

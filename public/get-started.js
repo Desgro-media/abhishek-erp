@@ -18,13 +18,12 @@ $("lead-form").addEventListener("submit", async e => {
   const errorEl = $("form-error");
   errorEl.innerHTML = "";
   const name = $("f-name").value.trim();
-  const email = $("f-email").value.trim();
   const phone = $("f-phone").value.trim();
   const serviceInterested = $("f-service").value;
   const notes = $("f-notes").value.trim();
   const fail = msg => { errorEl.innerHTML = `<div class="error-msg">${esc(msg)}</div>`; };
   if(!name) return fail("Enter your name or business.");
-  if(!email && !phone) return fail("Add a phone number or an email so we can reach you.");
+  if(!phone) return fail("Enter your phone number so we can reach you.");
   if(!serviceInterested) return fail("Pick the service you're interested in.");
 
   const btn = $("submit-btn");
@@ -33,7 +32,7 @@ $("lead-form").addEventListener("submit", async e => {
     const res = await fetch("/api/public/lead", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, phone, serviceInterested, notes, website: $("f-website").value }),
+      body: JSON.stringify({ name, phone, serviceInterested, notes, website: $("f-website").value }),
     });
     const data = await res.json().catch(() => ({}));
     if(!res.ok){
