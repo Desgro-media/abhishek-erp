@@ -122,14 +122,12 @@ export const submitLeadPublic: RequestHandler = asyncHandler(async (req, res) =>
   const parsed = publicLeadSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
-  if (!d.phone && !d.email) return res.status(400).json({ error: "Add a phone number or an email so we can reach you" });
 
   const lead = await prisma.lead.create({
     data: {
       leadCode: nextSequentialCode("MLD-", (await prisma.lead.findMany({ select: { leadCode: true } })).map((l) => l.leadCode)),
       name: d.name,
-      phone: d.phone || undefined,
-      email: d.email || undefined,
+      phone: d.phone,
       source: "Meta",
       serviceInterested: d.serviceInterested,
       leadOwner: null,
