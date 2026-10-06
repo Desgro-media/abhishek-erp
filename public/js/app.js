@@ -567,7 +567,7 @@ function adMetrics(c){
 const LEAD_SOURCES = ["Meta","Organic","References"];
 let marketingLeads = [];
 function mapLead(l){
-  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), convertedClientId:l.convertedClientId||null };
+  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), convertedClientId:l.convertedClientId||null, notes:l.notes||"" };
 }
 async function loadLeads(){ marketingLeads = (await apiJson("/api/crm/leads")).leads.map(mapLead); }
 
@@ -4395,13 +4395,13 @@ function mktLeads(){
       ${pill(openLeads.length+" open", "warn")}
     </div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Service Interested</th><th>Source</th><th>Created</th><th></th></tr></thead>
-      <tbody>${openLeads.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("")}</tbody>
+      <tbody>${openLeads.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("")}</tbody>
     </table></div>
   </div>` : ''}
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My leads':'Lead pipeline'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Service Interested</th><th>Source</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
-      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?5:6}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
+      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?5:6}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4410,10 +4410,13 @@ function mktLeads(){
 function leadOwnerActionsCell(l){
   const canClaim = !l.leadOwner && currentUser && isSalesRole(currentUser);
   const assignBtn = canClaim ? `<button class="btn btn-sm primary" onclick="assignLeadToMe('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Assign to me</button>` : '';
+  // Admin / Sales Head (the ones who see the whole team) hand an unassigned lead to any Sales member.
+  const canAssignOthers = !l.leadOwner && currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'));
+  const assignPick = canAssignOthers ? `<select class="select-sm" onchange="assignLeadTo('${l.id}', this.value)" title="Assign to a Sales team member"><option value="">Assign to…</option>${salesTeamOptions()}</select>` : '';
   // Mirrors deleteLead() server-side: Admin / Sales Head delete any; a Sales rep only their own claimed leads.
   const canDelete = currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD') || (l.leadOwner && l.leadOwner===currentUser.name));
   const delBtn = canDelete ? `<button class="btn btn-sm ghost" onclick="openConfirmDelete('lead','${l.id}')" title="Delete lead"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>` : '';
-  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
+  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignPick}${assignBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
 }
 async function assignLeadToMe(id){
   if(!currentUser) return;
@@ -4424,6 +4427,16 @@ async function assignLeadToMe(id){
     await loadLeads();
     toast(l.name+" assigned to you"); render();
   }catch(err){ toast(err.message || "Couldn't assign lead"); }
+}
+async function assignLeadTo(id, owner){
+  if(!owner) return;
+  const l = marketingLeads.find(x=>x.id===id);
+  if(!l || l.leadOwner) return;
+  try{
+    await apiJson(`/api/crm/leads/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ leadOwner: owner }) });
+    await loadLeads();
+    toast(l.name+" assigned to "+owner); render();
+  }catch(err){ toast(err.message || "Couldn't assign lead"); render(); }
 }
 function salesTeamOptions(){
   const pool = assignableEmployees();

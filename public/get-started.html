@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Get started · DesGro Media</title>
+<meta name="description" content="Tell us what you need and the DesGro Media team will get back to you.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* Same brand tokens as careers.html / index.html. Standalone on purpose: public, no login, no app.js. */
+  :root{
+    --paper:#F6F4F3; --surface:#FFFFFF; --surface-sunk:#EFEBEA;
+    --ink:#1B1515; --ink-soft:#6B5F5D; --ink-faint:#9C908E; --line:#E3DDDC;
+    --brand:#EB2027; --brand-strong:#A8141A; --brand-soft:#FBE3E4;
+    --pos:#1F6B45; --pos-soft:#E4F1E9; --neg:#C31A20; --neg-soft:#FBE6E6;
+    --shadow: 0 1px 2px rgba(20,16,16,.05), 0 8px 24px -12px rgba(20,16,16,.14);
+    --radius:12px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#141010; --surface:#1D1717; --surface-sunk:#241D1D;
+      --ink:#EDE7E6; --ink-soft:#AB9F9D; --ink-faint:#786C6A; --line:#332B2A;
+      --brand:#FF4A50; --brand-strong:#EB2027; --brand-soft:rgba(235,32,39,.16);
+      --pos:#57B885; --pos-soft:rgba(87,184,133,.14); --neg:#F0787C; --neg-soft:rgba(240,120,124,.14);
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 28px -14px rgba(0,0,0,.6);
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--ink);font-family:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:560px;margin:0 auto;padding:40px 20px 80px;}
+  .brand-bar{width:34px;height:6px;border-radius:2px;background:linear-gradient(90deg,var(--brand) 0%,#8C0F14 100%);margin-bottom:10px;}
+  .wordmark{font-weight:800;font-size:21px;letter-spacing:-.01em;}
+  .wordmark small{display:block;font-weight:600;font-size:10.5px;letter-spacing:.14em;color:var(--ink-faint);}
+  h1{font-size:28px;font-weight:800;margin:28px 0 6px;text-wrap:balance;line-height:1.2;}
+  .lede{color:var(--ink-soft);margin-bottom:24px;}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;}
+  .field-label{display:block;font-size:12.5px;font-weight:700;color:var(--ink-soft);margin:16px 0 5px;}
+  .field-label:first-child{margin-top:0;}
+  .opt{font-weight:500;color:var(--ink-faint);}
+  input,select,textarea{font:inherit;width:100%;background:var(--surface-sunk);border:1px solid var(--line);border-radius:8px;padding:11px 12px;color:var(--ink);}
+  textarea{resize:vertical;min-height:96px;}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--brand);outline-offset:1px;}
+  .hint{font-size:12px;color:var(--ink-faint);margin-top:6px;}
+  .btn{font:inherit;cursor:pointer;width:100%;margin-top:20px;padding:12px 16px;border-radius:8px;border:1px solid var(--brand);background:var(--brand);color:#fff;font-weight:700;font-size:14px;}
+  .btn:disabled{opacity:.6;cursor:default;}
+  .error-msg{background:var(--neg-soft);color:var(--neg);border-radius:8px;padding:10px 12px;font-size:13px;font-weight:600;margin-top:16px;}
+  .success{text-align:center;padding:16px 4px;}
+  .success .icon-circle{width:56px;height:56px;border-radius:50%;background:var(--pos-soft);color:var(--pos);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:28px;}
+  .success h2{margin:0 0 6px;font-size:20px;font-weight:800;}
+  /* Honeypot: off-screen rather than display:none, which some bots detect and skip. */
+  .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}
+  .foot{text-align:center;color:var(--ink-faint);font-size:12px;margin-top:22px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand-bar"></div>
+  <div class="wordmark">DESGRO<small>MEDIA</small></div>
+  <h1>Let's grow your business</h1>
+  <div class="lede">Tell us what you need and our team will get back to you shortly.</div>
+
+  <div class="panel" id="panel">
+    <form id="lead-form" novalidate>
+      <label class="field-label" for="f-name">Your name or business</label>
+      <input id="f-name" required maxlength="120" placeholder="e.g. Coastal Spice Exports" autocomplete="organization">
+
+      <label class="field-label" for="f-email">Email</label>
+      <input id="f-email" type="email" maxlength="160" placeholder="you@example.com" autocomplete="email">
+
+      <label class="field-label" for="f-phone">Phone</label>
+      <input id="f-phone" type="tel" maxlength="30" placeholder="+91…" autocomplete="tel">
+      <div class="hint">Give us a phone number or an email — whichever's easiest to reach you on.</div>
+
+      <label class="field-label" for="f-service">Service you're interested in</label>
+      <select id="f-service" required><option value="">Loading…</option></select>
+
+      <label class="field-label" for="f-notes">Message <span class="opt">(optional)</span></label>
+      <textarea id="f-notes" maxlength="1000" placeholder="Tell us a little about what you're looking for"></textarea>
+
+      <div class="hp" aria-hidden="true">
+        <label for="f-website">Website</label>
+        <input id="f-website" name="website" tabindex="-1" autocomplete="off">
+      </div>
+
+      <div id="form-error"></div>
+      <button type="submit" class="btn" id="submit-btn">Get in touch</button>
+    </form>
+  </div>
+  <div class="foot">© DesGro Media</div>
+</div>
+<script src="get-started.js"></script>
+</body>
+</html>
