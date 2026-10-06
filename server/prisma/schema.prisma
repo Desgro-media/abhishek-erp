@@ -1007,6 +1007,8 @@ model Lead {
   source            String
   serviceInterested String     @map("service_interested")
   leadOwner         String?    @map("lead_owner")
+  // Free-text message from the public get-started form (public/get-started.html); null for manually added leads.
+  notes             String?
   status            LeadStatus @default(NEW)
   // Set once a quote against this lead gets its first approved payment —
   // the old prototype never recorded this, so a converted lead just sat in

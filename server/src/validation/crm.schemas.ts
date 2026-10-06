@@ -30,6 +30,17 @@ export const leadCreateSchema = z.object({
   serviceInterested: z.string().min(1),
   leadOwner: z.string().optional(),
 });
+// Public get-started form. source/owner/status are NOT accepted from the client — the controller
+// forces source "Meta" and an unassigned owner. `website` is the honeypot (humans never see it).
+export const SERVICE_INTERESTED_OPTIONS = ["Marketing Consultation", "Web Development", "Production", "Graphic Design", "Performance Marketing"] as const;
+export const publicLeadSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  email: z.string().trim().email().max(160).optional().or(z.literal("")),
+  phone: z.string().trim().max(30).regex(/^[0-9+()\-\s]*$/, "Enter a valid phone number").optional().or(z.literal("")),
+  serviceInterested: z.enum(SERVICE_INTERESTED_OPTIONS),
+  notes: z.string().trim().max(1000).optional().or(z.literal("")),
+  website: z.string().optional(),
+});
 export const leadUpdateSchema = leadCreateSchema.partial().extend({
   status: z.enum(["NEW", "CONTACTED", "QUALIFIED", "CONVERTED", "LOST"]).optional(),
   // Explicit null (not just omission) puts a lead back in the Open queue.

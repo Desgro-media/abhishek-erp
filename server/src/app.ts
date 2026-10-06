@@ -48,6 +48,8 @@ app.use("/api", apiRouter);
 // ships as one deployable unit. Splitting the frontend onto its own static
 // host later is just a CORS_ORIGIN change, nothing here has to move.
 app.use(express.static(path.join(__dirname, "..", "..", "public")));
+// Clean URL for the Meta Ads landing page (the file itself is also reachable at /get-started.html).
+app.get("/get-started", (_req, res) => res.sendFile(path.join(__dirname, "..", "..", "public", "get-started.html")));
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
