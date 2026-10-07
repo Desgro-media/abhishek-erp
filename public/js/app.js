@@ -1518,6 +1518,14 @@ function deptProfitability(month){
 // the display-only .role/.dept strings the HR preview logic uses.
 function isFinanceAdminUser(u){ return !!(u && (u.isAdmin || (u.roles||[]).includes('FINANCE'))); }
 
+async function loadFinancePayroll(){
+  await loadEmployees();
+  await loadArchivedEmployees();
+  const [y,m] = TODAY.slice(0,7).split('-').map(Number);
+  const d = new Date(y,m-2,1);
+  const prevMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  await Promise.all([loadPayrollMonth(TODAY.slice(0,7)), loadPayrollMonth(prevMonth)]);
+}
 async function loadFinanceModule(){
   const admin = isFinanceAdminUser(currentUser);
   const roles = (currentUser && currentUser.roles) || [];
@@ -1525,6 +1533,8 @@ async function loadFinanceModule(){
     await Promise.all([loadBankAccounts(), loadChartOfAccounts()]);
     await Promise.all([loadInvoices(), loadPayables(), loadExpenses(), loadJournalEntries(), loadCommissionWithdrawals(), loadPendingAdvanceDisbursements(), loadSalesPolicy(), loadSalesTargets()]);
     await loadFinanceReports(payroll.selectedMonth);
+    // Accounts > Payroll needs the employee list and payroll months; HR/Admin already loaded them in loadHrModule().
+    if(!(isHRRole(currentUser) || currentUser.isAdmin)) await loadFinancePayroll();
   } else if(roles.includes('SALES') || roles.includes('SALES_HEAD')){
     // Sales' narrow slice: their own invoices, their own Commission/Sales
     // Bonus payables (server now scopes listPayables to just those two
@@ -2953,6 +2963,7 @@ async function unarchiveCandidate(id){
 // adjust gross pay, but paying is Accounts' call (see hrPayroll()).
 function payrollView(readOnly){
   const month = payroll.selectedMonth;
+  if(!payroll.history[month]) return `<div class="panel"><div class="panel-body"><div class="empty">Payroll for ${MONTH_LABEL[month]||month} isn't available — you may not have access, or it failed to load.</div></div></div>`;
   const includedIds = Object.keys(payroll.history[month].entries);
   // A departed employee's already-recorded entry (e.g. a final settlement) should stay visible here
   // even after they're archived and drop out of `employees` — so look them up in both pools.
@@ -3906,7 +3917,7 @@ function openPayslip(id, readOnly){
 async function setPayrollMonth(m){
   payroll.selectedMonth=m;
   const jobs = [];
-  if(!payroll.history[m] && (isHRRole(currentUser) || (currentUser && currentUser.isAdmin))) jobs.push(loadPayrollMonth(m));
+  if(!payroll.history[m] && (isHRRole(currentUser) || isFinanceAdminUser(currentUser))) jobs.push(loadPayrollMonth(m));
   if(!attendanceMonthSummary[m] && (isHRRole(currentUser) || (currentUser && currentUser.isAdmin))) jobs.push(loadAttendanceMonthSummary(m));
   if(!financeReportsCache.pl[m] && isFinanceAdminUser(currentUser)) jobs.push(loadFinanceReports(m));
   await Promise.all(jobs);

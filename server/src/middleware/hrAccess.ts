@@ -10,6 +10,17 @@ export function isHRAdmin(roles: string[] | undefined): boolean {
   return r.includes("ADMIN") || r.includes("HR");
 }
 
+// Finance records payroll payments (Accounts > Payroll), so it gets read access to
+// employees/payroll and may record payments — adding/adjusting entries stays HR-only.
+export function isHRAdminOrFinance(roles: string[] | undefined): boolean {
+  return isHRAdmin(roles) || (roles ?? []).includes("FINANCE");
+}
+
+export const requireHRAdminOrFinance: RequestHandler = (req, res, next) => {
+  if (isHRAdminOrFinance(req.user?.roles)) return next();
+  return res.status(403).json({ error: "Forbidden — HR/Admin/Finance access required" });
+};
+
 export const requireHRAdmin: RequestHandler = (req, res, next) => {
   if (isHRAdmin(req.user?.roles)) return next();
   return res.status(403).json({ error: "Forbidden — HR/Admin access required" });
