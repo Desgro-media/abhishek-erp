@@ -13,7 +13,8 @@ export const listTasks: RequestHandler = asyncHandler(async (req, res) => {
     where: {
       clientId: (req.query.clientId as string) || undefined,
       assignedTo: (req.query.assignedTo as string) || undefined,
-      client: admin ? undefined : { salesPerson: req.user!.name },
+      // A non-admin also sees tasks assigned to them, even on a client outside their own book (My Tasks).
+      ...(admin ? {} : { OR: [{ client: { salesPerson: req.user!.name } }, { assignedTo: req.user!.name }] }),
     },
     include: { attachments: true, client: { select: { id: true, name: true } } },
     orderBy: { dueAt: "asc" },
