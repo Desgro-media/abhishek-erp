@@ -535,8 +535,10 @@ async function loadCrmModule(){
   await Promise.all([loadClients(), loadLeads(), loadQuotes(), loadTasks(), loadEmployeeDirectory()]);
 }
 async function loadContentModule(){
-  await Promise.all([loadContentItems(), loadMetaCampaigns()]);
+  // Content-only logins (e.g. SMM) can't call the HR employee list; the name-only directory feeds the assignee pickers.
+  await Promise.all([loadContentItems(), loadMetaCampaigns(), loadEmployeeDirectory().catch(err=>console.error("Employee directory failed to load", err))]);
 }
+function contentAssignees(){ return employees.length ? employees : employeeDirectory; }
 
 /* ===================== MARKETING ===================== */
 const STAGES = ['Idea','Scripting','Production','Review','Scheduled','Published'];
@@ -4095,7 +4097,7 @@ function initContentBoard(){
   const all = ['All', ...PLATFORMS.map(p=>p.key)];
   chipWrap.innerHTML = all.map(k=>`<button class="chip ${k===contentPlatformFilter?'active':''}" onclick="setPlatformFilter('${k}')">${k}</button>`).join(' ');
   const sel = document.getElementById('assignee-filter');
-  sel.innerHTML = '<option value="All">All assignees</option>' + employees.map(e=>`<option>${esc(e.name)}</option>`).join('') + '<option value="Unassigned">Unassigned</option>';
+  sel.innerHTML = '<option value="All">All assignees</option>' + contentAssignees().map(e=>`<option>${esc(e.name)}</option>`).join('') + '<option value="Unassigned">Unassigned</option>';
   renderBoard();
 }
 function setPlatformFilter(k){ contentPlatformFilter = k; initContentBoard(); }
@@ -4179,7 +4181,7 @@ function openContentModal(id, presetStage){
       </div>
       <div><label class="field-label">Platforms</label><div class="check-row" id="f-platforms">${PLATFORMS.map(p=>`<label class="check-chip" id="chip-${p.key}"><input type="checkbox" value="${p.key}" onchange="onPlatformCheck('${p.key}')"><svg class="icon" style="width:12px;height:12px"><use href="#${p.icon}"/></svg>${p.key}</label>`).join('')}</div></div>
       <div class="field-row">
-        <div><label class="field-label">Assignee</label><select class="field-input" id="f-assignee"><option value="">Unassigned</option>${employees.map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Assignee</label><select class="field-input" id="f-assignee"><option value="">Unassigned</option>${contentAssignees().map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Due date</label><input class="field-input" type="date" id="f-due" value="${item?item.due:''}"></div>
       </div>
       <div><label class="field-label">Brief / notes</label><textarea class="field-input" id="f-notes" placeholder="Angle, references, key points…">${item?esc(item.notes):''}</textarea></div>
