@@ -552,6 +552,9 @@ let contentPlatformFilter = 'All';
 function mapContentItem(c){
   return { id:c.id, title:c.title, type:c.type, platforms:c.platforms||[], assignee:c.assignee||'', stage:TITLECASE_FROM_API(c.stage), due:isoDate(c.dueAt), notes:c.notes||'' };
 }
+// Cards assigned to the signed-in employee — open to everyone (the full board is Admin/Content only).
+let myContentItems = [];
+async function loadMyContentItems(){ myContentItems = (await apiJson("/api/content/items/mine")).items.map(mapContentItem); }
 async function loadContentItems(){ contentItems = (await apiJson("/api/content/items")).items.map(mapContentItem); }
 
 let metaAdsCampaigns = [];
@@ -1556,7 +1559,7 @@ const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
   {id:"workspace", label:"My Workspace", icon:"i-briefcase", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
-    {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length:0},
+    {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
     {id:"attendance", label:"My Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
@@ -1639,7 +1642,7 @@ function isStaffRole(emp){ return !!emp && !isHRRole(emp) && !isLeadershipRole(e
 // in for the default (Staff-flavored) workspace sub-array by visibleModules() below.
 const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
-  {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length:0},
+  {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
   {id:"attendance", label:"My Attendance", icon:"i-attendance"},
   {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
   {id:"advance", label:"Advance Salary", icon:"i-coins", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length:0},
@@ -1678,6 +1681,9 @@ function visibleModules(){
     return MODULES.filter(m=>show[m.id]).map(m=>{
       if(m.id==='workspace' && sales) return {...m, sub:SALES_WORKSPACE_SUB};
       if(m.id==='marketing' && !sales) return {...m, sub:m.sub.filter(s=>s.id==='content')};
+      // The Content board and Meta Ads are Admin/Content-only on the server; a Sales login without the
+      // Content role would just get an empty page, so don't offer them.
+      if(m.id==='marketing' && !r.includes('CONTENT')) return {...m, sub:m.sub.filter(s=>s.id!=='content' && s.id!=='performance')};
       return m;
     });
   }
@@ -1725,7 +1731,7 @@ function visibleModulesLegacy(){
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
-  "workspace/tasks":[loadTasks], "marketing/content":[loadContentItems],
+  "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
@@ -2261,6 +2267,13 @@ function workspaceTasks(){
     <div class="banner muted" style="margin:0;flex:1;min-width:260px;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Every task assigned to you, across every client — drag a card between columns, or use the stage dropdown on each card. Completed tasks move to the archive after 3 days.</div></div>
     ${archivedCount?`<button class="btn ghost" onclick="openTaskArchive()"><svg class="icon" style="width:13px;height:13px"><use href="#i-archive"/></svg>Archive (${archivedCount})</button>`:''}
   </div>
+  ${myContentItems.length ? `
+  <div class="panel" style="margin-bottom:16px;">
+    <div class="panel-head"><h3>Content assigned to you</h3><div class="sub">${myContentItems.filter(i=>i.stage!=='Published').length} in progress · from the Content Pipeline</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Title</th><th>Type</th><th>Platforms</th><th>Stage</th><th>Due</th></tr></thead>
+      <tbody>${myContentItems.map(i=>`<tr><td>${esc(i.title)}${i.notes?`<div class="subtext">${esc(i.notes)}</div>`:''}</td><td class="muted">${esc(i.type)}</td><td class="muted">${esc(i.platforms.join(', '))||'—'}</td><td>${pill(i.stage, i.stage==='Published'?'pos':'warn')}</td><td class="muted ${isContentOverdue(i)?'neg':''}">${fmtDate(i.due)}</td></tr>`).join("")}</tbody>
+    </table></div>
+  </div>` : ''}
   <div class="board-scroll"><div class="board" id="my-task-board"></div></div>`;
 }
 // ---- Paid-leave balance, carry-forward & history (all numbers computed server-side) ----
@@ -6258,6 +6271,7 @@ Auth.init().then(async (authUser) => {
   if(emp.isAdmin || roles.includes('SALES') || roles.includes('SALES_HEAD')) crmContentJobs.push(loadCrmModule());
   else if(roles.includes('CLIENTS')) crmContentJobs.push(Promise.all([loadClients(), loadTasks()]));
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
+  crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
   await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
