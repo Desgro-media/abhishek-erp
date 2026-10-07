@@ -1639,6 +1639,7 @@ function isStaffRole(emp){ return !!emp && !isHRRole(emp) && !isLeadershipRole(e
 // in for the default (Staff-flavored) workspace sub-array by visibleModules() below.
 const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
+  {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length:0},
   {id:"attendance", label:"My Attendance", icon:"i-attendance"},
   {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
   {id:"advance", label:"Advance Salary", icon:"i-coins", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length:0},
@@ -1724,6 +1725,7 @@ function visibleModulesLegacy(){
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
+  "workspace/tasks":[loadTasks], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
