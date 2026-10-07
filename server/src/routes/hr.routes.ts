@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/auth";
-import { requireHRAdmin } from "../middleware/hrAccess";
+import { requireHRAdmin, requireHRAdminOrFinance } from "../middleware/hrAccess";
 import * as employees from "../controllers/hr/employees.controller";
 import * as attendance from "../controllers/hr/attendance.controller";
 import * as leave from "../controllers/hr/leave.controller";
@@ -84,10 +84,10 @@ router.post("/policy/holidays", requireHRAdmin, policy.addHoliday);
 router.delete("/policy/holidays/:date", requireHRAdmin, policy.removeHoliday);
 
 // Payroll
-router.get("/payroll", requireHRAdmin, payroll.listPayrollForMonth);
+router.get("/payroll", requireHRAdminOrFinance, payroll.listPayrollForMonth);
 router.get("/payroll/mine", payroll.listMyPayroll); // own history only — pinned to the caller's employeeId
 router.get("/payroll/:employeeId/:month", payroll.getPayrollEntry); // self-or-HR
 router.post("/payroll/entries", requireHRAdmin, payroll.upsertPayrollEntry);
-router.post("/payroll/:employeeId/:month/payments", requireHRAdmin, payroll.recordPayrollPayment);
+router.post("/payroll/:employeeId/:month/payments", requireHRAdminOrFinance, payroll.recordPayrollPayment);
 
 export default router;

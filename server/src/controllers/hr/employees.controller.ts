@@ -4,7 +4,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { env } from "../../config/env";
-import { isHRAdmin, resolveScopedEmployeeId } from "../../middleware/hrAccess";
+import { isHRAdmin, isHRAdminOrFinance, resolveScopedEmployeeId } from "../../middleware/hrAccess";
 import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   employeeCreateSchema,
@@ -37,7 +37,7 @@ function adminGrantForbidden(req: { user?: { roles: string[] } }, roles: string[
 // period crowd by default and never the archive; pass ?employmentStatus=LEFT
 // (or NOTICE_PERIOD) explicitly to see a specific bucket instead.
 export const listEmployees: RequestHandler = asyncHandler(async (req, res) => {
-  if (!isHRAdmin(req.user?.roles)) return res.status(403).json({ error: "Forbidden — HR/Admin access required" });
+  if (!isHRAdminOrFinance(req.user?.roles)) return res.status(403).json({ error: "Forbidden — HR/Admin/Finance access required" });
   const { dept, search, employmentStatus } = req.query as { dept?: string; search?: string; employmentStatus?: string };
   const employees = await prisma.employee.findMany({
     where: {
