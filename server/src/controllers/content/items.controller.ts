@@ -9,6 +9,11 @@ export const listContentItems: RequestHandler = asyncHandler(async (req, res) =>
   res.json({ items });
 });
 
+export const listMyContentItems: RequestHandler = asyncHandler(async (req, res) => {
+  const items = await prisma.contentItem.findMany({ where: { assignee: req.user!.name }, orderBy: { dueAt: "asc" } });
+  res.json({ items });
+});
+
 export const createContentItem: RequestHandler = asyncHandler(async (req, res) => {
   const parsed = contentItemCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });

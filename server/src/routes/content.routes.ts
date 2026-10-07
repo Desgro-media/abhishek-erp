@@ -5,6 +5,12 @@ import * as items from "../controllers/content/items.controller";
 import * as campaigns from "../controllers/content/metaCampaigns.controller";
 
 const router = Router();
+// Any signed-in employee can see the cards assigned to them (My Workspace > My Tasks), whether or
+// not they hold the Content role — scoped to the caller's own name, nothing else is exposed here.
+router.get("/items/mine", authenticate, items.listMyContentItems);
+
+// Everything below needs ADMIN or CONTENT, and the list is unfiltered: both see every card from every
+// creator and assignee.
 router.use(authenticate, requireContentUser);
 
 router.get("/items", items.listContentItems);
