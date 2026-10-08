@@ -1735,7 +1735,7 @@ const TAB_REFRESH = {
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
-  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():null],
+  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():loadReceiptsSummary()],
   "accounts/overview":[()=>isFinanceAdminUser(currentUser)?refreshFinanceReports():null],
   "accounts/commissions":[()=>isFinanceAdminUser(currentUser)?loadCommissionSummary():null],
 };
@@ -5167,9 +5167,47 @@ function pendingSalesPayments(){
 // server-side — see server/src/controllers/finance/paymentReceipts.controller.ts.
 let receiptsTab = "pending";
 let approvedReceipts = [], approvedReceiptsTotal = 0, approvedReceiptsLoaded = false;
+// Month + sales person filters, applied server-side to both tabs. Month is the approval date on
+// Approved and the date Sales pushed it on Pending. A Sales login is pinned to their own name.
+let receiptsMonth = "All", receiptsSalesPerson = "";
+let receiptsSummary = null;
+const receiptsPinnedToSelf = () => !isFinanceAdminUser(currentUser);
+function receiptsQuery(){
+  const q = new URLSearchParams();
+  if(receiptsMonth!=="All") q.set("month", receiptsMonth);
+  if(!receiptsPinnedToSelf() && receiptsSalesPerson) q.set("salesPerson", receiptsSalesPerson);
+  return q;
+}
+async function loadReceiptsSummary(){
+  receiptsSummary = await apiJson("/api/finance/payment-receipts/summary?"+receiptsQuery());
+}
 async function loadApprovedReceipts(){
-  const d = await apiJson("/api/finance/payment-receipts/approved?limit=200");
+  const q = receiptsQuery(); q.set("limit","200");
+  const [d] = await Promise.all([apiJson("/api/finance/payment-receipts/approved?"+q), loadReceiptsSummary()]);
   approvedReceipts = d.receipts; approvedReceiptsTotal = d.total; approvedReceiptsLoaded = true;
+}
+function setReceiptsFilter(kind, v){
+  if(kind==='month') receiptsMonth = v; else receiptsSalesPerson = v;
+  loadApprovedReceipts().then(render).catch(err=>toast(err.message || "Couldn't load payments"));
+}
+const receiptsFiltered = () => receiptsMonth!=="All" || (!receiptsPinnedToSelf() && !!receiptsSalesPerson);
+// Pending rows live in the invoices/quotes already loaded; the server says which of them match.
+function filteredPendingPayments(){
+  const rows = pendingSalesPayments();
+  if(!receiptsFiltered() || !receiptsSummary) return rows;
+  const ids = new Set(receiptsSummary.pending.ids);
+  return rows.filter(r=>ids.has(r.p.id));
+}
+function receiptsToolbar(){
+  const s = receiptsSummary;
+  const months = new Set((s?s.months:[]).concat(receiptsMonth!=="All"?[receiptsMonth]:[]));
+  const monthOpts = `<option value="All" ${receiptsMonth==='All'?'selected':''}>All time</option>` + [...months].sort().reverse().map(m=>`<option value="${m}" ${m===receiptsMonth?'selected':''}>${monthLabel(m)}</option>`).join('');
+  const people = s?s.salesPersons:[];
+  const spOpts = `<option value="" ${!receiptsSalesPerson?'selected':''}>All sales persons</option>` + people.map(n=>`<option value="${esc(n)}" ${n===receiptsSalesPerson?'selected':''}>${esc(n)}</option>`).join('')
+    + (s&&s.hasDirect?`<option value="__direct__" ${receiptsSalesPerson==='__direct__'?'selected':''}>Direct (no sales person)</option>`:'');
+  return `<div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setReceiptsFilter('month',this.value)">${monthOpts}</select></div>`
+    + (receiptsPinnedToSelf() ? '' : `<div class="filter-group"><span class="filter-label">Sales person</span><select class="select-sm" onchange="setReceiptsFilter('sp',this.value)">${spOpts}</select></div>`)
+    + `</div>`;
 }
 function setReceiptsTab(t){
   receiptsTab = t; render();
@@ -5182,7 +5220,7 @@ function acctApprovedReceipts(){
   return `
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Every payment Finance has confirmed, newest first — pushed by Sales (against a quote or an invoice) or recorded straight on the invoice by Finance (<b>Direct</b>, no Sales person and so no commission). The commission shown is what that payment generated, linked to it directly, so editing or splitting a commission in Accounts &gt; Commissions updates it here too.</div></div>
   <div class="panel">
-    <div class="panel-head"><h3>Approved payments</h3><div class="sub">${approvedReceiptsLoaded?`${approvedReceiptsTotal} confirmed payment${approvedReceiptsTotal===1?'':'s'}${approvedReceiptsTotal>rows.length?' · showing the latest '+rows.length:''}`:'Loading…'}</div></div>
+    <div class="panel-head"><h3>Approved payments</h3><div class="sub">${approvedReceiptsLoaded?`${approvedReceiptsTotal} confirmed payment${approvedReceiptsTotal===1?'':'s'}${receiptsSummary?` · ${inr(receiptsSummary.approved.amount)} received · ${inr(receiptsSummary.approved.commission)} commission`:''}${receiptsFiltered()?' (filtered)':''}${approvedReceiptsTotal>rows.length?' · showing the latest '+rows.length:''}`:'Loading…'}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">Amount</th><th>Pushed by</th><th>Approved by</th><th>Bank account</th><th>Commission</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map(r=>`<tr>
         <td class="mono">${esc(r.invoiceNo)}<div class="subtext">${r.source==='Direct'?pill('Direct','neutral'):r.source==='Quote'?'Quote '+esc(r.quoteCode||''):'Invoice'}</div></td>
@@ -5193,7 +5231,7 @@ function acctApprovedReceipts(){
         <td class="muted">${esc(r.bankAccount.name)}</td>
         <td>${r.commissions.length?r.commissions.map(c=>`<div class="mono">${inr(c.amount)} <span class="faint" style="font-family:inherit;">→ ${esc(c.salesPerson||'—')}</span></div>`).join(''):dash}</td>
         <td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEditApprovedReceipt('${r.paymentId}')" title="Edit payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="openReverseApprovedReceipt('${r.paymentId}')" title="Delete payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td>
-      </tr>`).join(""):`<tr><td colspan="8"><div class="empty">${approvedReceiptsLoaded?'No payments confirmed yet.':'Loading…'}</div></td></tr>`}</tbody>
+      </tr>`).join(""):`<tr><td colspan="8"><div class="empty">${approvedReceiptsLoaded?(receiptsFiltered()?'No confirmed payments match these filters.':'No payments confirmed yet.'):'Loading…'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -5250,17 +5288,18 @@ async function performReverseApprovedReceipt(paymentId){
   }catch(err){ toast(err.message || "Couldn't delete payment"); }
 }
 function acctPaymentReceipts(){
-  const pending = pendingSalesPayments().length;
+  const pending = filteredPendingPayments().length;
   const tab = (id, label, n) => `<button class="chip ${receiptsTab===id?'active':''}" onclick="setReceiptsTab('${id}')">${label}${n?' · '+n:''}</button>`;
   return `<div class="filter-group" style="margin-bottom:14px;">${tab('pending','Pending',pending)}${tab('approved','Approved',approvedReceiptsLoaded?approvedReceiptsTotal:0)}</div>`
+    + receiptsToolbar()
     + (receiptsTab==='approved' ? acctApprovedReceipts() : acctPendingReceipts());
 }
 function acctPendingReceipts(){
-  const rows = pendingSalesPayments();
+  const rows = filteredPendingPayments();
   return `
   <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Sales pushes a payment here the moment a client pays — even a partial one — whether it's against a quote or an existing invoice. Confirm which account the money actually landed in before approving; that's what creates (or tops up) the invoice and posts it to the bank ledger. Approving a lead's first payment also turns them into a client automatically.</div></div>
   <div class="panel">
-    <div class="panel-head"><h3>Payment Receipts</h3><div class="sub">${rows.length} payment${rows.length===1?'':'s'} pushed by Sales, awaiting confirmation</div></div>
+    <div class="panel-head"><h3>Payment Receipts</h3><div class="sub">${rows.length} payment${rows.length===1?'':'s'} pushed by Sales, awaiting confirmation${receiptsSummary&&receiptsFiltered()?` · ${inr(receiptsSummary.pending.amount)} (filtered)`:''}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">This payment</th><th class="num">Total</th><th>Pushed by</th><th>Sales note</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map(r=>{
         if(r.source==='quote'){
@@ -5268,7 +5307,7 @@ function acctPendingReceipts(){
           return `<tr><td class="mono">${esc(r.q.title)}<div class="subtext">Quote</div></td><td class="muted">${party.kind==='client'?clientLink(party.id):esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(quoteTotal(r.q))}</td><td class="muted">${esc(r.q.createdBy)}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${r.q.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('quote','${r.q.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
         }
         return `<tr><td class="mono">${esc(r.inv.invoiceNo)}<div class="subtext">Invoice</div></td><td class="muted">${clientLink(r.inv.clientId)}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(invoiceBalance(r.inv))}</td><td class="muted">${esc(r.p.salesPerson||'—')}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${r.inv.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${r.inv.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
-      }).join(""):'<tr><td colspan="7"><div class="empty">Nothing waiting on Finance right now.</div></td></tr>'}</tbody>
+      }).join(""):`<tr><td colspan="7"><div class="empty">${receiptsFiltered()?'No pending payments match these filters.':'Nothing waiting on Finance right now.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
