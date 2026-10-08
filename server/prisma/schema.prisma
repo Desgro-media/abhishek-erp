@@ -684,6 +684,10 @@ model Payable {
   // manually created payables. SetNull, not Cascade: payments are append-only and this is history.
   sourcePaymentId String?         @map("source_payment_id")
   sourcePayment   InvoicePayment? @relation(fields: [sourcePaymentId], references: [id], onDelete: SetNull)
+  // The percentage actually applied when this commission / bonus was created (Finance can pick a
+  // non-default rate at approval): commission = % of the payment, SALES_BONUS = % of sales past target.
+  // Stored, never re-derived from amounts. Null on older rows whose rate can't be told for certain.
+  commissionRate Decimal?     @db.Decimal(7, 4) @map("commission_rate")
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")
 

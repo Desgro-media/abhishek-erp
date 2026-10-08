@@ -473,8 +473,8 @@ let payablesMonthFilter = "All";
 function setPayablesMonthFilter(v){ payablesMonthFilter = v; render(); }
 let expensesMonthFilter = "All";
 function setExpensesMonthFilter(v){ expensesMonthFilter = v; render(); }
-let commissionsMonthFilter = "All";
-function setCommissionsMonthFilter(v){ commissionsMonthFilter = v; loadCommissionSummary().then(render).catch(err=>toast(err.message||"Couldn't load commissions")); }
+let commissionsMonthFilter = TODAY.slice(0,7);
+function setCommissionsMonthFilter(v){ commissionsMonthFilter = v; commissionDetails = {}; loadCommissionSummary().then(render).catch(err=>toast(err.message||"Couldn't load commissions")); }
 let journalMonthFilter = "All";
 function setJournalMonthFilter(v){ journalMonthFilter = v; render(); }
 let advancesMonthFilter = "All";
@@ -729,10 +729,24 @@ async function loadPayables(){
 // on the server from the real commission + payment records for the chosen period — see
 // getCommissionSummary(). The browser only displays them.
 let commissionSummary = { period:"all", months:[], totals:{earned:0,paid:0,balance:0,entries:0,salesPersons:0}, rows:[] };
+const commissionPeriod = () => commissionsMonthFilter==="All" ? "all" : commissionsMonthFilter==="Today" ? "today" : commissionsMonthFilter;
 async function loadCommissionSummary(){
-  const period = commissionsMonthFilter==="All" ? "all" : commissionsMonthFilter==="Today" ? "today" : commissionsMonthFilter;
-  commissionSummary = await apiJson(`/api/finance/commissions/summary?period=${encodeURIComponent(period)}`);
+  commissionSummary = await apiJson(`/api/finance/commissions/summary?period=${encodeURIComponent(commissionPeriod())}`);
+  // Any expanded sales person's breakdown follows the same filter / data change.
+  await Promise.all([...openCommissionPeople].map(n=>loadCommissionDetail(n).catch(()=>{})));
 }
+// Expanded sales person panel — summary, clients and transactions all come from one server response.
+let commissionDetails = {}, openCommissionPeople = new Set(), commissionMonthOpen = {};
+async function loadCommissionDetail(name){
+  commissionDetails[name] = await apiJson(`/api/finance/commissions/person?salesPerson=${encodeURIComponent(name)}&period=${encodeURIComponent(commissionPeriod())}`);
+}
+function onCommissionToggle(el, i){
+  const r = commissionSummary.rows[i]; if(!r) return;
+  if(el.open){ openCommissionPeople.add(r.salesPerson); if(!commissionDetails[r.salesPerson]) loadCommissionDetail(r.salesPerson).then(render).catch(err=>toast(err.message||"Couldn't load the breakdown")); }
+  else openCommissionPeople.delete(r.salesPerson);
+}
+function onCommissionMonthToggle(el, key){ commissionMonthOpen[key] = el.open; }
+function toggleCommissionClient(key){ const el=document.getElementById(key); if(el) el.style.display = el.style.display==='none' ? '' : 'none'; }
 async function loadExpenses(){ expenses = (await apiJson("/api/finance/expenses")).expenses.map(mapExpense); }
 async function loadBankAccounts(){ bankAccounts = (await apiJson("/api/finance/bank-accounts")).accounts.map(mapBankAccount); }
 async function loadCommissionWithdrawals(){
@@ -5494,6 +5508,55 @@ function groupCommissionsByMonth(mine){
     total: byMonth[m].reduce((s,p)=>s+p.amount,0),
   }));
 }
+
+// ---- Expanded sales person panel (Accounts > Commissions): everything shown here is server-computed by
+// GET /api/finance/commissions/person; this only lays it out.
+function commissionDetailHTML(i, r){
+  const d = commissionDetails[r.salesPerson];
+  if(!d) return '<div class="faint" style="padding:8px 0;">Loading…</div>';
+  const S = d.summary, T = S.target;
+  const pct = T.target>0 ? Math.min(100, Math.round(T.sales/T.target*100)) : 0;
+  const periodLabel = d.period==='all' ? 'All time' : d.period==='today' ? 'Today' : monthLabel(d.period);
+  const card = (label, val, sub, cls) => `<div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">${label}</div><div class="kpi-value mono ${cls||''}" style="font-size:18px;">${val}</div>${sub?`<div class="kpi-sub">${sub}</div>`:''}</div>`;
+  const filteredMonth = /^\d{4}-\d{2}$/.test(d.period);
+  const monthBalance = r.balance;
+  const settleBar = (filteredMonth && monthBalance>0.005) ? `<div style="display:flex;justify-content:flex-end;margin:0 0 10px;"><button class="btn btn-sm" onclick="openSettleCommission(${i},'${d.period}')" title="Pay only the entries received in ${esc(periodLabel)}, oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle this month only · ${inr(monthBalance)}</button></div>` : '';
+  const cards = `<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:10px;">
+    ${card('Total sales ('+esc(periodLabel)+')', inr(S.totalSales), 'approved payments, by date received')}
+    ${card('Deals', S.deals, 'invoices with a payment')}
+    ${card('Clients', S.clients)}
+    ${card('Commission earned', inr(S.earned))}
+    ${card('Commission paid', inr(S.paid), '', 'pos')}
+    ${card('Commission balance', inr(S.balance), '', S.balance>0?'warn':'')}
+    ${card('Client pending', inr(S.clientPending), 'still unpaid by clients', S.clientPending>0?'warn':'')}
+  </div>
+  <div style="margin-bottom:14px;"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;"><span><b>${monthLabel(T.month)}</b> target progress</span><span class="mono">${inr(T.sales)} of ${inr(T.target)} · bonus earned so far ${inr(T.bonusEarned)}</span></div><div class="bar-track"><div class="bar-fill" style="width:${pct}%;${T.sales>=T.target?'background:var(--pos);':''}"></div></div></div>`;
+
+  const txByClient = {}; d.months.forEach(m=>m.rows.forEach(t=>{ if(t.clientId) (txByClient[t.clientId] ||= []).push(t); }));
+  const statusKind2 = st => st==='Fully paid'?'pos':st==='Partially paid'?'warn':'neg';
+  const clientsHTML = d.clients.length ? `<div class="section-label" style="margin:6px 0;">Clients &amp; sales</div><div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>What was sold</th><th>Reference</th><th class="num">Deal value</th><th class="num">Received</th><th class="num">Pending</th><th class="num">Commission</th><th>Status</th></tr></thead><tbody>${d.clients.map((c,ci)=>{ const key='cl-'+i+'-'+ci, txs=txByClient[c.clientId]||[]; return `<tr style="cursor:pointer;" onclick="toggleCommissionClient('${key}')"><td>${clientLink(c.clientId, c.clientName)}</td><td class="muted">${c.services.map(esc).join(', ')||'—'}${c.titles.length?`<div class="subtext">${c.titles.map(esc).join(', ')}</div>`:''}</td><td class="mono muted">${c.references.map(esc).join('<br>')}</td><td class="num mono">${inr(c.totalDeal)}</td><td class="num mono">${inr(c.received)}</td><td class="num mono ${c.pending>0?'warn':'faint'}">${c.pending>0?inr(c.pending):'—'}</td><td class="num mono">${inr(c.commissionEarned)}</td><td>${pill(c.status, statusKind2(c.status))}</td></tr>
+      <tr id="${key}" style="display:none;"><td colspan="8" style="background:var(--surface);padding:6px 14px;">${txs.length?txs.map(t=>`<div class="report-detail-row"><span>${fmtDateShort(t.date)} · ${esc(t.reference||'—')} · ${t.kind}</span><span class="amt mono">${t.paymentAmount!=null?inr(t.paymentAmount)+' → ':''}${inr(t.earned)}</span></div>`).join(''):'<span class="faint">No payments in this period.</span>'}</td></tr>`; }).join('')}</tbody></table></div>` : '';
+
+  const monthsHTML = d.months.length ? `<div class="section-label" style="margin:14px 0 6px;">Transactions by month</div>` + d.months.map(m=>{
+    const key = r.salesPerson+'|'+m.month;
+    const open = key in commissionMonthOpen ? commissionMonthOpen[key] : m.month===TODAY.slice(0,7);
+    return `<details class="report-details" ${open?'open':''} ontoggle="onCommissionMonthToggle(this,'${esc(key).replace(/'/g,"&#39;")}')" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px;">
+      <summary class="report-line" style="padding:8px 12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><span class="name" style="font-weight:700;"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(monthLabel(m.month))}</span>
+        <span class="mono" style="font-size:12.5px;">Received ${inr(m.paymentsReceived)} · Earned ${inr(m.earned)} · Paid ${inr(m.paid)} · Balance <b style="${m.balance>0?'color:var(--neg);':''}">${inr(m.balance)}</b>${m.bonusEarned>0?` · Target bonus ${inr(m.bonusEarned)}`:''}</span></summary>
+      <div class="table-wrap"><table class="data"><thead><tr><th>Date received</th><th>Client</th><th>Reference</th><th class="num">Payment</th><th class="num">%</th><th class="num">Commission</th><th class="num">Paid</th><th class="num">Balance</th><th></th></tr></thead><tbody>${m.rows.map(t=>`<tr>
+        <td class="muted">${fmtDateShort(t.date)}</td>
+        <td>${t.kind==='Target bonus'?pill('Target bonus','blue'):(t.clientId?clientLink(t.clientId,t.clientName):'<span class="faint">—</span>')}</td>
+        <td class="mono muted">${t.kind==='Target bonus'?'<span class="faint">monthly target</span>':esc(t.reference||'—')}</td>
+        <td class="num mono ${t.kind==='Target bonus'?'faint':''}">${t.paymentAmount!=null?inr(t.paymentAmount):'—'}</td>
+        <td class="num mono" title="${t.kind==='Target bonus'?'% of sales past target':t.edited?'Amount was edited or split after it was created':''}">${t.rate!=null?t.rate+'%':'—'}${t.edited?' <span class="faint">(edited)</span>':''}${t.kind==='Target bonus'&&t.rate!=null?'<div class="subtext">of excess</div>':''}</td>
+        <td class="num mono">${inr(t.earned)}</td>
+        <td class="num mono muted">${t.paid>0?inr(t.paid):'—'}</td>
+        <td class="num mono" style="${t.balance>0?'color:var(--neg);font-weight:700;':''}">${t.balance>0?inr(t.balance):'—'}</td>
+        <td><div style="display:flex;gap:6px;justify-content:flex-end;">${t.balance>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${t.payableId}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11px;">paid in full</span>`}${t.hasPayments?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${t.payableId}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}</div></td></tr>`).join('')}</tbody></table></div></details>`;
+  }).join('') : `<div class="empty">No commissions in this period</div>`;
+
+  return settleBar + cards + clientsHTML + monthsHTML;
+}
 function salesLeaderboardRows(){
   const commission = commissionRowsByPerson();
   return assignableEmployees().filter(e=>e.dept==='Sales').map(e=>{
@@ -5550,46 +5613,32 @@ function acctCommissions(){
     </table></div>
   </div>`:''}
   <div class="panel">
-    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine, or settle everything at once${filtered?` · showing ${commissionsMonthFilter==='Today'?'today':monthLabel(commissionsMonthFilter)}, plus what was carried over from before`:''}</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionSummary.months.map(m=>m+'-01'), commissionsMonthFilter)}</select></div></div>
+    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine, or settle everything at once${filtered?` · showing ${commissionsMonthFilter==='Today'?'today':monthLabel(commissionsMonthFilter)}, plus what was carried over from before`:''}</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionSummary.months.map(m=>m+'-01').concat(TODAY), commissionsMonthFilter)}</select></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">Previous balance</th><th class="num">Earned</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map((r,i)=>{ const owed = r.totalOutstanding; const statusLabel = owed<=0.005?'Settled':(r.paid>0?'Partially Paid':'Outstanding'); return `<tr><td colspan="7" style="padding:0;border-bottom:1px solid var(--line);">
-        <details class="report-details">
-          <summary class="report-line" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr 1.3fr;align-items:center;padding:10px 14px;">
+        <details class="report-details" ${openCommissionPeople.has(r.salesPerson)?'open':''} ontoggle="onCommissionToggle(this,${i})">
+          <summary class="report-line" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr 2fr;align-items:center;padding:10px 14px;">
             <span class="name" style="font-weight:700;color:var(--ink);"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(r.salesPerson)}</span>
             <span class="num mono ${r.previousBalance>0?'warn':'muted'}" title="Unpaid from entries due before this period">${r.previousBalance>0?inr(r.previousBalance):'—'}</span>
             <span class="num mono">${inr(r.earned)}</span>
             <span class="num mono muted">${r.paid>0?inr(r.paid):'—'}</span>
             <span class="num mono" style="${r.balance>0?'color:var(--neg);font-weight:700;':''}">${r.balance>0?inr(r.balance):'—'}</span>
             <span>${pill(statusLabel, owed<=0.005?'pos':'warn')}</span>
-            <span style="display:flex;justify-content:flex-end;">${owed>0.005?`<button class="btn btn-sm primary" onclick="event.preventDefault();event.stopPropagation();openSettleCommission(${i})" title="Pay every outstanding entry for ${esc(r.salesPerson)}, or an amount applied oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle all · ${inr(owed)}</button>`:''}</span>
+            <span style="display:flex;justify-content:flex-end;">${owed>0.005?`<button class="btn btn-sm primary" onclick="event.preventDefault();event.stopPropagation();openSettleCommission(${i})" title="Pay every outstanding entry for ${esc(r.salesPerson)} across ALL months, or an amount applied oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle all · ${inr(owed)} (all months)</button>`:''}</span>
           </summary>
-          <div class="report-detail">
-            ${r.entries.length ? groupCommissionsByMonth(r.entries).map(g=>`<div class="report-detail-month">
-              <div class="report-detail-row" style="font-weight:700;color:var(--ink-soft);">
-                <span>${esc(g.label)}</span><span class="amt mono">${inr(g.total)}</span>
-              </div>
-              ${g.items.map(p=>{ const bal=p.balance; return `<div class="report-detail-row" style="align-items:center;padding-left:10px;">
-                <span>${esc(p.payee)} <span class="faint">· ${fmtDateShort(p.due)}</span></span>
-                <span style="display:flex;gap:10px;align-items:center;">
-                  <span class="amt mono">${inr(p.amount)}${bal>0 && bal<p.amount?` <span class="faint">(${inr(bal)} left)</span>`:''}</span>
-                  ${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11px;">paid in full</span>`}
-                  ${p.hasPayments?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}
-                </span>
-              </div>`; }).join('')}
-            </div>`).join('') : `<div class="report-detail-row faint">No entries due in this period${r.previousBalance>0?' — only the '+inr(r.previousBalance)+' carried over from earlier months':''}.</div>`}
-          </div>
+          <div class="report-detail" style="padding:12px 14px;">${commissionDetailHTML(i, r)}</div>
         </details>
       </td></tr>`; }).join(""):`<tr><td colspan="7"><div class="empty">No commission earned${commissionsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
-function openSettleCommission(i){
+function openSettleCommission(i, month){
   const r = commissionSummary.rows[i]; if(!r) return;
-  const owed = r.totalOutstanding;
+  const owed = month ? r.balance : r.totalOutstanding;
   showModal(`
-    <div class="modal-head"><h3>Settle commission — ${esc(r.salesPerson)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h3>Settle commission — ${esc(r.salesPerson)}${month?' · '+esc(monthLabel(month)):''}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-settle-commission"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>${inr(owed)}</b> outstanding across all of ${esc(r.salesPerson)}'s commission entries. Each entry gets its own payment record, <b>oldest due date first</b>. Enter less than the full amount to pay only the oldest entries that it covers.</div></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>${inr(owed)}</b> outstanding ${month?'in '+esc(monthLabel(month))+' only':'across all months of'} ${esc(r.salesPerson)}'s commission entries. Each entry gets its own payment record, <b>oldest due date first</b>. Enter less than the full amount to pay only the oldest entries that it covers.</div></div>
       <div class="field-row">
         <div><label class="field-label">Amount to pay (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${owed}" step="0.01" required value="${owed}"></div>
         <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>
@@ -5603,6 +5652,7 @@ function openSettleCommission(i){
     const f = new FormData(e.target);
     const amount = Number(f.get("amount"));
     const body = { salesPerson:r.salesPerson, accountId:f.get("accountId"), paidDate:f.get("date") };
+    if(month) body.month = month;
     if(amount < owed - 0.005) body.amount = amount;   // omitted = settle everything
     try{
       const res = await apiJson("/api/finance/commissions/settle", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
