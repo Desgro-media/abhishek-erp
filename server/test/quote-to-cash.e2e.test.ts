@@ -141,13 +141,13 @@ test("quote -> invoice -> Sales records payment -> Finance approves", async (t) 
   });
 
   await t.test("4. Sales cannot approve their own payment", async () => {
-    const r = await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${pendingId}/approve`, tokens.sales, { accountId: bankId });
+    const r = await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${pendingId}/approve`, tokens.sales, { accountId: bankId, date: new Date().toISOString().slice(0, 10) });
     assert.equal(r.status, 403);
     assert.deepEqual(await overview(), base0.overview);
   });
 
   await t.test("5. Finance approves -> ledger + commission + Overview, all at once", async () => {
-    const r = await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${pendingId}/approve`, tokens.finance, { accountId: bankId });
+    const r = await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${pendingId}/approve`, tokens.finance, { accountId: bankId, date: new Date().toISOString().slice(0, 10) });
     assert.equal(r.status, 201);
 
     assert.equal(await bankBalance(), base0.bank + 60_000, "(a) bank credited");
@@ -161,15 +161,15 @@ test("quote -> invoice -> Sales records payment -> Finance approves", async (t) 
   });
 
   await t.test("6. approving again (or a double-click race) never double-posts", async () => {
-    const again = await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${pendingId}/approve`, tokens.finance, { accountId: bankId });
+    const again = await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${pendingId}/approve`, tokens.finance, { accountId: bankId, date: new Date().toISOString().slice(0, 10) });
     assert.equal(again.status, 409);
 
     // Second payment approved by two simultaneous requests: exactly one may win.
     const p2 = await call("POST", `/finance/invoices/${invoiceId}/pending-payments`, tokens.sales, { amount: 10_000, paymentDate: today });
     const id2 = p2.body.pending.id;
     const [a, b] = await Promise.all([
-      call("POST", `/finance/invoices/${invoiceId}/pending-payments/${id2}/approve`, tokens.finance, { accountId: bankId }),
-      call("POST", `/finance/invoices/${invoiceId}/pending-payments/${id2}/approve`, tokens.finance, { accountId: bankId }),
+      call("POST", `/finance/invoices/${invoiceId}/pending-payments/${id2}/approve`, tokens.finance, { accountId: bankId, date: new Date().toISOString().slice(0, 10) }),
+      call("POST", `/finance/invoices/${invoiceId}/pending-payments/${id2}/approve`, tokens.finance, { accountId: bankId, date: new Date().toISOString().slice(0, 10) }),
     ]);
     assert.deepEqual([a.status, b.status].sort(), [201, 409]);
     assert.equal(await bankBalance(), base0.bank + 70_000, "bank credited once per payment");

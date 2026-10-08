@@ -71,7 +71,7 @@ test("Sales-pushed invoice payment: pending is NOT in Approved; once approved it
   const before = await approved();
   assert.equal(before.receipts.some((r) => r.invoiceNo === inv.invoiceNo), false, "pending payments stay out of history");
 
-  const ok = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bank.id });
+  const ok = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bank.id, date: new Date().toISOString().slice(0, 10) });
   assert.equal(ok.status, 201);
 
   const row = await byPayment(ok.body.payment.id);
@@ -93,7 +93,7 @@ test("quote-origin payment shows as Quote with its code and the quote's creator 
   const q = (await call("POST", "/crm/quotes", tok.sales, { leadId: lead.id, title: `qo ${run}`, items: [{ dept: "Web Development", amount: 30_000 }] })).body.quote;
   await call("POST", `/crm/quotes/${q.id}/send`, tok.sales);
   const pend = await call("POST", `/crm/quotes/${q.id}/pending-payments`, tok.sales, { amount: 30_000, paymentDate: today });
-  const ok = await call("POST", `/crm/quotes/${q.id}/pending-payments/${pend.body.pending.id}/approve`, tok.finance, { accountId: bank.id });
+  const ok = await call("POST", `/crm/quotes/${q.id}/pending-payments/${pend.body.pending.id}/approve`, tok.finance, { accountId: bank.id, date: new Date().toISOString().slice(0, 10) });
   assert.equal(ok.status, 201);
 
   const row = await byPayment(ok.body.payment.id);
@@ -126,7 +126,7 @@ test("most recent first", async () => {
 test("the commission link is a real FK: editing, splitting or deleting the payable never leaves the history stale or wrong", async () => {
   const inv = await convertedInvoice("link", 100_000);
   const p = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments`, tok.sales, { amount: 50_000, paymentDate: today });
-  const ok = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bank.id });
+  const ok = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bank.id, date: new Date().toISOString().slice(0, 10) });
   const paymentId = ok.body.payment.id as string;
   const commissionId = ok.body.commission.id as string;
 

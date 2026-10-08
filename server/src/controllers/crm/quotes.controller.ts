@@ -7,7 +7,7 @@ import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
-import { lockUnapprovedPending } from "../../services/finance/pendingPayment";
+import { assertReceivedDate, lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
 import { nextInvoiceNo } from "../../services/finance/invoiceNumber";
 import { nextSequentialCode } from "../../utils/sequentialCode";
@@ -233,7 +233,8 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
   if (!quote || !pending || pending.quoteId !== quoteId) return res.status(404).json({ error: "Pending payment not found" });
   if (pending.approved) return res.status(409).json({ error: "Already approved" });
 
-  const date = d.date ? new Date(d.date) : pending.paymentDate;
+  const date = new Date(d.date);
+  assertReceivedDate(date);
   const approvedAt = new Date();
 
   const result = await prisma.$transaction(async (tx) => {
@@ -288,7 +289,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
       commission = await createCommissionPayable(tx, { salesPerson: quote.createdBy, sourceLabel: quote.quoteCode, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id, rate: d.commissionRate != null ? d.commissionRate / 100 : undefined });
       // Must run BEFORE this row is marked approved below — same reasoning as
       // the invoice pending-payment approval path, see salesTarget.ts.
-      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: quote.createdBy, paymentAmount: Number(pending.amount), date: approvedAt, sourcePaymentId: payment.id });
+      salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: quote.createdBy, paymentAmount: Number(pending.amount), date, sourcePaymentId: payment.id });
     }
     await tx.quotePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
 
@@ -299,7 +300,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
     return { payment, commission, salesBonus, invoiceId, clientId, balance };
   });
 
-  await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_PAYMENT_APPROVED", entityType: "Quote", entityId: quoteId, afterData: { pendingId, amount: pending.amount }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  await recordAudit({ userId: req.user!.sub, action: "CRM_QUOTE_PAYMENT_APPROVED", entityType: "Quote", entityId: quoteId, afterData: { pendingId, amount: pending.amount, receivedDate: d.date, salesReportedDate: pending.paymentDate.toISOString().slice(0, 10) }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(201).json(result);
 });
 
