@@ -25,6 +25,7 @@ export async function createCommissionPayable(
       amount: commissionAmount,
       dueAt: params.dueAt,
       sourcePaymentId: params.sourcePaymentId,
+      commissionRate: Math.round(rate * 100 * 10000) / 10000,
     },
   });
 }

@@ -78,6 +78,7 @@ export async function createSalesBonusIfCrossed(
       amount: roundedDelta,
       dueAt: params.date,
       sourcePaymentId: params.sourcePaymentId,
+      commissionRate: Math.round(bonusRate * 100 * 10000) / 10000,
     },
   });
 }

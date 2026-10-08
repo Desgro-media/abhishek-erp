@@ -194,10 +194,13 @@ async function assertNoSalesBonus(tx: Tx, ctx: ReceiptCtx, month = ctx.payment.p
 // "Untouched" = the single auto-generated commission: one row, still exactly the flat rate of the
 // current amount, nothing paid against it. Anything else means someone edited, split or paid it, and
 // this must not overwrite that work.
+// The rate is the one stored on the commission when it was created (falling back to the flat default
+// for older rows), so a payment approved at a custom rate still counts as untouched.
+const rateOf = (c: { commissionRate: unknown }) => (c.commissionRate != null ? Number(c.commissionRate) / 100 : SALES_COMMISSION_RATE);
 const commissionIsUntouched = (ctx: ReceiptCtx, amount: number) =>
   ctx.commissions.length === 1 &&
   ctx.commissions[0].payments.length === 0 &&
-  Number(ctx.commissions[0].amount) === Math.round(amount * SALES_COMMISSION_RATE) &&
+  Number(ctx.commissions[0].amount) === Math.round(amount * rateOf(ctx.commissions[0])) &&
   ctx.commissions[0].salesPerson === ctx.salesPerson;
 
 export const updateApprovedReceipt: RequestHandler = asyncHandler(async (req, res) => {
@@ -251,7 +254,7 @@ export const updateApprovedReceipt: RequestHandler = asyncHandler(async (req, re
     // Commission follows the payment only when it's still the untouched auto-generated one.
     if (untouched && (amountChanged || dateChanged)) {
       const c = ctx.commissions[0];
-      const newCommission = Math.round(amount * SALES_COMMISSION_RATE);
+      const newCommission = Math.round(amount * rateOf(c));
       if (newCommission > 0) await tx.payable.update({ where: { id: c.id }, data: { amount: newCommission, dueAt: date } });
       else await tx.payable.delete({ where: { id: c.id } });
     }

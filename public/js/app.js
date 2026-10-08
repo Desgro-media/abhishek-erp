@@ -133,7 +133,8 @@ function mapPayrollRow(r){
     wfhExcessDays:r.wfhExcessDays||0, wfhDeduction:r.wfhDeduction||0,
     monthWorkingDays:r.monthWorkingDays, totalDeductions:r.totalDeductions, net:r.net,
     paid:r.paid, balance:r.balance, payStatus:r.payStatus,
-    payments:(r.payments||[]).map(p=>({amount:Number(p.amount), date:isoDate(p.paidDate), note:p.note})) };
+    payments:(r.payments||[]).map(p=>({amount:Number(p.amount), date:isoDate(p.paidDate), note:p.note})),
+    schedule:r.schedule||{scheduled:false,instalments:[],nextDue:null,overpayment:0} };
 }
 
 async function apiJson(url, opts){
@@ -171,6 +172,7 @@ async function loadPolicy(){
     weeklyOff: policy.weeklyOff, paidLeavesPerMonth: policy.paidLeavesPerMonth, paidWfhPerMonth: policy.paidWfhPerMonth,
     carryForwardMaxDays: policy.carryForwardMaxDays||0, carryForwardStartMonth: policy.carryForwardStartMonth||null,
     notes: policy.generalNotes || "",
+    payrollDefaultSplit: policy.payrollDefaultSplit || [{percent:100, day:0}],
     holidays: holidays.map(h=>({date:isoDate(h.date), name:h.name})),
   };
   leavePayPolicy = { notes: policy.leavePayNotes || "" };
@@ -471,8 +473,8 @@ let payablesMonthFilter = "All";
 function setPayablesMonthFilter(v){ payablesMonthFilter = v; render(); }
 let expensesMonthFilter = "All";
 function setExpensesMonthFilter(v){ expensesMonthFilter = v; render(); }
-let commissionsMonthFilter = "All";
-function setCommissionsMonthFilter(v){ commissionsMonthFilter = v; loadCommissionSummary().then(render).catch(err=>toast(err.message||"Couldn't load commissions")); }
+let commissionsMonthFilter = TODAY.slice(0,7);
+function setCommissionsMonthFilter(v){ commissionsMonthFilter = v; commissionDetails = {}; loadCommissionSummary().then(render).catch(err=>toast(err.message||"Couldn't load commissions")); }
 let journalMonthFilter = "All";
 function setJournalMonthFilter(v){ journalMonthFilter = v; render(); }
 let advancesMonthFilter = "All";
@@ -727,10 +729,24 @@ async function loadPayables(){
 // on the server from the real commission + payment records for the chosen period — see
 // getCommissionSummary(). The browser only displays them.
 let commissionSummary = { period:"all", months:[], totals:{earned:0,paid:0,balance:0,entries:0,salesPersons:0}, rows:[] };
+const commissionPeriod = () => commissionsMonthFilter==="All" ? "all" : commissionsMonthFilter==="Today" ? "today" : commissionsMonthFilter;
 async function loadCommissionSummary(){
-  const period = commissionsMonthFilter==="All" ? "all" : commissionsMonthFilter==="Today" ? "today" : commissionsMonthFilter;
-  commissionSummary = await apiJson(`/api/finance/commissions/summary?period=${encodeURIComponent(period)}`);
+  commissionSummary = await apiJson(`/api/finance/commissions/summary?period=${encodeURIComponent(commissionPeriod())}`);
+  // Any expanded sales person's breakdown follows the same filter / data change.
+  await Promise.all([...openCommissionPeople].map(n=>loadCommissionDetail(n).catch(()=>{})));
 }
+// Expanded sales person panel — summary, clients and transactions all come from one server response.
+let commissionDetails = {}, openCommissionPeople = new Set(), commissionMonthOpen = {};
+async function loadCommissionDetail(name){
+  commissionDetails[name] = await apiJson(`/api/finance/commissions/person?salesPerson=${encodeURIComponent(name)}&period=${encodeURIComponent(commissionPeriod())}`);
+}
+function onCommissionToggle(el, i){
+  const r = commissionSummary.rows[i]; if(!r) return;
+  if(el.open){ openCommissionPeople.add(r.salesPerson); if(!commissionDetails[r.salesPerson]) loadCommissionDetail(r.salesPerson).then(render).catch(err=>toast(err.message||"Couldn't load the breakdown")); }
+  else openCommissionPeople.delete(r.salesPerson);
+}
+function onCommissionMonthToggle(el, key){ commissionMonthOpen[key] = el.open; }
+function toggleCommissionClient(key){ const el=document.getElementById(key); if(el) el.style.display = el.style.display==='none' ? '' : 'none'; }
 async function loadExpenses(){ expenses = (await apiJson("/api/finance/expenses")).expenses.map(mapExpense); }
 async function loadBankAccounts(){ bankAccounts = (await apiJson("/api/finance/bank-accounts")).accounts.map(mapBankAccount); }
 async function loadCommissionWithdrawals(){
@@ -1054,8 +1070,8 @@ function workspacePayroll(){
   ${myPayroll.length ? `
   <div class="panel">
     <div class="panel-head"><h3>History</h3><div class="sub">Every cycle you've been part of</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th></tr></thead>
-      <tbody>${myPayroll.map(r=>{ const cuts=r.lopDeduction+(r.wfhDeduction||0); return `<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${cuts>0?'warn':'faint'}">${cuts>0?'−'+inr(cuts):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td></tr>`; }).join("")}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th><th>Payout schedule</th></tr></thead>
+      <tbody>${myPayroll.map(r=>{ const cuts=r.lopDeduction+(r.wfhDeduction||0); return `<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${cuts>0?'warn':'faint'}">${cuts>0?'−'+inr(cuts):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td><td>${(r.schedule&&r.schedule.instalments.length)?r.schedule.instalments.map(i=>`<div style="font-size:12px;white-space:nowrap;">${inr(i.amount)} · ${i.status==='Paid'?'paid '+fmtDateShort(i.paidDate||i.dueDate):(i.status==='Overdue'?'overdue, due ':'due ')+fmtDateShort(i.dueDate)}</div>`).join(''):'<span class="faint">—</span>'}${r.schedule&&r.schedule.overpayment>0?`<div class="subtext">Overpaid ${inr(r.schedule.overpayment)} — HR will resolve</div>`:''}</td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>` : ``}
   <div class="panel">
@@ -1977,6 +1993,7 @@ function viewDashboard(){
   const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)===thisMonth).length;
 
   const needsReview = [
+    ...payrollInstalmentsDue(),
     ...leaveRequests.filter(l=>l.status==="Pending").map(l=>({txt:`${byId(l.empId).name} requested ${l.days} day${l.days>1?'s':''} ${l.type.toLowerCase()} leave`, sub:`applied ${fmtDateShort(l.applied)}`})),
     ...advances.filter(a=>a.status==="Pending").map(a=>({txt:`${byId(a.empId).name} requested a ${inr(a.amount)} advance`, sub:esc(a.reason)})),
     ...invoices.filter(i=>invoiceStatus(i)==="Overdue").map(i=>({txt:`${clientById(i.clientId).name} — invoice ${i.invoiceNo} overdue`, sub:`${inr(invoiceBalance(i))} · due ${fmtDateShort(i.due)}`})),
@@ -3030,8 +3047,8 @@ function payrollView(readOnly){
   </div>` : ""}
   <div class="panel">
     <div class="panel-head"><h3>Payroll — ${MONTH_LABEL[month]}</h3><div class="sub">${includedEmployees.length} added</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="8"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Next due</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${nextDueCell(r.calc)}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="9"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -3317,6 +3334,7 @@ function hrPolicies(){
     <div><b>HR Settings.</b> One place for HRM to set company-wide rules — leave entitlements, the holiday calendar and other general policy — instead of it being hardcoded per screen. Changes here apply everywhere they're used.</div>
   </div>
   ${hrCalendarPanel()}
+  ${payrollSplitPanel()}
   <div class="panel">
     <div class="panel-head"><h3>Monthly paid leave &amp; WFH allowance</h3><div class="sub">What actually drives payroll's Loss of Pay and WFH pay-cut, every month</div></div>
     <div class="panel-body">
@@ -3922,6 +3940,101 @@ async function sendOfferLetter(){
     if(btn){ btn.disabled = false; btn.textContent = "Send to candidate"; }
   }
 }
+
+// ---- Payout schedule (instalments). The plan is stored; paid / balance / status are derived server-side
+// from the payment records — see server/src/services/hr/payrollSchedule.ts.
+// Finance dashboard reminder: salary instalments due today or overdue, from whatever payroll months are loaded.
+function payrollInstalmentsDue(){
+  if(!isFinanceAdminUser(currentUser)) return [];
+  const out = [];
+  Object.keys(payroll.history).forEach(m=>{ Object.entries(payroll.history[m].entries).forEach(([code,c])=>{
+    const n = c.schedule && c.schedule.nextDue; const e = byId(code);
+    if(n && e && n.dueDate<=TODAY) out.push({txt:`${esc(e.name)} — salary instalment ${n.status==='Overdue'?'overdue':'due today'}`, sub:`${inr(n.amount)} · ${MONTH_LABEL[m]||m} · due ${fmtDateShort(n.dueDate)}`, d:n.dueDate});
+  }); });
+  return out.sort((a,b)=>a.d.localeCompare(b.d));
+}
+function nextDueCell(c){
+  const sc = c.schedule;
+  if(c.schedule && c.schedule.overpayment>0) return `<span class="pill neg" title="Net pay is below what was already paid">Overpaid ${inr(c.schedule.overpayment)}</span>`;
+  if(!sc || !sc.nextDue) return c.balance>0 ? '<span class="faint" style="font-size:12px;">No schedule</span>' : '<span class="faint">—</span>';
+  const n = sc.nextDue;
+  return `<div class="mono" style="font-size:12.5px;">${inr(n.amount)}</div><div class="subtext" style="${n.status==='Overdue'?'color:var(--neg);':''}">${n.status==='Overdue'?'overdue · ':''}${fmtDateShort(n.dueDate)}</div>`;
+}
+function scheduleTableHTML(c){
+  const sc = c.schedule;
+  if(!sc || !sc.instalments.length) return `<div class="empty" style="padding:12px 0;">No payout schedule — the full ${inr(c.net)} is due.</div>`;
+  return `<table class="data" style="margin:0;"><thead><tr><th>#</th><th>Due</th><th class="num">Amount</th><th class="num">Paid</th><th>Status</th></tr></thead><tbody>${sc.instalments.map(i=>`<tr><td>${i.adjustment?'Adj.':i.seq}</td><td class="muted">${fmtDateShort(i.dueDate)}</td><td class="num mono">${inr(i.amount)}</td><td class="num mono ${i.paid>0?'':'faint'}">${i.paid>0?inr(i.paid):'—'}${i.paidDate?`<div class="subtext">${fmtDateShort(i.paidDate)}</div>`:''}</td><td>${pill(i.status, i.status==='Paid'?'pos':i.status==='Overdue'?'neg':'neutral')}</td></tr>`).join('')}</tbody></table>`
+    + (sc.overpayment>0?`<div class="banner muted" style="margin-top:8px;"><div><b>Overpayment ${inr(sc.overpayment)}.</b> Net pay is now lower than what was already paid — resolve it (recover or carry it forward) rather than editing paid instalments.</div></div>`:'');
+}
+let scheduleDraft = [];
+function openEditSchedule(id){
+  const e = byId(id), month = payroll.selectedMonth, c = computePayrollRow(e, month);
+  if(!c) return;
+  scheduleDraft = (c.schedule.instalments||[]).map(i=>({amount:i.amount, dueDate:i.dueDate, paid:i.status==='Paid'}));
+  if(!scheduleDraft.length) scheduleDraft = [{amount:c.net, dueDate:month+'-28', paid:false}];
+  renderScheduleModal(id);
+}
+function renderScheduleModal(id){
+  const e = byId(id), month = payroll.selectedMonth, c = computePayrollRow(e, month);
+  const sum = scheduleDraft.reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const diff = Math.round((c.net-sum)*100)/100;
+  showModal(`
+    <div class="modal-head"><h3>Payout schedule — ${esc(e.name)} · ${MONTH_LABEL[month]}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Net payable <b>${inr(c.net)}</b> · paid so far <b>${inr(c.paid)}</b>. The instalments must add up to the net payable. Paid instalments are locked. Recording a payment (Pay) settles instalments oldest first.</div></div>
+      ${scheduleDraft.map((r,i)=>`<div class="field-row" style="align-items:end;margin-top:8px;">
+        <div><label class="field-label">Instalment ${i+1}${r.paid?' · paid':''}</label><input class="field-input" type="number" min="1" step="0.01" value="${r.amount}" ${r.paid?'disabled':''} oninput="scheduleDraft[${i}].amount=Number(this.value)" onchange="renderScheduleModal('${id}')"></div>
+        <div><label class="field-label">Due date</label><input class="field-input" type="date" value="${r.dueDate}" ${r.paid?'disabled':''} onchange="scheduleDraft[${i}].dueDate=this.value"></div>
+        ${r.paid?'':`<button class="btn btn-sm ghost" onclick="scheduleDraft.splice(${i},1);renderScheduleModal('${id}')" ${scheduleDraft.length<=1?'disabled':''}>Remove</button>`}
+      </div>`).join('')}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+        <button class="btn btn-sm ghost" onclick="scheduleDraft.push({amount:Math.max(1,${diff}),dueDate:'${month}-28',paid:false});renderScheduleModal('${id}')">+ Add instalment</button>
+        <span class="mono ${Math.abs(diff)<0.005?'pos':'warn'}">${Math.abs(diff)<0.005?'Adds up to net pay':'Off by '+inr(diff)}</span>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" onclick="saveSchedule('${id}',true)">Reset to company default</button><div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveSchedule('${id}')">Save schedule</button></div></div>`);
+}
+async function saveSchedule(id, useDefault){
+  const e = byId(id), month = payroll.selectedMonth;
+  try{
+    await apiJson(`/api/hr/payroll/${employeeDbIdByCode[id]}/${month}/schedule`, { method:"PUT", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(useDefault ? {useDefault:true} : {instalments: scheduleDraft.map(r=>({amount:Number(r.amount), dueDate:r.dueDate}))}) });
+    await loadPayrollMonth(month);
+    toast("Payout schedule saved"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't save schedule"); }
+}
+// Company default split (HR Settings): rows of {percent, day}, day 0 = last day of the month.
+let splitDraft = null;
+function splitRows(){ return splitDraft || (hrPolicy.payrollDefaultSplit && hrPolicy.payrollDefaultSplit.length ? hrPolicy.payrollDefaultSplit : [{percent:100, day:0}]); }
+function payrollSplitPanel(){
+  const rows = splitRows();
+  const total = rows.reduce((s,r)=>s+(Number(r.percent)||0),0);
+  return `<div class="panel">
+    <div class="panel-head"><h3>Payroll payout schedule</h3><div class="sub">Default split applied when an employee is added to a payroll month — HR/Finance can override it per employee or month</div></div>
+    <div class="panel-body">
+      ${rows.map((r,i)=>`<div class="field-row" style="align-items:end;margin-bottom:8px;">
+        <div><label class="field-label">Payment ${i+1} — % of net pay</label><input class="field-input" type="number" min="1" max="100" step="1" value="${r.percent}" oninput="splitRowsEdit(${i},'percent',this.value)"></div>
+        <div><label class="field-label">Day of month</label><select class="field-input" onchange="splitRowsEdit(${i},'day',this.value)">${[0,...Array.from({length:31},(_,k)=>k+1)].map(d=>`<option value="${d}" ${Number(r.day)===d?'selected':''}>${d===0?'Last day':d}</option>`).join('')}</select></div>
+        <button class="btn btn-sm ghost" ${rows.length<=1?'disabled':''} onclick="splitRowsRemove(${i})">Remove</button>
+      </div>`).join('')}
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <button class="btn btn-sm ghost" ${rows.length>=4?'disabled':''} onclick="splitRowsAdd()">+ Add payment</button>
+        <span class="mono ${total===100?'pos':'warn'}">${total}% of net pay</span>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px;"><button class="btn primary btn-sm" onclick="savePayrollSplit()">Save default</button></div>
+    </div>
+  </div>`;
+}
+function splitRowsEdit(i,k,v){ splitDraft = splitRows().map(r=>({...r})); splitDraft[i][k] = Number(v); }
+function splitRowsAdd(){ splitDraft = splitRows().map(r=>({...r})); splitDraft.push({percent:1, day:15}); document.getElementById("content").innerHTML = hrPolicies(); }
+function splitRowsRemove(i){ splitDraft = splitRows().map(r=>({...r})); splitDraft.splice(i,1); document.getElementById("content").innerHTML = hrPolicies(); }
+async function savePayrollSplit(){
+  try{
+    await apiJson("/api/hr/policy", { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ payrollDefaultSplit: splitRows().map(r=>({percent:Number(r.percent), day:Number(r.day)})) })});
+    splitDraft = null; await loadPolicy();
+    toast("Default payout split saved — applies to months added from now on"); render();
+  }catch(err){ toast(err.message || "Couldn't save the split"); }
+}
 function openPayslip(id, readOnly){
   const e = byId(id); const month = payroll.selectedMonth; const c = computePayrollRow(e, month);
   if(!c){ toast("Add "+e.name+" to this month's payroll first"); return; }
@@ -3943,8 +4056,10 @@ function openPayslip(id, readOnly){
       <div class="section-label">Payments</div>
       ${c.payments.length ? c.payments.map(p=>`<div class="calc-line"><span>${fmtDateShort(p.date)}${p.note?" · "+esc(p.note):""}</span><span class="mono">${inr(p.amount)}</span></div>`).join("") : `<div class="empty" style="padding:12px 0;">No payments recorded yet.</div>`}
       <div class="calc-line total"><span>Balance due</span><span class="mono" style="${c.balance>0?'color:var(--warn);':''}">${inr(c.balance)}</span></div>
+      <div class="section-label">Payout schedule</div>
+      ${scheduleTableHTML(c)}
     </div>
-    <div class="modal-foot">${(!readOnly && c.balance>0)?`<button class="btn primary" onclick="openRecordPayment('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-wallet"/></svg>Record payment</button>`:'<div></div>'}<button class="btn ghost" onclick="closeModal()">Close</button></div>`);
+    <div class="modal-foot">${(isHRRole(currentUser)||isFinanceAdminUser(currentUser))?`<button class="btn ghost" onclick="openEditSchedule('${e.id}')">Edit schedule</button>`:''}${(!readOnly && c.balance>0)?`<button class="btn primary" onclick="openRecordPayment('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-wallet"/></svg>Record payment</button>`:'<div></div>'}<button class="btn ghost" onclick="closeModal()">Close</button></div>`);
 }
 async function setPayrollMonth(m){
   payroll.selectedMonth=m;
@@ -4049,8 +4164,9 @@ function openRecordPayment(id){
         <div><label class="field-label">Net pay</label><div class="mono">${inr(c.net)}</div></div>
         <div><label class="field-label">Balance due</label><div class="mono">${inr(c.balance)}</div></div>
       </div>
+      ${c.schedule&&c.schedule.nextDue?`<div class="banner muted"><div>Next instalment: <b>${inr(c.schedule.nextDue.amount)}</b> due ${fmtDateShort(c.schedule.nextDue.dueDate)}${c.schedule.nextDue.status==='Overdue'?' (overdue)':''} — paying it marks that instalment Paid with the date below.</div></div>`:''}
       <div class="field-row">
-        <div><label class="field-label">Amount paying now (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${c.balance}" step="1" required value="${c.balance}"></div>
+        <div><label class="field-label">Amount paying now (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${c.balance}" step="1" required value="${(c.schedule&&c.schedule.nextDue&&c.schedule.nextDue.amount>0)?Math.min(c.balance,c.schedule.nextDue.amount):c.balance}"></div>
         <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>
       </div>
       <div><label class="field-label">Note</label><input class="field-input" name="note" placeholder="e.g. Partial — fund shortage, rest next cycle"></div>
@@ -5392,6 +5508,55 @@ function groupCommissionsByMonth(mine){
     total: byMonth[m].reduce((s,p)=>s+p.amount,0),
   }));
 }
+
+// ---- Expanded sales person panel (Accounts > Commissions): everything shown here is server-computed by
+// GET /api/finance/commissions/person; this only lays it out.
+function commissionDetailHTML(i, r){
+  const d = commissionDetails[r.salesPerson];
+  if(!d) return '<div class="faint" style="padding:8px 0;">Loading…</div>';
+  const S = d.summary, T = S.target;
+  const pct = T.target>0 ? Math.min(100, Math.round(T.sales/T.target*100)) : 0;
+  const periodLabel = d.period==='all' ? 'All time' : d.period==='today' ? 'Today' : monthLabel(d.period);
+  const card = (label, val, sub, cls) => `<div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">${label}</div><div class="kpi-value mono ${cls||''}" style="font-size:18px;">${val}</div>${sub?`<div class="kpi-sub">${sub}</div>`:''}</div>`;
+  const filteredMonth = /^\d{4}-\d{2}$/.test(d.period);
+  const monthBalance = r.balance;
+  const settleBar = (filteredMonth && monthBalance>0.005) ? `<div style="display:flex;justify-content:flex-end;margin:0 0 10px;"><button class="btn btn-sm" onclick="openSettleCommission(${i},'${d.period}')" title="Pay only the entries received in ${esc(periodLabel)}, oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle this month only · ${inr(monthBalance)}</button></div>` : '';
+  const cards = `<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:10px;">
+    ${card('Total sales ('+esc(periodLabel)+')', inr(S.totalSales), 'approved payments, by date received')}
+    ${card('Deals', S.deals, 'invoices with a payment')}
+    ${card('Clients', S.clients)}
+    ${card('Commission earned', inr(S.earned))}
+    ${card('Commission paid', inr(S.paid), '', 'pos')}
+    ${card('Commission balance', inr(S.balance), '', S.balance>0?'warn':'')}
+    ${card('Client pending', inr(S.clientPending), 'still unpaid by clients', S.clientPending>0?'warn':'')}
+  </div>
+  <div style="margin-bottom:14px;"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;"><span><b>${monthLabel(T.month)}</b> target progress</span><span class="mono">${inr(T.sales)} of ${inr(T.target)} · bonus earned so far ${inr(T.bonusEarned)}</span></div><div class="bar-track"><div class="bar-fill" style="width:${pct}%;${T.sales>=T.target?'background:var(--pos);':''}"></div></div></div>`;
+
+  const txByClient = {}; d.months.forEach(m=>m.rows.forEach(t=>{ if(t.clientId) (txByClient[t.clientId] ||= []).push(t); }));
+  const statusKind2 = st => st==='Fully paid'?'pos':st==='Partially paid'?'warn':'neg';
+  const clientsHTML = d.clients.length ? `<div class="section-label" style="margin:6px 0;">Clients &amp; sales</div><div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>What was sold</th><th>Reference</th><th class="num">Deal value</th><th class="num">Received</th><th class="num">Pending</th><th class="num">Commission</th><th>Status</th></tr></thead><tbody>${d.clients.map((c,ci)=>{ const key='cl-'+i+'-'+ci, txs=txByClient[c.clientId]||[]; return `<tr style="cursor:pointer;" onclick="toggleCommissionClient('${key}')"><td>${clientLink(c.clientId, c.clientName)}</td><td class="muted">${c.services.map(esc).join(', ')||'—'}${c.titles.length?`<div class="subtext">${c.titles.map(esc).join(', ')}</div>`:''}</td><td class="mono muted">${c.references.map(esc).join('<br>')}</td><td class="num mono">${inr(c.totalDeal)}</td><td class="num mono">${inr(c.received)}</td><td class="num mono ${c.pending>0?'warn':'faint'}">${c.pending>0?inr(c.pending):'—'}</td><td class="num mono">${inr(c.commissionEarned)}</td><td>${pill(c.status, statusKind2(c.status))}</td></tr>
+      <tr id="${key}" style="display:none;"><td colspan="8" style="background:var(--surface);padding:6px 14px;">${txs.length?txs.map(t=>`<div class="report-detail-row"><span>${fmtDateShort(t.date)} · ${esc(t.reference||'—')} · ${t.kind}</span><span class="amt mono">${t.paymentAmount!=null?inr(t.paymentAmount)+' → ':''}${inr(t.earned)}</span></div>`).join(''):'<span class="faint">No payments in this period.</span>'}</td></tr>`; }).join('')}</tbody></table></div>` : '';
+
+  const monthsHTML = d.months.length ? `<div class="section-label" style="margin:14px 0 6px;">Transactions by month</div>` + d.months.map(m=>{
+    const key = r.salesPerson+'|'+m.month;
+    const open = key in commissionMonthOpen ? commissionMonthOpen[key] : m.month===TODAY.slice(0,7);
+    return `<details class="report-details" ${open?'open':''} ontoggle="onCommissionMonthToggle(this,'${esc(key).replace(/'/g,"&#39;")}')" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px;">
+      <summary class="report-line" style="padding:8px 12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><span class="name" style="font-weight:700;"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(monthLabel(m.month))}</span>
+        <span class="mono" style="font-size:12.5px;">Received ${inr(m.paymentsReceived)} · Earned ${inr(m.earned)} · Paid ${inr(m.paid)} · Balance <b style="${m.balance>0?'color:var(--neg);':''}">${inr(m.balance)}</b>${m.bonusEarned>0?` · Target bonus ${inr(m.bonusEarned)}`:''}</span></summary>
+      <div class="table-wrap"><table class="data"><thead><tr><th>Date received</th><th>Client</th><th>Reference</th><th class="num">Payment</th><th class="num">%</th><th class="num">Commission</th><th class="num">Paid</th><th class="num">Balance</th><th></th></tr></thead><tbody>${m.rows.map(t=>`<tr>
+        <td class="muted">${fmtDateShort(t.date)}</td>
+        <td>${t.kind==='Target bonus'?pill('Target bonus','blue'):(t.clientId?clientLink(t.clientId,t.clientName):'<span class="faint">—</span>')}</td>
+        <td class="mono muted">${t.kind==='Target bonus'?'<span class="faint">monthly target</span>':esc(t.reference||'—')}</td>
+        <td class="num mono ${t.kind==='Target bonus'?'faint':''}">${t.paymentAmount!=null?inr(t.paymentAmount):'—'}</td>
+        <td class="num mono" title="${t.kind==='Target bonus'?'% of sales past target':t.edited?'Amount was edited or split after it was created':''}">${t.rate!=null?t.rate+'%':'—'}${t.edited?' <span class="faint">(edited)</span>':''}${t.kind==='Target bonus'&&t.rate!=null?'<div class="subtext">of excess</div>':''}</td>
+        <td class="num mono">${inr(t.earned)}</td>
+        <td class="num mono muted">${t.paid>0?inr(t.paid):'—'}</td>
+        <td class="num mono" style="${t.balance>0?'color:var(--neg);font-weight:700;':''}">${t.balance>0?inr(t.balance):'—'}</td>
+        <td><div style="display:flex;gap:6px;justify-content:flex-end;">${t.balance>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${t.payableId}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11px;">paid in full</span>`}${t.hasPayments?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${t.payableId}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}</div></td></tr>`).join('')}</tbody></table></div></details>`;
+  }).join('') : `<div class="empty">No commissions in this period</div>`;
+
+  return settleBar + cards + clientsHTML + monthsHTML;
+}
 function salesLeaderboardRows(){
   const commission = commissionRowsByPerson();
   return assignableEmployees().filter(e=>e.dept==='Sales').map(e=>{
@@ -5448,46 +5613,32 @@ function acctCommissions(){
     </table></div>
   </div>`:''}
   <div class="panel">
-    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine, or settle everything at once${filtered?` · showing ${commissionsMonthFilter==='Today'?'today':monthLabel(commissionsMonthFilter)}, plus what was carried over from before`:''}</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionSummary.months.map(m=>m+'-01'), commissionsMonthFilter)}</select></div></div>
+    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine, or settle everything at once${filtered?` · showing ${commissionsMonthFilter==='Today'?'today':monthLabel(commissionsMonthFilter)}, plus what was carried over from before`:''}</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionSummary.months.map(m=>m+'-01').concat(TODAY), commissionsMonthFilter)}</select></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">Previous balance</th><th class="num">Earned</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map((r,i)=>{ const owed = r.totalOutstanding; const statusLabel = owed<=0.005?'Settled':(r.paid>0?'Partially Paid':'Outstanding'); return `<tr><td colspan="7" style="padding:0;border-bottom:1px solid var(--line);">
-        <details class="report-details">
-          <summary class="report-line" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr 1.3fr;align-items:center;padding:10px 14px;">
+        <details class="report-details" ${openCommissionPeople.has(r.salesPerson)?'open':''} ontoggle="onCommissionToggle(this,${i})">
+          <summary class="report-line" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr 2fr;align-items:center;padding:10px 14px;">
             <span class="name" style="font-weight:700;color:var(--ink);"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(r.salesPerson)}</span>
             <span class="num mono ${r.previousBalance>0?'warn':'muted'}" title="Unpaid from entries due before this period">${r.previousBalance>0?inr(r.previousBalance):'—'}</span>
             <span class="num mono">${inr(r.earned)}</span>
             <span class="num mono muted">${r.paid>0?inr(r.paid):'—'}</span>
             <span class="num mono" style="${r.balance>0?'color:var(--neg);font-weight:700;':''}">${r.balance>0?inr(r.balance):'—'}</span>
             <span>${pill(statusLabel, owed<=0.005?'pos':'warn')}</span>
-            <span style="display:flex;justify-content:flex-end;">${owed>0.005?`<button class="btn btn-sm primary" onclick="event.preventDefault();event.stopPropagation();openSettleCommission(${i})" title="Pay every outstanding entry for ${esc(r.salesPerson)}, or an amount applied oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle all · ${inr(owed)}</button>`:''}</span>
+            <span style="display:flex;justify-content:flex-end;">${owed>0.005?`<button class="btn btn-sm primary" onclick="event.preventDefault();event.stopPropagation();openSettleCommission(${i})" title="Pay every outstanding entry for ${esc(r.salesPerson)} across ALL months, or an amount applied oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle all · ${inr(owed)} (all months)</button>`:''}</span>
           </summary>
-          <div class="report-detail">
-            ${r.entries.length ? groupCommissionsByMonth(r.entries).map(g=>`<div class="report-detail-month">
-              <div class="report-detail-row" style="font-weight:700;color:var(--ink-soft);">
-                <span>${esc(g.label)}</span><span class="amt mono">${inr(g.total)}</span>
-              </div>
-              ${g.items.map(p=>{ const bal=p.balance; return `<div class="report-detail-row" style="align-items:center;padding-left:10px;">
-                <span>${esc(p.payee)} <span class="faint">· ${fmtDateShort(p.due)}</span></span>
-                <span style="display:flex;gap:10px;align-items:center;">
-                  <span class="amt mono">${inr(p.amount)}${bal>0 && bal<p.amount?` <span class="faint">(${inr(bal)} left)</span>`:''}</span>
-                  ${bal>0?`<button class="btn btn-sm" onclick="openRecordPayablePayment('${p.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Record payment</button>`:`<span class="faint" style="font-size:11px;">paid in full</span>`}
-                  ${p.hasPayments?'':`<button class="btn btn-sm ghost" onclick="openConfirmDelete('payable','${p.id}')" title="Delete"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`}
-                </span>
-              </div>`; }).join('')}
-            </div>`).join('') : `<div class="report-detail-row faint">No entries due in this period${r.previousBalance>0?' — only the '+inr(r.previousBalance)+' carried over from earlier months':''}.</div>`}
-          </div>
+          <div class="report-detail" style="padding:12px 14px;">${commissionDetailHTML(i, r)}</div>
         </details>
       </td></tr>`; }).join(""):`<tr><td colspan="7"><div class="empty">No commission earned${commissionsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
-function openSettleCommission(i){
+function openSettleCommission(i, month){
   const r = commissionSummary.rows[i]; if(!r) return;
-  const owed = r.totalOutstanding;
+  const owed = month ? r.balance : r.totalOutstanding;
   showModal(`
-    <div class="modal-head"><h3>Settle commission — ${esc(r.salesPerson)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h3>Settle commission — ${esc(r.salesPerson)}${month?' · '+esc(monthLabel(month)):''}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-settle-commission"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>${inr(owed)}</b> outstanding across all of ${esc(r.salesPerson)}'s commission entries. Each entry gets its own payment record, <b>oldest due date first</b>. Enter less than the full amount to pay only the oldest entries that it covers.</div></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>${inr(owed)}</b> outstanding ${month?'in '+esc(monthLabel(month))+' only':'across all months of'} ${esc(r.salesPerson)}'s commission entries. Each entry gets its own payment record, <b>oldest due date first</b>. Enter less than the full amount to pay only the oldest entries that it covers.</div></div>
       <div class="field-row">
         <div><label class="field-label">Amount to pay (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${owed}" step="0.01" required value="${owed}"></div>
         <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>
@@ -5501,6 +5652,7 @@ function openSettleCommission(i){
     const f = new FormData(e.target);
     const amount = Number(f.get("amount"));
     const body = { salesPerson:r.salesPerson, accountId:f.get("accountId"), paidDate:f.get("date") };
+    if(month) body.month = month;
     if(amount < owed - 0.005) body.amount = amount;   // omitted = settle everything
     try{
       const res = await apiJson("/api/finance/commissions/settle", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });

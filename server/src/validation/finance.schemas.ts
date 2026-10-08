@@ -179,4 +179,6 @@ export const commissionSettleSchema = z.object({
   paidDate: dateStr,
   // Omit to settle the person's whole outstanding commission; otherwise applied oldest-first.
   amount: z.number().positive().optional(),
+  // Settle only entries due in this month (YYYY-MM), oldest first. Omit = everything outstanding.
+  month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
 });
