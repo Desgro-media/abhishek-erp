@@ -63,9 +63,15 @@ export const listSalesTargets: RequestHandler = asyncHandler(async (req, res) =>
         where: { category: "SALES_BONUS", salesPerson, dueAt: { gte: start, lte: end } },
         _sum: { amount: true },
       });
+      // Flat commission entries for payments RECEIVED this month (entries are dated to the received date).
+      const commissionPayables = await prisma.payable.aggregate({
+        where: { category: "COMMISSION", salesPerson, dueAt: { gte: start, lte: end } },
+        _sum: { amount: true },
+      });
       return {
         salesPerson,
         monthlySales,
+        commissionThisMonth: Number(commissionPayables._sum.amount ?? 0),
         target: monthlyTarget,
         bonusRate,
         bonusEarnedThisMonth: Number(bonusPayables._sum.amount ?? 0),
