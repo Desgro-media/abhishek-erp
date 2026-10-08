@@ -743,8 +743,23 @@ async function loadCommissionWithdrawals(){
 // salesperson (server scopes it to "just me" for a Sales caller, everyone for Finance/Admin).
 let salesPolicy = {monthlyTarget:500000, bonusRate:0.10};
 let salesTargets = [];
+let targetsMonth = TODAY.slice(0,7), targetsView = null;
 async function loadSalesPolicy(){ salesPolicy = await apiJson("/api/finance/sales-policy"); }
-async function loadSalesTargets(){ salesTargets = (await apiJson("/api/finance/sales-targets")).rows; }
+async function loadSalesTargets(){ salesTargets = (await apiJson("/api/finance/sales-targets")).rows; await loadTargetsView(); }
+// The Sales Commissions "Monthly sales target & bonus" table has its own month picker (default: this
+// month); the shared salesTargets above stays on the current month for the dashboards.
+
+async function loadTargetsView(){
+  targetsView = targetsMonth===TODAY.slice(0,7) ? null : (await apiJson("/api/finance/sales-targets?month="+targetsMonth)).rows;
+}
+function setTargetsMonth(m){ targetsMonth = m; loadTargetsView().then(render).catch(err=>toast(err.message||"Couldn't load that month")); }
+function targetsMonthOptions(){
+  const months = new Set([targetsMonth]);
+  const [y,m] = TODAY.slice(0,7).split('-').map(Number);
+  for(let i=0;i<12;i++){ const d=new Date(y,m-1-i,1); months.add(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')); }
+  (commissionSummary.months||[]).forEach(x=>months.add(x));
+  return [...months].sort().reverse().map(x=>`<option value="${x}" ${x===targetsMonth?'selected':''}>${monthLabel(x)}</option>`).join('');
+}
 
 /* ---- Commission Withdrawals — self-service (Sales requests, Finance approves) ---- */
 function openRequestCommissionWithdrawal(){
@@ -5394,7 +5409,6 @@ function acctCommissions(){
   const salesCount = commissionSummary.totals.salesPersons, entryCount = commissionSummary.totals.entries;
   // Only for the "Monthly sales target & bonus" table below, which is pinned to the current month
   // (targets/bonuses are a this-month standing, not something that has a history) — not the filter.
-  const commissionPayables = payables.filter(p=>p.category==="Commission");
   const pendingWithdrawals = commissionWithdrawals.filter(w=>w.status==="Pending").slice().sort((a,b)=>a.requested.localeCompare(b.requested));
   const decidedWithdrawals = commissionWithdrawals.filter(w=>w.status!=="Pending").slice().sort((a,b)=>b.requested.localeCompare(a.requested)).slice(0,8);
   return `
@@ -5406,20 +5420,16 @@ function acctCommissions(){
   </div>
   <div class="panel">
     <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;">
-      <div><h3>Monthly sales target &amp; bonus</h3><div class="sub">Target ${inr(salesPolicy.monthlyTarget)} · ${Math.round(salesPolicy.bonusRate*100)}% bonus on sales past target, on top of the ${Math.round(SALES_COMMISSION_RATE*100)}% flat commission above</div></div>
-      <button class="btn btn-sm ghost" onclick="openEditSalesPolicy()"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>
+      <div><h3>Monthly sales target &amp; bonus</h3><div class="sub">Counted by the date the client's money was received · Target ${inr(salesPolicy.monthlyTarget)} · ${Math.round(salesPolicy.bonusRate*100)}% bonus on sales past target, on top of the ${Math.round(SALES_COMMISSION_RATE*100)}% flat commission above</div></div>
+      <div style="display:flex;gap:8px;align-items:center;"><div class="filter-group"><span class="filter-label">Month</span><select class="select-sm" onchange="setTargetsMonth(this.value)">${targetsMonthOptions()}</select></div>
+      <button class="btn btn-sm ghost" onclick="openEditSalesPolicy()"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></div>
     </div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">This month</th><th class="num">Target</th><th></th><th class="num">Commission (${Math.round(SALES_COMMISSION_RATE*100)}%)</th><th class="num">Bonus earned</th></tr></thead>
-      <tbody>${salesTargets.length ? salesTargets.map(r=>{
+    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">${targetsMonth===TODAY.slice(0,7)?'This month':'Received in '+monthLabel(targetsMonth)}</th><th class="num">Target</th><th></th><th class="num">Commission (${Math.round(SALES_COMMISSION_RATE*100)}%)</th><th class="num">Bonus earned</th></tr></thead>
+      <tbody>${(targetsView||salesTargets).length ? (targetsView||salesTargets).map(r=>{
         const pct = r.target>0 ? Math.min(100, Math.round(r.monthlySales/r.target*100)) : 0;
         const over = r.monthlySales>=r.target;
-        // Flat commission credited this calendar month — same Commission payables the table below
-        // rolls up all-time, filtered here to this sales person's entries created this month.
-        // Bucketed by createdAt (set the instant Finance approves the payment), not by the
-        // entry's own due date — due is the payment's (sometimes backdated) collection date, and
-        // r.monthlySales/bonusEarnedThisMonth above are both bucketed by approval time too, so this
-        // has to match that or it silently disagrees with "This month" in the same row.
-        const commissionThisMonth = commissionPayables.filter(p=>p.salesPerson===r.salesPerson && p.createdAt && p.createdAt.slice(0,7)===TODAY.slice(0,7)).reduce((s,p)=>s+p.amount,0);
+        // Server-computed: commission entries dated in this month (the month the money was received).
+        const commissionThisMonth = r.commissionThisMonth||0;
         return `<tr>
           <td>${esc(r.salesPerson)}</td>
           <td class="num mono">${inr(r.monthlySales)}</td>
