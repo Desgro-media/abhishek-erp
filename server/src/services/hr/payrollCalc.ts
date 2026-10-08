@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 import { computeLopDays, computeWfhExcessDays } from "./leaveBalance";
 import { workingDaysInMonth } from "./workingDays";
+import { effectiveSchedule } from "./payrollSchedule";
 
 // Same formula as the old computePayrollRow() in app.js: 60/20/20 basic/HRA/
 // special split, 12% PF on basic, flat ₹200 PT, LOP priced at gross/working
@@ -17,7 +18,7 @@ const dueInMonth = (a: { deductFromMonth: string | null }, month: string) => !a.
 export async function computePayrollRow(employeeId: string, month: string, db: Prisma.TransactionClient = prisma) {
   const entry = await db.payrollEntry.findUnique({
     where: { employeeId_month: { employeeId, month } },
-    include: { payments: { orderBy: { paidDate: "asc" } } },
+    include: { payments: { orderBy: { paidDate: "asc" } }, instalments: true },
   });
   if (!entry) return null;
 
@@ -68,6 +69,8 @@ export async function computePayrollRow(employeeId: string, month: string, db: P
     balance,
     payStatus,
     payments: entry.payments,
+    // Derived from the plan + payment records every time (see payrollSchedule.ts).
+    schedule: effectiveSchedule(entry.instalments, entry.payments, net, new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10)),
   };
 }
 

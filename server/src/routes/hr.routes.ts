@@ -88,6 +88,7 @@ router.get("/payroll", requireHRAdminOrFinance, payroll.listPayrollForMonth);
 router.get("/payroll/mine", payroll.listMyPayroll); // own history only — pinned to the caller's employeeId
 router.get("/payroll/:employeeId/:month", payroll.getPayrollEntry); // self-or-HR
 router.post("/payroll/entries", requireHRAdmin, payroll.upsertPayrollEntry);
+router.put("/payroll/:employeeId/:month/schedule", requireHRAdminOrFinance, payroll.setPayrollSchedule);
 router.post("/payroll/:employeeId/:month/payments", requireHRAdminOrFinance, payroll.recordPayrollPayment);
 
 export default router;

@@ -24,13 +24,14 @@ export const updatePolicy: RequestHandler = asyncHandler(async (req, res) => {
     const existing = await prisma.hrPolicy.findUnique({ where: { id: 1 } });
     if (!existing?.carryForwardStartMonth) extra.carryForwardStartMonth = nextMonth(thisMonth());
   }
+  const before = await prisma.hrPolicy.findUnique({ where: { id: 1 } });
   const policy = await prisma.hrPolicy.upsert({
     where: { id: 1 },
     create: { id: 1, ...parsed.data, ...extra },
     update: { ...parsed.data, ...extra },
   });
 
-  await recordAudit({ userId: req.user!.sub, action: "HR_POLICY_UPDATE", entityType: "HrPolicy", entityId: "1", afterData: parsed.data });
+  await recordAudit({ userId: req.user!.sub, action: "HR_POLICY_UPDATE", entityType: "HrPolicy", entityId: "1", beforeData: { payrollDefaultSplit: before?.payrollDefaultSplit }, afterData: parsed.data });
   res.json({ policy });
 });
 

@@ -133,7 +133,8 @@ function mapPayrollRow(r){
     wfhExcessDays:r.wfhExcessDays||0, wfhDeduction:r.wfhDeduction||0,
     monthWorkingDays:r.monthWorkingDays, totalDeductions:r.totalDeductions, net:r.net,
     paid:r.paid, balance:r.balance, payStatus:r.payStatus,
-    payments:(r.payments||[]).map(p=>({amount:Number(p.amount), date:isoDate(p.paidDate), note:p.note})) };
+    payments:(r.payments||[]).map(p=>({amount:Number(p.amount), date:isoDate(p.paidDate), note:p.note})),
+    schedule:r.schedule||{scheduled:false,instalments:[],nextDue:null,overpayment:0} };
 }
 
 async function apiJson(url, opts){
@@ -171,6 +172,7 @@ async function loadPolicy(){
     weeklyOff: policy.weeklyOff, paidLeavesPerMonth: policy.paidLeavesPerMonth, paidWfhPerMonth: policy.paidWfhPerMonth,
     carryForwardMaxDays: policy.carryForwardMaxDays||0, carryForwardStartMonth: policy.carryForwardStartMonth||null,
     notes: policy.generalNotes || "",
+    payrollDefaultSplit: policy.payrollDefaultSplit || [{percent:100, day:0}],
     holidays: holidays.map(h=>({date:isoDate(h.date), name:h.name})),
   };
   leavePayPolicy = { notes: policy.leavePayNotes || "" };
@@ -1054,8 +1056,8 @@ function workspacePayroll(){
   ${myPayroll.length ? `
   <div class="panel">
     <div class="panel-head"><h3>History</h3><div class="sub">Every cycle you've been part of</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th></tr></thead>
-      <tbody>${myPayroll.map(r=>{ const cuts=r.lopDeduction+(r.wfhDeduction||0); return `<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${cuts>0?'warn':'faint'}">${cuts>0?'−'+inr(cuts):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td></tr>`; }).join("")}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th><th>Payout schedule</th></tr></thead>
+      <tbody>${myPayroll.map(r=>{ const cuts=r.lopDeduction+(r.wfhDeduction||0); return `<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${cuts>0?'warn':'faint'}">${cuts>0?'−'+inr(cuts):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td><td>${(r.schedule&&r.schedule.instalments.length)?r.schedule.instalments.map(i=>`<div style="font-size:12px;white-space:nowrap;">${inr(i.amount)} · ${i.status==='Paid'?'paid '+fmtDateShort(i.paidDate||i.dueDate):(i.status==='Overdue'?'overdue, due ':'due ')+fmtDateShort(i.dueDate)}</div>`).join(''):'<span class="faint">—</span>'}${r.schedule&&r.schedule.overpayment>0?`<div class="subtext">Overpaid ${inr(r.schedule.overpayment)} — HR will resolve</div>`:''}</td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>` : ``}
   <div class="panel">
@@ -1977,6 +1979,7 @@ function viewDashboard(){
   const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)===thisMonth).length;
 
   const needsReview = [
+    ...payrollInstalmentsDue(),
     ...leaveRequests.filter(l=>l.status==="Pending").map(l=>({txt:`${byId(l.empId).name} requested ${l.days} day${l.days>1?'s':''} ${l.type.toLowerCase()} leave`, sub:`applied ${fmtDateShort(l.applied)}`})),
     ...advances.filter(a=>a.status==="Pending").map(a=>({txt:`${byId(a.empId).name} requested a ${inr(a.amount)} advance`, sub:esc(a.reason)})),
     ...invoices.filter(i=>invoiceStatus(i)==="Overdue").map(i=>({txt:`${clientById(i.clientId).name} — invoice ${i.invoiceNo} overdue`, sub:`${inr(invoiceBalance(i))} · due ${fmtDateShort(i.due)}`})),
@@ -3030,8 +3033,8 @@ function payrollView(readOnly){
   </div>` : ""}
   <div class="panel">
     <div class="panel-head"><h3>Payroll — ${MONTH_LABEL[month]}</h3><div class="sub">${includedEmployees.length} added</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="8"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Next due</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${nextDueCell(r.calc)}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="9"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -3317,6 +3320,7 @@ function hrPolicies(){
     <div><b>HR Settings.</b> One place for HRM to set company-wide rules — leave entitlements, the holiday calendar and other general policy — instead of it being hardcoded per screen. Changes here apply everywhere they're used.</div>
   </div>
   ${hrCalendarPanel()}
+  ${payrollSplitPanel()}
   <div class="panel">
     <div class="panel-head"><h3>Monthly paid leave &amp; WFH allowance</h3><div class="sub">What actually drives payroll's Loss of Pay and WFH pay-cut, every month</div></div>
     <div class="panel-body">
@@ -3922,6 +3926,101 @@ async function sendOfferLetter(){
     if(btn){ btn.disabled = false; btn.textContent = "Send to candidate"; }
   }
 }
+
+// ---- Payout schedule (instalments). The plan is stored; paid / balance / status are derived server-side
+// from the payment records — see server/src/services/hr/payrollSchedule.ts.
+// Finance dashboard reminder: salary instalments due today or overdue, from whatever payroll months are loaded.
+function payrollInstalmentsDue(){
+  if(!isFinanceAdminUser(currentUser)) return [];
+  const out = [];
+  Object.keys(payroll.history).forEach(m=>{ Object.entries(payroll.history[m].entries).forEach(([code,c])=>{
+    const n = c.schedule && c.schedule.nextDue; const e = byId(code);
+    if(n && e && n.dueDate<=TODAY) out.push({txt:`${esc(e.name)} — salary instalment ${n.status==='Overdue'?'overdue':'due today'}`, sub:`${inr(n.amount)} · ${MONTH_LABEL[m]||m} · due ${fmtDateShort(n.dueDate)}`, d:n.dueDate});
+  }); });
+  return out.sort((a,b)=>a.d.localeCompare(b.d));
+}
+function nextDueCell(c){
+  const sc = c.schedule;
+  if(c.schedule && c.schedule.overpayment>0) return `<span class="pill neg" title="Net pay is below what was already paid">Overpaid ${inr(c.schedule.overpayment)}</span>`;
+  if(!sc || !sc.nextDue) return c.balance>0 ? '<span class="faint" style="font-size:12px;">No schedule</span>' : '<span class="faint">—</span>';
+  const n = sc.nextDue;
+  return `<div class="mono" style="font-size:12.5px;">${inr(n.amount)}</div><div class="subtext" style="${n.status==='Overdue'?'color:var(--neg);':''}">${n.status==='Overdue'?'overdue · ':''}${fmtDateShort(n.dueDate)}</div>`;
+}
+function scheduleTableHTML(c){
+  const sc = c.schedule;
+  if(!sc || !sc.instalments.length) return `<div class="empty" style="padding:12px 0;">No payout schedule — the full ${inr(c.net)} is due.</div>`;
+  return `<table class="data" style="margin:0;"><thead><tr><th>#</th><th>Due</th><th class="num">Amount</th><th class="num">Paid</th><th>Status</th></tr></thead><tbody>${sc.instalments.map(i=>`<tr><td>${i.adjustment?'Adj.':i.seq}</td><td class="muted">${fmtDateShort(i.dueDate)}</td><td class="num mono">${inr(i.amount)}</td><td class="num mono ${i.paid>0?'':'faint'}">${i.paid>0?inr(i.paid):'—'}${i.paidDate?`<div class="subtext">${fmtDateShort(i.paidDate)}</div>`:''}</td><td>${pill(i.status, i.status==='Paid'?'pos':i.status==='Overdue'?'neg':'neutral')}</td></tr>`).join('')}</tbody></table>`
+    + (sc.overpayment>0?`<div class="banner muted" style="margin-top:8px;"><div><b>Overpayment ${inr(sc.overpayment)}.</b> Net pay is now lower than what was already paid — resolve it (recover or carry it forward) rather than editing paid instalments.</div></div>`:'');
+}
+let scheduleDraft = [];
+function openEditSchedule(id){
+  const e = byId(id), month = payroll.selectedMonth, c = computePayrollRow(e, month);
+  if(!c) return;
+  scheduleDraft = (c.schedule.instalments||[]).map(i=>({amount:i.amount, dueDate:i.dueDate, paid:i.status==='Paid'}));
+  if(!scheduleDraft.length) scheduleDraft = [{amount:c.net, dueDate:month+'-28', paid:false}];
+  renderScheduleModal(id);
+}
+function renderScheduleModal(id){
+  const e = byId(id), month = payroll.selectedMonth, c = computePayrollRow(e, month);
+  const sum = scheduleDraft.reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const diff = Math.round((c.net-sum)*100)/100;
+  showModal(`
+    <div class="modal-head"><h3>Payout schedule — ${esc(e.name)} · ${MONTH_LABEL[month]}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Net payable <b>${inr(c.net)}</b> · paid so far <b>${inr(c.paid)}</b>. The instalments must add up to the net payable. Paid instalments are locked. Recording a payment (Pay) settles instalments oldest first.</div></div>
+      ${scheduleDraft.map((r,i)=>`<div class="field-row" style="align-items:end;margin-top:8px;">
+        <div><label class="field-label">Instalment ${i+1}${r.paid?' · paid':''}</label><input class="field-input" type="number" min="1" step="0.01" value="${r.amount}" ${r.paid?'disabled':''} oninput="scheduleDraft[${i}].amount=Number(this.value)" onchange="renderScheduleModal('${id}')"></div>
+        <div><label class="field-label">Due date</label><input class="field-input" type="date" value="${r.dueDate}" ${r.paid?'disabled':''} onchange="scheduleDraft[${i}].dueDate=this.value"></div>
+        ${r.paid?'':`<button class="btn btn-sm ghost" onclick="scheduleDraft.splice(${i},1);renderScheduleModal('${id}')" ${scheduleDraft.length<=1?'disabled':''}>Remove</button>`}
+      </div>`).join('')}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+        <button class="btn btn-sm ghost" onclick="scheduleDraft.push({amount:Math.max(1,${diff}),dueDate:'${month}-28',paid:false});renderScheduleModal('${id}')">+ Add instalment</button>
+        <span class="mono ${Math.abs(diff)<0.005?'pos':'warn'}">${Math.abs(diff)<0.005?'Adds up to net pay':'Off by '+inr(diff)}</span>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" onclick="saveSchedule('${id}',true)">Reset to company default</button><div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="saveSchedule('${id}')">Save schedule</button></div></div>`);
+}
+async function saveSchedule(id, useDefault){
+  const e = byId(id), month = payroll.selectedMonth;
+  try{
+    await apiJson(`/api/hr/payroll/${employeeDbIdByCode[id]}/${month}/schedule`, { method:"PUT", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(useDefault ? {useDefault:true} : {instalments: scheduleDraft.map(r=>({amount:Number(r.amount), dueDate:r.dueDate}))}) });
+    await loadPayrollMonth(month);
+    toast("Payout schedule saved"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't save schedule"); }
+}
+// Company default split (HR Settings): rows of {percent, day}, day 0 = last day of the month.
+let splitDraft = null;
+function splitRows(){ return splitDraft || (hrPolicy.payrollDefaultSplit && hrPolicy.payrollDefaultSplit.length ? hrPolicy.payrollDefaultSplit : [{percent:100, day:0}]); }
+function payrollSplitPanel(){
+  const rows = splitRows();
+  const total = rows.reduce((s,r)=>s+(Number(r.percent)||0),0);
+  return `<div class="panel">
+    <div class="panel-head"><h3>Payroll payout schedule</h3><div class="sub">Default split applied when an employee is added to a payroll month — HR/Finance can override it per employee or month</div></div>
+    <div class="panel-body">
+      ${rows.map((r,i)=>`<div class="field-row" style="align-items:end;margin-bottom:8px;">
+        <div><label class="field-label">Payment ${i+1} — % of net pay</label><input class="field-input" type="number" min="1" max="100" step="1" value="${r.percent}" oninput="splitRowsEdit(${i},'percent',this.value)"></div>
+        <div><label class="field-label">Day of month</label><select class="field-input" onchange="splitRowsEdit(${i},'day',this.value)">${[0,...Array.from({length:31},(_,k)=>k+1)].map(d=>`<option value="${d}" ${Number(r.day)===d?'selected':''}>${d===0?'Last day':d}</option>`).join('')}</select></div>
+        <button class="btn btn-sm ghost" ${rows.length<=1?'disabled':''} onclick="splitRowsRemove(${i})">Remove</button>
+      </div>`).join('')}
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <button class="btn btn-sm ghost" ${rows.length>=4?'disabled':''} onclick="splitRowsAdd()">+ Add payment</button>
+        <span class="mono ${total===100?'pos':'warn'}">${total}% of net pay</span>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:10px;"><button class="btn primary btn-sm" onclick="savePayrollSplit()">Save default</button></div>
+    </div>
+  </div>`;
+}
+function splitRowsEdit(i,k,v){ splitDraft = splitRows().map(r=>({...r})); splitDraft[i][k] = Number(v); }
+function splitRowsAdd(){ splitDraft = splitRows().map(r=>({...r})); splitDraft.push({percent:1, day:15}); document.getElementById("content").innerHTML = hrPolicies(); }
+function splitRowsRemove(i){ splitDraft = splitRows().map(r=>({...r})); splitDraft.splice(i,1); document.getElementById("content").innerHTML = hrPolicies(); }
+async function savePayrollSplit(){
+  try{
+    await apiJson("/api/hr/policy", { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ payrollDefaultSplit: splitRows().map(r=>({percent:Number(r.percent), day:Number(r.day)})) })});
+    splitDraft = null; await loadPolicy();
+    toast("Default payout split saved — applies to months added from now on"); render();
+  }catch(err){ toast(err.message || "Couldn't save the split"); }
+}
 function openPayslip(id, readOnly){
   const e = byId(id); const month = payroll.selectedMonth; const c = computePayrollRow(e, month);
   if(!c){ toast("Add "+e.name+" to this month's payroll first"); return; }
@@ -3943,8 +4042,10 @@ function openPayslip(id, readOnly){
       <div class="section-label">Payments</div>
       ${c.payments.length ? c.payments.map(p=>`<div class="calc-line"><span>${fmtDateShort(p.date)}${p.note?" · "+esc(p.note):""}</span><span class="mono">${inr(p.amount)}</span></div>`).join("") : `<div class="empty" style="padding:12px 0;">No payments recorded yet.</div>`}
       <div class="calc-line total"><span>Balance due</span><span class="mono" style="${c.balance>0?'color:var(--warn);':''}">${inr(c.balance)}</span></div>
+      <div class="section-label">Payout schedule</div>
+      ${scheduleTableHTML(c)}
     </div>
-    <div class="modal-foot">${(!readOnly && c.balance>0)?`<button class="btn primary" onclick="openRecordPayment('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-wallet"/></svg>Record payment</button>`:'<div></div>'}<button class="btn ghost" onclick="closeModal()">Close</button></div>`);
+    <div class="modal-foot">${(isHRRole(currentUser)||isFinanceAdminUser(currentUser))?`<button class="btn ghost" onclick="openEditSchedule('${e.id}')">Edit schedule</button>`:''}${(!readOnly && c.balance>0)?`<button class="btn primary" onclick="openRecordPayment('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-wallet"/></svg>Record payment</button>`:'<div></div>'}<button class="btn ghost" onclick="closeModal()">Close</button></div>`);
 }
 async function setPayrollMonth(m){
   payroll.selectedMonth=m;
@@ -4049,8 +4150,9 @@ function openRecordPayment(id){
         <div><label class="field-label">Net pay</label><div class="mono">${inr(c.net)}</div></div>
         <div><label class="field-label">Balance due</label><div class="mono">${inr(c.balance)}</div></div>
       </div>
+      ${c.schedule&&c.schedule.nextDue?`<div class="banner muted"><div>Next instalment: <b>${inr(c.schedule.nextDue.amount)}</b> due ${fmtDateShort(c.schedule.nextDue.dueDate)}${c.schedule.nextDue.status==='Overdue'?' (overdue)':''} — paying it marks that instalment Paid with the date below.</div></div>`:''}
       <div class="field-row">
-        <div><label class="field-label">Amount paying now (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${c.balance}" step="1" required value="${c.balance}"></div>
+        <div><label class="field-label">Amount paying now (₹)</label><input class="field-input" type="number" name="amount" min="1" max="${c.balance}" step="1" required value="${(c.schedule&&c.schedule.nextDue&&c.schedule.nextDue.amount>0)?Math.min(c.balance,c.schedule.nextDue.amount):c.balance}"></div>
         <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${TODAY}" required></div>
       </div>
       <div><label class="field-label">Note</label><input class="field-input" name="note" placeholder="e.g. Partial — fund shortage, rest next cycle"></div>

@@ -168,7 +168,23 @@ export const policyUpdateSchema = z.object({
   carryForwardMaxDays: z.number().int().min(0).max(31).optional(),
   generalNotes: z.string().optional(),
   leavePayNotes: z.string().optional(),
+  // Default payout split for a payroll month: 1-4 rows of {percent, day} (day 0 = last day), summing to 100.
+  payrollDefaultSplit: z
+    .array(z.object({ percent: z.number().int().min(1).max(100), day: z.number().int().min(0).max(31) }))
+    .min(1).max(4)
+    .refine((rows) => rows.reduce((s, r) => s + r.percent, 0) === 100, { message: "Percentages must add up to 100" })
+    .refine((rows) => new Set(rows.map((r) => r.day)).size === rows.length, { message: "Each payment needs a different day" })
+    .optional(),
 });
+
+// Per-employee-month override of the payout plan. Amounts must sum to that month's net pay (checked in the
+// controller, which knows the net) — either an explicit list, or reset to the company default split.
+export const payrollScheduleSchema = z.union([
+  z.object({ useDefault: z.literal(true) }),
+  z.object({
+    instalments: z.array(z.object({ amount: z.number().positive(), dueDate: dateStr })).min(1).max(12),
+  }),
+]);
 
 export const holidayCreateSchema = z.object({
   date: dateStr,
