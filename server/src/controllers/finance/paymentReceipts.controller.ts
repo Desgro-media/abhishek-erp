@@ -5,6 +5,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { SALES_COMMISSION_RATE } from "../../services/finance/commission";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
+import { isFinanceAdmin } from "../../middleware/financeAccess";
 import { approvedReceiptUpdateSchema } from "../../validation/finance.schemas";
 
 // Accounts > Payment Receipts > Approved: every payment Finance has confirmed, newest first — whether
@@ -15,13 +16,90 @@ import { approvedReceiptUpdateSchema } from "../../validation/finance.schemas";
 // The pending tables link by plain id rather than a Prisma relation, and `recordedBy` is a bare user
 // id, so those are resolved with a handful of batched lookups keyed on this page's payment ids
 // (not per row), then stitched together here.
+// Month key in India time, so a payment approved just after midnight on the 1st lands in the month
+// the user sees on screen (not the previous UTC month).
+const monthKey = (d: Date) => new Date(d.getTime() + 5.5 * 3600_000).toISOString().slice(0, 7);
+export const DIRECT_FILTER = "__direct__";
+
+// Filter semantics, shared by the Pending and Approved views so both agree:
+//   month       — Approved: the approval date (approvedAt, falling back to the payment row's createdAt
+//                 for Direct ones). Pending: the date Sales pushed it (createdAt).
+//   salesPerson — the pushed-by name (invoice: salesPerson, quote: its creator). DIRECT_FILTER matches
+//                 Finance-recorded payments with no Sales person; those only show under "All" or Direct.
+// A Sales caller is always pinned to their own name; Finance/Admin may pick anyone.
+function readFilters(req: Parameters<RequestHandler>[0]) {
+  const admin = isFinanceAdmin(req.user?.roles);
+  const m = typeof req.query.month === "string" && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : null;
+  const sp = typeof req.query.salesPerson === "string" && req.query.salesPerson ? req.query.salesPerson : null;
+  return { admin, month: m, salesPerson: admin ? sp : req.user!.name };
+}
+type Filters = ReturnType<typeof readFilters>;
+
+// Light scan of every pending + approved receipt (ids, dates, amounts, pusher only), filtered in memory.
+// The pending rows link to their payment by plain id, so this is the one place the two are joined.
+async function scanReceipts(f: Filters) {
+  const [payments, ipRows, qpRows] = await Promise.all([
+    prisma.invoicePayment.findMany({ select: { id: true, amount: true, createdAt: true } }),
+    prisma.invoicePendingPayment.findMany({ select: { id: true, amount: true, approved: true, approvedAt: true, invoicePayment: true, salesPerson: true, createdAt: true } }),
+    prisma.quotePendingPayment.findMany({ select: { id: true, amount: true, approved: true, approvedAt: true, invoicePayment: true, createdAt: true, quote: { select: { createdBy: true } } } }),
+  ]);
+  const pusherByPayment = new Map<string, { sp: string | null; at: Date | null }>();
+  for (const x of ipRows) if (x.invoicePayment) pusherByPayment.set(x.invoicePayment, { sp: x.salesPerson, at: x.approvedAt });
+  for (const x of qpRows) if (x.invoicePayment) pusherByPayment.set(x.invoicePayment, { sp: x.quote.createdBy, at: x.approvedAt });
+
+  const spOk = (sp: string | null) => !f.salesPerson || (f.salesPerson === DIRECT_FILTER ? !sp : sp === f.salesPerson);
+  const monthOk = (d: Date) => !f.month || monthKey(d) === f.month;
+
+  const approved = payments.map((p) => {
+    const link = pusherByPayment.get(p.id);
+    return { id: p.id, amount: Number(p.amount), sp: link?.sp ?? null, date: link?.at ?? p.createdAt };
+  });
+  const pending = [
+    ...ipRows.filter((x) => !x.approved).map((x) => ({ id: x.id, amount: Number(x.amount), sp: x.salesPerson, date: x.createdAt })),
+    ...qpRows.filter((x) => !x.approved).map((x) => ({ id: x.id, amount: Number(x.amount), sp: x.quote.createdBy, date: x.createdAt })),
+  ];
+  const scoped = (r: { sp: string | null; date: Date }) => spOk(r.sp) && monthOk(r.date);
+  // Sales callers never see Direct payments' months/people in the dropdowns either.
+  const visible = f.admin ? [...approved, ...pending] : [...approved, ...pending].filter((r) => r.sp === f.salesPerson);
+  return {
+    approved: approved.filter(scoped),
+    pending: pending.filter(scoped),
+    months: [...new Set(visible.map((r) => monthKey(r.date)))].sort().reverse(),
+    salesPersons: [...new Set(visible.map((r) => r.sp).filter((x): x is string => !!x))].sort((a, b) => a.localeCompare(b)),
+    hasDirect: approved.some((r) => !r.sp),
+  };
+}
+const sum = (rows: { amount: number }[]) => Math.round(rows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+
+// Counts / totals / dropdown options for the Payment Receipts page, all from the records (not the rows
+// the browser happens to be showing). `pendingIds` lets the client show exactly the pending rows that
+// match, since it holds the pending list itself.
+export const receiptsSummary: RequestHandler = asyncHandler(async (req, res) => {
+  const f = readFilters(req);
+  const r = await scanReceipts(f);
+  const commissions = r.approved.length
+    ? await prisma.payable.aggregate({ _sum: { amount: true }, where: { category: "COMMISSION", sourcePaymentId: { in: r.approved.map((x) => x.id) } } })
+    : null;
+  res.json({
+    filters: { month: f.month, salesPerson: f.salesPerson },
+    months: r.months, salesPersons: r.salesPersons, hasDirect: f.admin && r.hasDirect,
+    pending: { count: r.pending.length, amount: sum(r.pending), ids: r.pending.map((x) => x.id) },
+    approved: { count: r.approved.length, amount: sum(r.approved), commission: Number(commissions?._sum.amount ?? 0) },
+  });
+});
+
 export const listApprovedReceipts: RequestHandler = asyncHandler(async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
 
+  const f = readFilters(req);
+  const matched = f.month || f.salesPerson ? new Set((await scanReceipts(f)).approved.map((x) => x.id)) : null;
+  const where: Prisma.InvoicePaymentWhereInput = matched ? { id: { in: [...matched] } } : {};
+
   const [total, payments] = await Promise.all([
-    prisma.invoicePayment.count(),
+    prisma.invoicePayment.count({ where }),
     prisma.invoicePayment.findMany({
+      where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       skip: offset,
       take: limit,

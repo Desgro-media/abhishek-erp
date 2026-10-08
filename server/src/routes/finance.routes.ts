@@ -39,6 +39,7 @@ router.delete("/invoices/:id/pending-payments/:pendingId", requireFinanceAdminOr
 router.post("/invoices/:id/pending-payments/:pendingId/approve", requireFinanceAdmin, invoices.approvePendingPayment);
 
 // Payment Receipts history — every confirmed payment (Sales-pushed or Direct), Finance/Admin only.
+router.get("/payment-receipts/summary", requireFinanceAdminOrSales, paymentReceipts.receiptsSummary);
 router.get("/payment-receipts/approved", requireFinanceAdmin, paymentReceipts.listApprovedReceipts);
 router.patch("/payment-receipts/approved/:id", requireFinanceAdmin, paymentReceipts.updateApprovedReceipt);
 router.delete("/payment-receipts/approved/:id", requireFinanceAdmin, paymentReceipts.deleteApprovedReceipt);
