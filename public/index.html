@@ -197,6 +197,11 @@
   .stack{display:flex;flex-direction:column;gap:16px;}
 
   .table-wrap{overflow-x:auto;}
+  /* Commission by sales person: header and every row share this one column definition. */
+  .com-grid,.report-line.com-grid{display:grid;grid-template-columns:minmax(170px,2fr) repeat(4,minmax(105px,1fr)) minmax(120px,1fr) minmax(220px,1.5fr);column-gap:12px;align-items:center;min-width:980px;padding:10px 14px;}
+  .com-grid .m{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .com-grid .name{min-width:0;overflow-wrap:anywhere;}
+  .com-head{font-size:var(--fs-xs);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700;white-space:nowrap;}
   table.data th{text-align:left;font-size:var(--fs-xs);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:700;padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap;}
   table.data td{padding:11px 14px;border-bottom:1px solid var(--line);font-size:13.5px;vertical-align:middle;}
   table.data tr:last-child td{border-bottom:none;}

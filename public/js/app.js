@@ -5614,17 +5614,17 @@ function acctCommissions(){
   </div>`:''}
   <div class="panel">
     <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Commission by sales person</h3><div class="sub">Expand a name to see every entry and record a payment — partial payments are fine, or settle everything at once${filtered?` · showing ${commissionsMonthFilter==='Today'?'today':monthLabel(commissionsMonthFilter)}, plus what was carried over from before`:''}</div></div><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setCommissionsMonthFilter(this.value)">${dateFilterOptions(commissionSummary.months.map(m=>m+'-01').concat(TODAY), commissionsMonthFilter)}</select></div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Sales Person</th><th class="num">Previous balance</th><th class="num">Earned</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
+    <div class="table-wrap"><table class="data" style="min-width:980px;"><thead><tr><th colspan="7" style="padding:0;"><div class="com-grid com-head"><span>Sales Person</span><span class="m">Previous balance</span><span class="m">Earned</span><span class="m">Paid</span><span class="m">Balance</span><span>Status</span><span>Action</span></div></th></tr></thead>
       <tbody>${rows.length?rows.map((r,i)=>{ const owed = r.totalOutstanding; const statusLabel = owed<=0.005?'Settled':(r.paid>0?'Partially Paid':'Outstanding'); return `<tr><td colspan="7" style="padding:0;border-bottom:1px solid var(--line);">
         <details class="report-details" ${openCommissionPeople.has(r.salesPerson)?'open':''} ontoggle="onCommissionToggle(this,${i})">
-          <summary class="report-line" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr 2fr;align-items:center;padding:10px 14px;">
+          <summary class="report-line com-grid">
             <span class="name" style="font-weight:700;color:var(--ink);"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(r.salesPerson)}</span>
-            <span class="num mono ${r.previousBalance>0?'warn':'muted'}" title="Unpaid from entries due before this period">${r.previousBalance>0?inr(r.previousBalance):'—'}</span>
-            <span class="num mono">${inr(r.earned)}</span>
-            <span class="num mono muted">${r.paid>0?inr(r.paid):'—'}</span>
-            <span class="num mono" style="${r.balance>0?'color:var(--neg);font-weight:700;':''}">${r.balance>0?inr(r.balance):'—'}</span>
+            <span class="m mono ${r.previousBalance>0?'warn':'muted'}" title="Unpaid from entries due before this period">${r.previousBalance>0?inr(r.previousBalance):'—'}</span>
+            <span class="m mono">${inr(r.earned)}</span>
+            <span class="m mono muted">${r.paid>0?inr(r.paid):'—'}</span>
+            <span class="m mono" style="${r.balance>0?'color:var(--neg);font-weight:700;':''}">${r.balance>0?inr(r.balance):'—'}</span>
             <span>${pill(statusLabel, owed<=0.005?'pos':'warn')}</span>
-            <span style="display:flex;justify-content:flex-end;">${owed>0.005?`<button class="btn btn-sm primary" onclick="event.preventDefault();event.stopPropagation();openSettleCommission(${i})" title="Pay every outstanding entry for ${esc(r.salesPerson)} across ALL months, or an amount applied oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle all · ${inr(owed)} (all months)</button>`:''}</span>
+            <span style="display:flex;justify-content:flex-start;">${owed>0.005?`<button class="btn btn-sm primary" style="white-space:nowrap;" onclick="event.preventDefault();event.stopPropagation();openSettleCommission(${i})" title="Pay every outstanding entry for ${esc(r.salesPerson)} across ALL months, or an amount applied oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle all · ${inr(owed)} (all months)</button>`:''}</span>
           </summary>
           <div class="report-detail" style="padding:12px 14px;">${commissionDetailHTML(i, r)}</div>
         </details>
