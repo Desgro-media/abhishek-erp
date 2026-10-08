@@ -75,7 +75,7 @@ async function invoice(label: string, amount: number) {
 async function pushedAndApproved(label: string, invoiceTotal: number, amount: number) {
   const inv = await invoice(label, invoiceTotal);
   const p = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments`, tok.sales, { amount, paymentDate: today });
-  const ok = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bankA });
+  const ok = await call("POST", `/finance/invoices/${inv.invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bankA, date: new Date().toISOString().slice(0, 10) });
   assert.equal(ok.status, 201);
   return { ...inv, pendingId: p.body.pending.id as string, paymentId: ok.body.payment.id as string, commissionId: ok.body.commission.id as string };
 }
@@ -185,7 +185,7 @@ test("delete a Sales-pushed payment: reversed everywhere and back in Pending; re
   assert.ok(inv.pendingPayments.some((p: any) => p.id === x.pendingId && p.approved === false), "shows in the Pending queue again");
 
   // …and it can be approved again cleanly, creating a fresh payment + commission.
-  const again = await call("POST", `/finance/invoices/${x.invoiceId}/pending-payments/${x.pendingId}/approve`, tok.finance, { accountId: bankA });
+  const again = await call("POST", `/finance/invoices/${x.invoiceId}/pending-payments/${x.pendingId}/approve`, tok.finance, { accountId: bankA, date: new Date().toISOString().slice(0, 10) });
   assert.equal(again.status, 201);
   assert.equal(await balance(bankA), a0);
   assert.deepEqual(await commissionsOf(again.body.payment.id), [4_000]);
@@ -197,7 +197,7 @@ test("delete a quote-origin payment: the quote goes back to 'Submitted to Financ
   const q = (await call("POST", "/crm/quotes", tok.sales, { leadId: lead.id, title: `qo ${run}`, items: [{ dept: "Web Development", amount: 30_000 }] })).body.quote;
   await call("POST", `/crm/quotes/${q.id}/send`, tok.sales);
   const pend = await call("POST", `/crm/quotes/${q.id}/pending-payments`, tok.sales, { amount: 30_000, paymentDate: today });
-  const ok = await call("POST", `/crm/quotes/${q.id}/pending-payments/${pend.body.pending.id}/approve`, tok.finance, { accountId: bankA });
+  const ok = await call("POST", `/crm/quotes/${q.id}/pending-payments/${pend.body.pending.id}/approve`, tok.finance, { accountId: bankA, date: new Date().toISOString().slice(0, 10) });
   assert.equal((await prisma.quote.findUniqueOrThrow({ where: { id: q.id } })).status, "INVOICED");
 
   assert.equal((await del(ok.body.payment.id)).status, 204);

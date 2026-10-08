@@ -35,7 +35,9 @@ export const invoicePendingPaymentSchema = z.object({
 
 export const invoicePendingApprovalSchema = z.object({
   accountId: z.string().uuid(),
-  date: dateStr.optional(),
+  // The date the client's money was received. Finance sets/confirms it here — it decides which month
+  // the sale, target, bonus and commission count in — so it is required, not defaulted to Sales' claim.
+  date: dateStr,
   commissionRate: z.number().min(0).max(100).optional(),
 });
 

@@ -5687,7 +5687,7 @@ function openApproveInvoicePayment(id, idx){
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(clientById(inv.clientId).name)} · this payment <b>${inr(payment.amount)}</b> · Sales reported collected ${fmtDateShort(payment.date)}${payment.note?' — '+esc(payment.note):''}</div></div>
       <div class="field-row">
         <div><label class="field-label">Credited to account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
-        <div><label class="field-label">Date confirmed</label><input class="field-input" type="date" name="date" value="${payment.date||TODAY}" required></div>
+        <div><label class="field-label">Date received</label><input class="field-input" type="date" name="date" value="${payment.date||TODAY}" max="${TODAY}" required><div class="sub" style="margin-top:4px;">The day the money reached the account — decides which month the sale, bonus and commission count in.</div></div>
       </div>
       ${payment.salesPerson?`<div class="field-row">
         <div><label class="field-label">Salesperson</label><input class="field-input" value="${esc(payment.salesPerson)}" disabled></div>
@@ -5980,7 +5980,7 @@ function openApproveQuotePayment(quoteId, idx){
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(party.name)}${party.kind==='lead'?' — new lead, becomes a client on approval':''} · this payment <b>${inr(payment.amount)}</b> of ${inr(total)} total · Sales reported paid ${fmtDateShort(payment.date)}${payment.note?' — '+esc(payment.note):''}</div></div>
       <div class="field-row">
         <div><label class="field-label">Credited to account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
-        <div><label class="field-label">Date confirmed</label><input class="field-input" type="date" name="date" value="${payment.date||TODAY}" required></div>
+        <div><label class="field-label">Date received</label><input class="field-input" type="date" name="date" value="${payment.date||TODAY}" max="${TODAY}" required><div class="sub" style="margin-top:4px;">The day the money reached the account — decides which month the sale, bonus and commission count in.</div></div>
       </div>
       ${q.createdBy?`<div class="field-row">
         <div><label class="field-label">Salesperson</label><input class="field-input" value="${esc(q.createdBy)}" disabled></div>

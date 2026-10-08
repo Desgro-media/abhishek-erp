@@ -130,7 +130,7 @@ test("invoices: Finance/Admin edit and delete; Sales can't; a paid invoice is pr
 
   // A payment Finance has approved makes it undeletable.
   const p = await call("POST", `/finance/invoices/${invoiceId}/pending-payments`, tok.a, { amount: 1_000, paymentDate: today });
-  assert.equal((await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bankId })).status, 201);
+  assert.equal((await call("POST", `/finance/invoices/${invoiceId}/pending-payments/${p.body.pending.id}/approve`, tok.finance, { accountId: bankId, date: new Date().toISOString().slice(0, 10) })).status, 201);
   assert.equal((await call("DELETE", `/finance/invoices/${invoiceId}`, tok.finance)).status, 409);
 
   // A different, unpaid invoice: deleting it sends its quote back to Sent so it can be converted again.
