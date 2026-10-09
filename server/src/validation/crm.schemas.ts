@@ -121,3 +121,20 @@ export const leadLostSchema = z.object({
   reason: z.enum(LOST_REASONS),
   note: z.string().trim().max(500).optional().transform((v) => (v ? v : null)),
 });
+
+// ---- Lead payments, convert, threshold ----
+export const leadPaymentSchema = z.object({
+  amount: z.number().positive().max(100_000_000).refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, "At most 2 decimal places"),
+  paymentDate: dateStr,
+  mode: z.enum(["BANK_TRANSFER", "UPI", "CASH", "CHEQUE"]),
+  note: z.string().trim().max(500).optional().transform((v) => (v ? v : null)),
+});
+export const leadConvertSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  industry: z.string().trim().max(100).optional(),
+  city: z.string().trim().max(100).optional(),
+  services: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+  billingType: z.enum(["PREPAID", "POSTPAID"]).optional(),
+  onboardedAt: dateStr.optional(),
+});
+export const leadSettingsSchema = z.object({ conversionThreshold: z.number().positive().max(100_000_000) });
