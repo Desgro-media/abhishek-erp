@@ -471,6 +471,8 @@ model SalesPolicy {
   id            Int      @id @default(1)
   monthlyTarget Decimal  @default(500000) @db.Decimal(12, 2) @map("monthly_target")
   bonusRate     Decimal  @default(0.10) @db.Decimal(5, 4) @map("bonus_rate")
+  // A lead whose recorded payments reach this is converted to a client automatically. Admin-only to change.
+  leadConversionThreshold Decimal @default(5000) @db.Decimal(12, 2) @map("lead_conversion_threshold")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   @@map("sales_policy")
@@ -658,6 +660,9 @@ model InvoicePendingPayment {
   approvedAt     DateTime? @map("approved_at")
   invoicePayment String?   @map("invoice_payment_id") // set once approved, points at the resulting InvoicePayment.id
   createdAt      DateTime  @default(now()) @map("created_at")
+
+  // Set when this entry is an advance a lead paid before it became a client — see LeadPayment.
+  leadPayment LeadPayment?
 
   @@index([invoiceId])
   @@map("invoice_pending_payments")
@@ -1012,6 +1017,12 @@ model Client {
   quotes   Quote[]
   tasks    ClientTask[]
 
+  adAccess      ClientAdAccess?
+  campaignBrief ClientCampaignBrief?
+  brandAssets   ClientBrandAsset[]
+  meetings      ClientMeeting[]
+  adMetrics     ClientAdMetric[]
+
   @@map("clients")
 }
 
@@ -1020,6 +1031,16 @@ enum LeadStatus {
   CONTACTED
   QUALIFIED
   CONVERTED
+  LOST
+}
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  MEETING
+  PROPOSAL_SENT
+  NEGOTIATION
+  WON
   LOST
 }
 
@@ -1042,7 +1063,19 @@ model Lead {
   convertedClient   Client?    @relation(fields: [convertedClientId], references: [id])
   createdAt         DateTime   @default(now()) @map("created_at")
 
-  quotes Quote[]
+  // Pipeline stage (the Leads board). `status` above is the older coarse field and is kept in step with
+  // this one (see services/leadStage.ts) because the Dashboard reads it. Won is only ever reached by a
+  // real conversion to a client; Lost carries a reason.
+  stage          LeadStage @default(NEW)
+  lostReason     String?   @map("lost_reason")
+  lostNote       String?   @map("lost_note")
+  stageChangedAt DateTime? @map("stage_changed_at")
+  // Who last set the stage: a user's name, "migration" (set by the one-off backfill of old leads), or
+  // null (never set — default New). The backfill only ever touches null rows and can undo only its own.
+  stageSetBy     String?   @map("stage_set_by")
+
+  quotes   Quote[]
+  payments LeadPayment[]
 
   @@map("leads")
 }
@@ -1224,6 +1257,83 @@ model MetaAdsCampaign {
   @@map("meta_ads_campaigns")
 }
 
+// ---- Client collaboration data (shown on the client detail page) -------------------------------
+// Ad account access, brand assets and the campaign brief are what DesGro needs from a client to run
+// their ads; the meetings log is DesGro's own check-in notes. Everything deletes with the client,
+// like its tasks do. No passwords are ever stored here — access is granted on the ad platform itself.
+
+enum AdAccessStatus {
+  GRANTED
+  PENDING
+  REVOKED
+}
+
+// One row per client.
+model ClientAdAccess {
+  id          String         @id @default(uuid())
+  clientId    String         @unique @map("client_id")
+  client      Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  platform    String
+  accountId   String?        @map("account_id")
+  accessEmail String?        @map("access_email")
+  status      AdAccessStatus @default(PENDING)
+  notes       String?
+  updatedBy   String         @map("updated_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("client_ad_access")
+}
+
+// One row per client. Budget is free text on purpose ("AED 15,000 / month") — clients budget in
+// different currencies and cadences.
+model ClientCampaignBrief {
+  id        String  @id @default(uuid())
+  clientId  String  @unique @map("client_id")
+  client    Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  objective String?
+  audience  String?
+  budget    String?
+  updatedBy String  @map("updated_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("client_campaign_briefs")
+}
+
+// A link to where the asset lives (Drive etc.) — no file is stored here.
+model ClientBrandAsset {
+  id       String  @id @default(uuid())
+  clientId String  @map("client_id")
+  client   Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name     String
+  link     String?
+  notes    String?
+  addedBy  String  @map("added_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId])
+  @@map("client_brand_assets")
+}
+
+model ClientMeeting {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  attendees String
+  notes     String
+  loggedBy  String   @map("logged_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, date])
+  @@map("client_meetings")
+}
+
 // DesGro Media's OWN daily Meta ad numbers (our lead-gen spend), one row per day.
 // Separate from MetaAdsCampaign (campaign-level totals) and from any client's ad
 // metrics. Logging a date that already has a row updates it, so the date is unique.
@@ -1240,4 +1350,76 @@ model OwnAdMetric {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("own_ad_metrics")
+}
+
+// A Performance Marketing client's OWN daily ad numbers, typed in from what their ad platform
+// reports (we run the account for them). One row per client per day — logging a date that already
+// has a row updates it. Not DesGro's own spend (that's OwnAdMetric) and not an accounting entry.
+model ClientAdMetric {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  spend     Decimal  @db.Decimal(12, 2)
+  leads     Int
+  purchases Int
+  revenue   Decimal  @db.Decimal(12, 2)
+  loggedBy  String?  @map("logged_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, date])
+  @@map("client_ad_metrics")
+}
+
+enum LeadPaymentMode {
+  BANK_TRANSFER
+  UPI
+  CASH
+  CHEQUE
+}
+
+// Money a lead paid BEFORE it was a client (a token advance). It is only a record Sales reports — it moves
+// no money by itself: no bank entry, no revenue, no commission. It becomes real only the normal way: when
+// an invoice is created for the client this lead converted into, each unattached payment is carried onto
+// that invoice as an ordinary pending payment (InvoicePendingPayment), which Finance then approves with the
+// true received date, bank account and commission rate exactly like any other. Until then it sits "awaiting
+// invoice". If the pending entry is later deleted, this row is released (the link nulls) and waits again.
+model LeadPayment {
+  id          String          @id @default(uuid())
+  leadId      String          @map("lead_id")
+  lead        Lead            @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  amount      Decimal         @db.Decimal(12, 2)
+  // The date Sales reports the money arrived. Finance sets the real received date at approval.
+  paymentDate DateTime        @map("payment_date") @db.Date
+  mode        LeadPaymentMode
+  note        String?
+  recordedBy  String          @map("recorded_by")
+  // The lead owner when this was recorded — who earns commission once Finance approves it.
+  salesPerson String          @map("sales_person")
+
+  // Set when carried onto an invoice. @unique: one pending entry per advance, so it can never be carried twice.
+  invoicePendingPaymentId String?                @unique @map("invoice_pending_payment_id")
+  invoicePendingPayment   InvoicePendingPayment? @relation(fields: [invoicePendingPaymentId], references: [id], onDelete: SetNull)
+  carriedAt               DateTime?              @map("carried_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([leadId])
+  @@map("lead_payments")
+}
+
+// One row per day the daily "ad numbers not logged" reminder has run (date = the IST calendar date). The unique
+// date is what guarantees a reminder is sent at most once a day — even across a restart or a second instance —
+// and the earliest row marks where the reminders began, so history from before the feature is never flagged.
+model AdReminderRun {
+  id         String    @id @default(uuid())
+  runDate    DateTime  @unique @map("run_date") @db.Date
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  // { digests, sent, failed, errors[] } — what this run did.
+  summary    Json?
+
+  @@map("ad_reminder_runs")
 }

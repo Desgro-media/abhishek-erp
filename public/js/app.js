@@ -578,9 +578,220 @@ function adMetrics(c){
 const LEAD_SOURCES = ["Meta","Organic","References"];
 let marketingLeads = [];
 function mapLead(l){
-  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), convertedClientId:l.convertedClientId||null, notes:l.notes||"" };
+  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), stage:TITLECASE_FROM_API(l.stage), lostReason:l.lostReason||null, lostNote:l.lostNote||null, stageSetBy:l.stageSetBy||null, paidTotal:Number(l.paidTotal||0), convertedClientId:l.convertedClientId||null, notes:l.notes||"" };
 }
-async function loadLeads(){ marketingLeads = (await apiJson("/api/crm/leads")).leads.map(mapLead); }
+let leadConversionThreshold = 5000;
+async function loadLeads(){
+  const [d, settings] = await Promise.all([apiJson("/api/crm/leads"), apiJson("/api/crm/lead-settings").catch(()=>null)]);
+  marketingLeads = d.leads.map(mapLead);
+  if(settings) leadConversionThreshold = Number(settings.conversionThreshold);
+}
+// Pipeline stages. "Won" is only ever reached by converting the lead into a client (today: quote -> invoice),
+// never by moving a card; "Lost" needs a reason. The server enforces both.
+const LEAD_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
+const LEAD_OPEN_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation"];
+const LEAD_STAGE_KIND = {"New":"neutral","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
+const LEAD_LOST_REASONS = ["Budget","Went with a competitor","No response","Not a fit","Other"];
+let leadsView = "board";
+function setLeadsView(v){ leadsView = v; render(); }
+// A converted lead is Won no matter what; a lead the old status field already marked Lost shows as Lost even
+// before the one-off backfill has staged it.
+function leadStage(l){
+  if(l.convertedClientId) return "Won";
+  if(l.stage==="Lost" || (l.status==="Lost" && !l.stageSetBy)) return "Lost";
+  return l.stage || "New";
+}
+// Reps work their own leads; Admin / Sales Head any. (The server enforces this; the UI just hides what won't work.)
+function canWorkLead(l){
+  if(!currentUser) return false;
+  if(currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD')) return true;
+  return !!l.leadOwner && l.leadOwner===currentUser.name;
+}
+async function setLeadStage(id, stage){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) { render(); return; }
+  if(stage==="Lost"){ render(); openMarkLeadLost(id); return; }
+  try{
+    await apiJson(`/api/crm/leads/${id}/stage`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ stage: TITLECASE_TO_API(stage) }) });
+    await loadLeads();
+    toast(l.name+" moved to "+stage);
+  }catch(err){ toast(err.message || "Couldn't move lead"); }
+  render();
+}
+function openMarkLeadLost(id){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) return;
+  showModal(`
+    <div class="modal-head"><h3>Mark as lost — ${esc(l.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-lead-lost"><div class="modal-body">
+      <div><label class="field-label">Reason</label><select class="field-input" name="reason">${LEAD_LOST_REASONS.map(r=>`<option>${esc(r)}</option>`).join('')}</select></div>
+      <div><label class="field-label">Note</label><input class="field-input" name="note" maxlength="500" placeholder="Optional"></div>
+      <div class="subtext">You can move it back into the pipeline later if it comes back.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Mark lost</button></div></div>
+    </form>`);
+  document.getElementById("f-lead-lost").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    try{
+      await apiJson(`/api/crm/leads/${id}/lost`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ reason:f.get("reason"), note:f.get("note") }) });
+      await loadLeads(); toast(l.name+" marked lost"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't mark lost"); }
+  });
+}
+// ---- Lead advance payments, convert, threshold ----
+// A lead payment is only a record: it moves no money. It waits for an invoice, then becomes a pending payment on
+// it that Finance approves like any other (Accounts > Payment Receipts) — bank entry, commission and revenue
+// follow the received date Finance sets. The server enforces all of this; these screens just explain it.
+const LEAD_PAYMENT_MODES = [["BANK_TRANSFER","Bank transfer"],["UPI","UPI"],["CASH","Cash"],["CHEQUE","Cheque"]];
+const LEAD_PAYMENT_STATUS = {AWAITING_INVOICE:["Awaiting invoice","warn"], ON_INVOICE_PENDING:["With Finance","blue"], APPROVED:["Approved","pos"]};
+const isAdminUser = () => !!(currentUser && currentUser.isAdmin);
+const localToday = ()=>{ const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); };
+async function openRecordLeadPayment(id){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) return;
+  let hist = [];
+  try{ hist = (await apiJson(`/api/crm/leads/${id}/payments`)).payments; }catch(err){ toast(err.message || "Couldn't load payments"); return; }
+  const paid = hist.reduce((a,p)=>a+p.amount,0), today = localToday();
+  showModal(`
+    <div class="modal-head"><h3>Record payment — ${esc(l.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-lead-payment"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Paid so far: <b>${inr(paid)}</b>. When total payments reach <b>${inr(leadConversionThreshold)}</b> this lead becomes a client automatically. <b>This only records the payment</b> — nothing is booked until an invoice is raised and Finance approves it.</div></div>
+      ${hist.length?`<div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Mode</th><th class="num">Amount</th><th>Status</th><th></th></tr></thead><tbody>${hist.map(p=>{ const st=LEAD_PAYMENT_STATUS[p.status]; return `<tr><td class="muted">${fmtDateShort(p.paymentDate)}</td><td class="muted">${esc(p.modeLabel)}${p.note?`<div class="subtext">${esc(p.note)}</div>`:''}</td><td class="num mono">${inr(p.amount)}</td><td>${pill(st[0],st[1])}${p.invoiceNo?`<div class="subtext mono">${esc(p.invoiceNo)}</div>`:''}</td><td>${p.status==='AWAITING_INVOICE'?`<button type="button" class="btn btn-sm ghost" title="Remove this entry" onclick="deleteLeadPayment('${l.id}','${p.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`:''}
+      <div class="field-row">
+        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" min="0.01" step="0.01" name="amount" required></div>
+        <div><label class="field-label">Date received</label><input class="field-input" type="date" name="paymentDate" value="${today}" max="${today}" required></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label">Mode</label><select class="field-input" name="mode">${LEAD_PAYMENT_MODES.map(([v,t])=>`<option value="${v}">${t}</option>`).join('')}</select></div>
+        <div><label class="field-label">Note</label><input class="field-input" name="note" maxlength="500" placeholder="e.g. Token advance"></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Close</button><button type="submit" class="btn primary">Record payment</button></div></div>
+    </form>`, true);
+  document.getElementById("f-lead-payment").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    try{
+      const r = await apiJson(`/api/crm/leads/${id}/payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount:Number(f.get("amount")), paymentDate:f.get("paymentDate"), mode:f.get("mode"), note:f.get("note") }) });
+      await loadLeads(); if(r.converted) await loadClients();
+      closeModal();
+      toast(r.converted ? l.name+" has paid "+inr(r.paidTotal)+" — converted to a client automatically" : "Payment recorded · "+inr(Math.max(0,leadConversionThreshold-r.paidTotal))+" more auto-converts");
+      render();
+    }catch(err){ toast(err.message || "Couldn't record payment"); }
+  });
+}
+async function deleteLeadPayment(leadId, paymentId){
+  try{
+    await apiJson(`/api/crm/leads/${leadId}/payments/${paymentId}`, { method:"DELETE" });
+    await loadLeads(); toast("Payment entry removed"); closeModal(); render(); openRecordLeadPayment(leadId);
+  }catch(err){ toast(err.message || "Couldn't remove"); }
+}
+function openConvertLead(id){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) return;
+  const today = localToday();
+  showModal(`
+    <div class="modal-head"><h3>Convert to client — ${esc(l.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-convert-lead"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>You can convert any time, paid or not. ${l.paidTotal>0?`The <b>${inr(l.paidTotal)}</b> they've paid so far goes onto their first invoice for Finance to approve.`:''} If a client with this name already exists, the lead is linked to them instead of creating a duplicate.</div></div>
+      <div><label class="field-label">Client name</label><input class="field-input" name="name" maxlength="200" required value="${esc(l.name)}"></div>
+      <div class="field-row">
+        <div><label class="field-label">Industry</label><input class="field-input" name="industry" maxlength="100" placeholder="e.g. FMCG"></div>
+        <div><label class="field-label">City</label><input class="field-input" name="city" maxlength="100" placeholder="e.g. Kozhikode, India"></div>
+      </div>
+      <div><label class="field-label">Services</label><div class="check-row">${SERVICE_DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="services" value="${esc(d)}" ${d===l.serviceInterested?'checked':''}>${esc(d)}</label>`).join('')}</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Billing</label><select class="field-input" name="billingType"><option value="PREPAID">Prepaid — amount agreed up front</option><option value="POSTPAID">Postpaid — finalized once work is complete</option></select></div>
+        <div><label class="field-label">Onboarded</label><input class="field-input" type="date" name="onboardedAt" value="${today}" max="${today}" required></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Convert to client</button></div></div>
+    </form>`, true);
+  document.getElementById("f-convert-lead").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    try{
+      const r = await apiJson(`/api/crm/leads/${id}/convert`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name:f.get("name"), industry:f.get("industry"), city:f.get("city"), services:f.getAll("services"), billingType:f.get("billingType"), onboardedAt:f.get("onboardedAt") }) });
+      await Promise.all([loadLeads(), loadClients()]);
+      closeModal(); toast(l.name+(r.created?" converted to a new client":" linked to an existing client")); render();
+    }catch(err){ toast(err.message || "Couldn't convert"); }
+  });
+}
+function openLeadThresholdSetting(){
+  if(!isAdminUser()) return;
+  showModal(`
+    <div class="modal-head"><h3>Auto-convert threshold</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-lead-threshold"><div class="modal-body">
+      <div class="field-label">Convert a lead to a client once it has paid (₹)</div>
+      <input class="field-input" type="number" min="1" step="1" name="threshold" required value="${leadConversionThreshold}">
+      <div class="subtext" id="threshold-hint"></div>
+      <div class="subtext">Lowering it converts any lead that has already paid at least the new amount. Only Admin can change this; every change is logged.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  const f = document.getElementById("f-lead-threshold");
+  const hint = ()=>{ const v=Number(f.threshold.value); const n = v>0 ? marketingLeads.filter(l=>!l.convertedClientId && l.paidTotal>0 && l.paidTotal>=v).length : 0; document.getElementById("threshold-hint").textContent = n ? `${n} lead${n===1?'':'s'} already paid this much and will convert now.` : ''; };
+  f.threshold.addEventListener("input", hint); hint();
+  f.addEventListener("submit", async e=>{
+    e.preventDefault();
+    try{
+      const r = await apiJson("/api/crm/lead-settings", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ conversionThreshold:Number(f.threshold.value) }) });
+      await Promise.all([loadLeads(), loadClients()]);
+      closeModal(); toast("Threshold set to "+inr(r.conversionThreshold)+(r.converted.length?` · ${r.converted.length} lead${r.converted.length===1?'':'s'} converted`:'')); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
+}
+// What a client's lead paid before becoming a client, and where each advance is now (client detail page).
+let clientLeadAdvances = {};
+async function loadClientLeadAdvances(id){
+  try{ clientLeadAdvances[id] = await apiJson(`/api/crm/clients/${id}/lead-advances`); }catch(err){ clientLeadAdvances[id] = null; }
+  if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
+}
+function leadAdvanceBannerHTML(c){
+  const d = clientLeadAdvances[c.id];
+  if(!d || !d.payments.length) return '';
+  const t = d.totals, parts = [];
+  if(t.awaitingInvoice>0) parts.push(`<b>${inr(t.awaitingInvoice)}</b> waiting for their next invoice`);
+  if(t.onInvoicePending>0) parts.push(`<b>${inr(t.onInvoicePending)}</b> with Finance for approval (Accounts → Payment Receipts)`);
+  if(t.approved>0) parts.push(`<b>${inr(t.approved)}</b> approved`);
+  return `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-coins"/></svg><div><b>Advance paid while they were a lead:</b> ${parts.join(' · ')}.</div></div>`;
+}
+// Finance: advances leads have paid that haven't reached the books yet, so none is forgotten. Read-only.
+let leadAdvances = null;
+async function loadLeadAdvances(){ leadAdvances = await apiJson("/api/finance/lead-advances"); }
+function leadAdvancesPanelHTML(){
+  const rows = leadAdvances ? leadAdvances.advances : [];
+  if(!rows.length) return '';
+  const total = rows.reduce((a,r)=>a+r.amount,0), old = rows.filter(r=>r.olderThanApprovalWindow).length;
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Lead advances not yet on the books</h3><div class="sub">Money leads paid before becoming clients — ${rows.length} entr${rows.length===1?'y':'ies'}, ${inr(total)}. Nothing is booked until an invoice exists and you approve it above.</div></div>${old?pill(old+' older than '+leadAdvances.maxBackdateDays+' days','warn'):''}</div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Lead / client</th><th class="num">Amount</th><th>Reported</th><th>Mode</th><th>Sales person</th><th>Where it is</th></tr></thead>
+      <tbody>${rows.map(r=>{ const st=LEAD_PAYMENT_STATUS[r.status]; return `<tr><td><div style="font-weight:700;font-size:13px;">${esc(r.lead.name)}</div><div class="subtext">${r.clientId?`Client: ${clientLink(r.clientId, r.clientName||'client')}`:'Not a client yet'}</div></td><td class="num mono">${inr(r.amount)}</td><td class="muted">${fmtDateShort(r.reportedDate)}${r.olderThanApprovalWindow?`<div class="subtext" style="color:var(--warn);">${r.ageDays} days old</div>`:''}</td><td class="muted">${esc(r.mode)}</td><td class="muted">${esc(r.salesPerson)}</td><td>${pill(st[0],st[1])}${r.invoiceNo?`<div class="subtext mono">${esc(r.invoiceNo)}</div>`:''}</td></tr>`; }).join('')}</tbody>
+    </table></div>
+  </div>`;
+}
+function goToClient(id){ setSub('clients','all'); openClientDetail(id); }
+// Stage control: a dropdown for leads you can work, a plain pill otherwise (Won/Lost-by-someone-else, other reps' leads).
+function leadStageControl(l){
+  const stage = leadStage(l);
+  if(l.convertedClientId || !canWorkLead(l)) return pill(stage, LEAD_STAGE_KIND[stage]);
+  const opts = (stage==='Lost' ? ["Lost"] : []).concat(LEAD_OPEN_STAGES, stage==='Lost' ? [] : ["Lost"]);
+  return `<select class="select-sm" onchange="setLeadStage('${l.id}', this.value)" title="Move along the pipeline">${opts.map(o=>`<option value="${o}" ${o===stage?'selected':''}>${o==='Lost'&&stage!=='Lost'?'Lost…':o}</option>`).join('')}</select>`;
+}
+function leadCardHTML(l){
+  const stage = leadStage(l), claimable = !l.leadOwner && currentUser && isSalesRole(currentUser);
+  return `
+  <div class="card" style="cursor:default;">
+    <div class="card-title">${esc(l.name)}</div>
+    <div class="card-meta"><span class="tag type">${esc(l.serviceInterested)}</span><span class="tag">${esc(l.source)}</span></div>
+    ${l.phone?`<div class="subtext mono"><a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a></div>`:''}
+    ${stage==='Lost' && l.lostReason ? `<div class="subtext">Lost — ${esc(l.lostReason)}${l.lostNote?': '+esc(l.lostNote):''}</div>` : ''}
+    <div class="card-foot"><span class="assignee">${l.leadOwner?`<span class="mini-avatar sm">${initials(l.leadOwner)}</span>${esc(l.leadOwner)}`:pill('Open','warn')}</span><span class="due">${fmtDateShort(l.createdDate)}</span></div>
+    ${l.paidTotal>0 ? `<div style="font-size:11.5px;color:var(--ink-soft);"><b class="mono" style="color:var(--ink);">${inr(l.paidTotal)}</b> paid${l.convertedClientId?'':` · <span class="faint">${inr(Math.max(0,leadConversionThreshold-l.paidTotal))} more auto-converts</span>`}</div>` : ''}
+    ${(!l.convertedClientId && canWorkLead(l)) ? `<div class="card-move">${leadStageControl(l)}<button type="button" class="card-edit" title="Edit lead" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>
+    <div style="display:flex;gap:6px;">${stage!=='Lost'?`<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openRecordLeadPayment('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Payment</button>`:''}<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openConvertLead('${l.id}')">Convert</button></div>` : ''}
+    ${l.convertedClientId ? `<button type="button" class="btn btn-sm ghost" style="justify-content:center;" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : ''}
+    ${claimable ? `<button type="button" class="btn btn-sm primary" style="justify-content:center;" onclick="assignLeadToMe('${l.id}')">Assign to me</button>` : ''}
+  </div>`;
+}
 
 /* ===================== QUOTES =====================
    Sales lifecycle: Sales creates a quote for an existing client OR a lead (Draft), possibly quoting
@@ -1770,7 +1981,7 @@ const TAB_REFRESH = {
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
-  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():loadReceiptsSummary()],
+  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():loadReceiptsSummary(), ()=>isFinanceAdminUser(currentUser)?loadLeadAdvances().catch(()=>{}):null],
   "accounts/overview":[()=>isFinanceAdminUser(currentUser)?refreshFinanceReports():null],
   "accounts/commissions":[()=>isFinanceAdminUser(currentUser)?loadCommissionSummary():null],
 };
@@ -4418,8 +4629,162 @@ async function restoreClient(id){
   }catch(err){ toast(err.message || "Couldn't restore client"); }
 }
 // Mirrors deleteClient() server-side: only Admin / Sales Head may delete (a Sales rep can still edit).
+// ---- Client collaboration data: brand assets, ad account access, campaign brief, meetings ----
+// Loaded per client when its page opens (GET /api/crm/clients/:id/collab) and cached here; every save
+// reloads it. The server scopes and validates everything — these helpers only draw and submit.
+let clientCollab = {};
+const AD_ACCESS_STATUSES = ["Granted","Pending","Revoked"];
+function isPerformanceMarketingClient(c){ return !!(c && c.services && c.services.includes("Performance Marketing")); }
+async function loadClientCollab(id){
+  try{
+    clientCollab[id] = await apiJson(`/api/crm/clients/${id}/collab`);
+    if(isPerformanceMarketingClient(clientById(id))) clientCollab[id].adMetrics = (await apiJson(`/api/crm/clients/${id}/ad-metrics`)).metrics;
+  }catch(err){ clientCollab[id] = { error: err.message || "Couldn't load" }; }
+  // Redraw only if the user is still looking at this client's page.
+  if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
+}
+const collabHead = (title, count, btn)=>`<div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+    <div>${title}${count!=null?`<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;"> · ${count}</span>`:''}</div>${btn||''}</div>`;
+const collabBtn = (onclick, icon, label)=>`<button class="btn btn-sm ghost" onclick="${onclick}"><svg class="icon" style="width:12px;height:12px"><use href="#${icon}"/></svg>${label}</button>`;
+// Only http(s) links become clickable (the server enforces the same rule on save).
+const safeHref = u => /^https?:\/\//i.test(u||'') ? esc(u) : null;
+function clientCollabHTML(c){
+  const d = clientCollab[c.id];
+  if(!d) return collabHead('Client details') + `<div class="empty">Loading…</div>`;
+  if(d.error) return collabHead('Client details') + `<div class="empty">${esc(d.error)}</div>`;
+  return brandAssetsSectionHTML(c, d) + (isPerformanceMarketingClient(c) ? adPerformanceSectionHTML(c, d) + adAccessSectionHTML(c, d) + campaignBriefSectionHTML(c, d) : '') + meetingsSectionHTML(c, d);
+}
+function brandAssetsSectionHTML(c, d){
+  const assets = d.brandAssets || [];
+  return collabHead('Brand Assets', assets.length, collabBtn(`openAddBrandAsset('${c.id}')`,'i-plus','Add asset')) +
+  (assets.length ? `<div style="display:flex;flex-direction:column;gap:6px;">${assets.map(a=>{ const href = safeHref(a.link); return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;font-size:12.5px;">
+      <span style="overflow:hidden;">
+        ${href?`<a href="${href}" target="_blank" rel="noopener noreferrer" style="font-weight:700;">${esc(a.name)}</a>`:`<span style="font-weight:700;">${esc(a.name)}</span>`}
+        ${a.notes?`<div class="subtext">${esc(a.notes)}</div>`:''}
+      </span>
+      <button type="button" class="btn btn-sm ghost" title="Remove asset" onclick="removeBrandAsset('${c.id}','${esc(a.id)}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>
+    </div>`; }).join('')}</div>` : `<div class="empty">No brand assets shared yet.</div>`);
+}
+// A Performance Marketing client's daily ad numbers, typed in from what their ad platform reports. Same
+// tracker and log form as DesGro's own Meta Ads (adDailyTrackerHTML / logAdMetricModal); rows carry a
+// "clientId|metricId" id so the shared edit/delete buttons know which client they belong to.
+function adPerformanceSectionHTML(c, d){
+  const rows = (d.adMetrics||[]).slice(0,30).map(m=>({...m, id:`${c.id}|${m.id}`}));
+  return adDailyTrackerHTML(rows, "Ad Performance", {logFn:`openLogClientAdMetric('${c.id}')`, editFn:"openLogClientAdMetric", deleteKind:"clientAdMetric"});
+}
+function openLogClientAdMetric(arg){
+  const [clientId, metricId] = arg.split('|');
+  const c = clientById(clientId);
+  const existing = metricId ? ((clientCollab[clientId]||{}).adMetrics||[]).find(m=>m.id===metricId) : null;
+  logAdMetricModal(c ? c.name : "Client", existing, async payload=>{
+    await apiJson(`/api/crm/clients/${clientId}/ad-metrics`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    await loadClientCollab(clientId);
+  });
+}
+function adAccessSectionHTML(c, d){
+  const a = d.adAccess;
+  return collabHead('Ad Account Access', null, collabBtn(`openEditAdAccess('${c.id}')`,'i-edit','Update access')) +
+  (a ? `<div class="field-row cols-3">
+    <div><label class="field-label">Platform</label><div>${esc(a.platform)}</div></div>
+    <div><label class="field-label">Account ID</label><div class="mono">${esc(a.accountId||'—')}</div></div>
+    <div><label class="field-label">Access Email</label><div class="mono">${esc(a.accessEmail||'—')}</div></div>
+    <div><label class="field-label">Status</label><div>${pill(TITLECASE_FROM_API(a.status), a.status==='GRANTED'?'pos':a.status==='PENDING'?'warn':'neg')}</div></div>
+    <div style="grid-column:span 2;"><label class="field-label">Notes</label><div>${a.notes?esc(a.notes):'<span class="faint">—</span>'}</div></div>
+  </div><div class="subtext">Updated by ${esc(a.updatedBy)} · ${fmtDateShort(isoDate(a.updatedAt))}</div>` : `<div class="empty">No ad account access on record yet.</div>`);
+}
+function campaignBriefSectionHTML(c, d){
+  const b = d.campaignBrief;
+  const has = b && (b.objective||b.audience||b.budget);
+  const val = v => v ? esc(v) : '<span class="faint">—</span>';
+  return collabHead('Campaign Brief', null, collabBtn(`openEditCampaignBrief('${c.id}')`,'i-edit','Edit brief')) +
+  (has ? `<div class="field-row cols-3">
+    <div><label class="field-label">Objective</label><div>${val(b.objective)}</div></div>
+    <div><label class="field-label">Audience</label><div>${val(b.audience)}</div></div>
+    <div><label class="field-label">Budget</label><div>${val(b.budget)}</div></div>
+  </div><div class="subtext">Updated by ${esc(b.updatedBy)} · ${fmtDateShort(isoDate(b.updatedAt))}</div>` : `<div class="empty">No campaign brief set yet.</div>`);
+}
+function meetingsSectionHTML(c, d){
+  const ms = d.meetings || [];
+  return collabHead('Weekly Client Meetings', ms.length, collabBtn(`openLogMeeting('${c.id}')`,'i-plus','Log meeting')) +
+  (ms.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${ms.map(m=>`
+    <div style="padding:9px 11px;border:1px solid var(--line);border-radius:7px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;"><b style="font-size:12.5px;">${fmtDate(m.date)}</b><span class="subtext">Logged by ${esc(m.loggedBy)}${canDeleteClients()?` <button type="button" class="btn btn-sm ghost" title="Delete this meeting log" onclick="openConfirmDelete('clientMeeting','${c.id}|${esc(m.id)}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`:''}</span></div>
+      <div class="subtext" style="margin-top:3px;">${esc(m.attendees)}</div>
+      <div style="font-size:12.5px;margin-top:5px;white-space:pre-wrap;">${esc(m.notes)}</div>
+    </div>`).join('')}</div>` : `<div class="empty">No meetings logged yet.</div>`);
+}
+const collabModalHead = t => `<div class="modal-head"><h3>${t}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>`;
+const collabModalFoot = label => `<div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${label}</button></div></div>`;
+// Shared submit plumbing: send, reload this client's collab data, toast, close.
+async function collabSave(clientId, method, path, payload, okMsg){
+  try{
+    await apiJson(`/api/crm/clients/${clientId}${path}`, { method, headers:{"Content-Type":"application/json"}, body: payload?JSON.stringify(payload):undefined });
+    await loadClientCollab(clientId);
+    toast(okMsg); closeModal();
+  }catch(err){ toast(err.message || "Couldn't save"); }
+}
+function openEditAdAccess(clientId){
+  const a = (clientCollab[clientId]||{}).adAccess || {};
+  showModal(`${collabModalHead('Update ad account access')}
+    <form id="f-edit-ad-access"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Record who has access and where. <b>Never enter a password here</b> — access is granted on the ad platform itself.</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Platform</label><input class="field-input" name="platform" maxlength="100" value="${esc(a.platform||'Meta Business Manager')}" required></div>
+        <div><label class="field-label">Account ID</label><input class="field-input" name="accountId" maxlength="100" value="${esc(a.accountId||'')}" placeholder="act_xxxxxxxxxx"></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label">Access Email</label><input class="field-input" type="email" name="accessEmail" maxlength="200" value="${esc(a.accessEmail||'')}" placeholder="ads@desgromedia.com"></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${AD_ACCESS_STATUSES.map(s=>`<option value="${s.toUpperCase()}" ${s.toUpperCase()===(a.status||'PENDING')?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label">Notes</label><textarea class="field-input" name="notes" rows="2" maxlength="1000" placeholder="Anything about how access is set up">${esc(a.notes||'')}</textarea></div>
+    </div>${collabModalFoot('Save')}</form>`);
+  document.getElementById("f-edit-ad-access").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "PUT", "/ad-access", { platform:f.get("platform"), accountId:f.get("accountId"), accessEmail:f.get("accessEmail"), status:f.get("status"), notes:f.get("notes") }, "Ad account access updated");
+  });
+}
+function openEditCampaignBrief(clientId){
+  const b = (clientCollab[clientId]||{}).campaignBrief || {};
+  showModal(`${collabModalHead('Edit campaign brief')}
+    <form id="f-edit-campaign-brief"><div class="modal-body">
+      <div><label class="field-label">Objective</label><input class="field-input" name="objective" maxlength="500" value="${esc(b.objective||'')}" placeholder="e.g. Lead generation — showroom visits"></div>
+      <div><label class="field-label">Audience</label><input class="field-input" name="audience" maxlength="500" value="${esc(b.audience||'')}" placeholder="e.g. Homeowners, 28–55, UAE"></div>
+      <div><label class="field-label">Budget</label><input class="field-input" name="budget" maxlength="200" value="${esc(b.budget||'')}" placeholder="e.g. AED 15,000 / month"></div>
+    </div>${collabModalFoot('Save')}</form>`);
+  document.getElementById("f-edit-campaign-brief").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "PUT", "/campaign-brief", { objective:f.get("objective"), audience:f.get("audience"), budget:f.get("budget") }, "Campaign brief updated");
+  });
+}
+function openAddBrandAsset(clientId){
+  showModal(`${collabModalHead('Add brand asset')}
+    <form id="f-add-brand-asset"><div class="modal-body">
+      <div><label class="field-label">Name</label><input class="field-input" name="name" maxlength="200" required placeholder="e.g. Logo pack"></div>
+      <div><label class="field-label">Link</label><input class="field-input" type="url" name="link" maxlength="2000" placeholder="https://drive.google.com/..."></div>
+      <div><label class="field-label">Notes</label><input class="field-input" name="notes" maxlength="500" placeholder="Optional"></div>
+    </div>${collabModalFoot('Add')}</form>`);
+  document.getElementById("f-add-brand-asset").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "POST", "/brand-assets", { name:f.get("name"), link:f.get("link"), notes:f.get("notes") }, "Brand asset added");
+  });
+}
+function removeBrandAsset(clientId, assetId){ collabSave(clientId, "DELETE", `/brand-assets/${assetId}`, null, "Brand asset removed"); }
+function openLogMeeting(clientId){
+  const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  showModal(`${collabModalHead('Log client meeting')}
+    <form id="f-log-meeting"><div class="modal-body">
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${local}" max="${local}" required></div>
+      <div><label class="field-label">Attendees</label><input class="field-input" name="attendees" maxlength="500" required placeholder="e.g. Hafsa Rahman, Client Ops Manager"></div>
+      <div><label class="field-label">Notes</label><textarea class="field-input" name="notes" rows="3" maxlength="5000" required placeholder="What was discussed / decided"></textarea></div>
+    </div>${collabModalFoot('Save')}</form>`);
+  document.getElementById("f-log-meeting").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "POST", "/meetings", { date:f.get("date"), attendees:f.get("attendees"), notes:f.get("notes") }, "Meeting logged");
+  });
+}
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
-function openClientDetail(id){ nav.detail = {type:'client', id}; render(); }
+function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
 function clientDetailPage(id){
@@ -4447,6 +4812,7 @@ function clientDetailPage(id){
         <div><label class="field-label">Billing</label><div>${billingType==='Postpaid'?pill('Postpaid','blue'):esc(billingType)}</div></div>
         <div><label class="field-label">Services</label><div>${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</div></div>
       </div>
+      ${hidePayment ? '' : leadAdvanceBannerHTML(c)}
       ${hidePayment ? '' : `
       <div class="section-label">Payment</div>
       ${isUnbilledPostpaid ? `<div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Post-paid client.</b> Amount is only finalized and invoiced once the work is complete.</div></div>` : `
@@ -4462,6 +4828,7 @@ function clientDetailPage(id){
       <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>Services</th><th class="num">Total</th>${hidePayment?'':'<th class="num">Paid</th>'}<th>Status</th></tr></thead>
         <tbody>${cq.map(q=>`<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td>${hidePayment?'':`<td class="num mono">${quoteApprovedPaid(q)>0?inr(quoteApprovedPaid(q)):'<span class="faint">—</span>'}</td>`}<td>${pill(q.status,quoteStatusKind(q.status))}</td></tr>`).join("")}</tbody>
       </table></div>` : ''; })()}
+      ${clientCollabHTML(c)}
       <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">Workflow<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;">${boardTasksFiltered.length} of ${boardTasks.length}${dateFilterSuffix(boardFilter)}</span></div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -4574,6 +4941,42 @@ function openLogOwnAdMetric(id){
     await loadOwnAdMetrics();
   });
 }
+// Daily "ad numbers not logged" reminders (Admin only). Sending is automatic once the server has it switched on;
+// this panel only SHOWS what would be sent — it never sends anything.
+function adRemindersPanelHTML(){
+  if(!(currentUser && currentUser.isAdmin)) return '';
+  return `<div class="panel"><div class="modal-body">
+    <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div>Daily update reminders</div>
+      <button class="btn btn-sm ghost" onclick="openAdReminderPreview()"><svg class="icon" style="width:12px;height:12px"><use href="#i-bell"/></svg>Check status &amp; preview</button>
+    </div>
+    <div class="subtext">If a Performance Marketing client's numbers (or our own) aren't logged for a working day, the account manager — and for our own ads, the Performance Marketing team — gets one email each morning listing what's missing. Admins are copied once it's been missing 3 working days in a row.</div>
+  </div></div>`;
+}
+async function openAdReminderPreview(){
+  let d;
+  try{ d = await apiJson("/api/ad-reminders/preview"); }catch(err){ toast(err.message || "Couldn't load preview"); return; }
+  const dl = a => a.map(x=>fmtDateShort(x)).join(', ');
+  showModal(`
+    <div class="modal-head"><h3>Daily update reminders</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        ${pill(d.enabled?'Switched on':'Switched off', d.enabled?'pos':'neg')}
+        ${pill(d.emailConfigured?'Email configured':'Email NOT configured', d.emailConfigured?'pos':'warn')}
+        <span class="subtext">Runs daily at ${String(d.hourIst).padStart(2,'0')}:00 IST${d.lastRun?` · last run ${fmtDateShort(d.lastRun.date)}`:' · has not run yet'}</span>
+      </div>
+      ${d.enabled && d.emailConfigured ? '' : `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${!d.enabled?'Reminders are <b>off</b> on this server, so nothing is being sent.':''} ${!d.emailConfigured?'Email isn’t configured here, so nothing could be sent.':''} The list below is only a preview.</div></div>`}
+      <div class="section-label">Would be sent today · checking ${d.checkedDates.length?dl(d.checkedDates.slice().reverse()):'no working days yet'}</div>
+      ${d.digests.length ? d.digests.map(g=>`
+        <div style="padding:9px 11px;border:1px solid var(--line);border-radius:7px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><b style="font-size:12.5px;">${esc(g.to.name)}</b><span class="subtext mono">${esc(g.to.email)}</span></div>
+          ${g.fallback?`<div class="subtext">Sent to Admin because no account manager / team member was found.</div>`:''}
+          ${g.items.map(i=>`<div style="font-size:12.5px;margin-top:4px;">${esc(i.label)} <span class="faint">— ${dl(i.dates)}${i.streak>=d.escalateAfter?` · ${i.streak} days in a row`:''}</span></div>`).join('')}
+          ${g.cc.length?`<div class="subtext" style="margin-top:4px;">Admin copied: ${g.cc.map(esc).join(', ')}</div>`:''}
+        </div>`).join('') : `<div class="empty">Nothing is missing — nobody would be emailed.</div>`}
+    </div>
+    <div class="modal-foot"><div></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`, true);
+}
 function mktPerformance(){
   const rows = metaAdsCampaigns.map(adMetrics);
   const totals = rows.reduce((s,r)=>({spend:s.spend+r.spend, impressions:s.impressions+r.impressions, clicks:s.clicks+r.clicks, leads:s.leads+r.leads}),{spend:0,impressions:0,clicks:0,leads:0});
@@ -4594,6 +4997,7 @@ function mktPerformance(){
   <div class="panel"><div class="modal-body">
     ${adDailyTrackerHTML(ownAdMetrics.slice(0,30), "Daily Tracking", {logFn:"openLogOwnAdMetric()", editFn:"openLogOwnAdMetric", deleteKind:"ownAdMetric"})}
   </div></div>
+  ${adRemindersPanelHTML()}
   <div class="panel">
     <div class="panel-head"><div><h3>Campaigns</h3><div class="sub">DesGro Media's own Meta Ads accounts</div></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Campaign</th><th>Objective</th><th>Platform</th><th class="num">Spend</th><th class="num">Impressions</th><th class="num">Clicks</th><th class="num">CTR</th><th class="num">CPC</th><th class="num">Leads</th><th class="num">Cost / Lead</th><th>Status</th></tr></thead>
@@ -4616,8 +5020,20 @@ function mktLeads(){
   // they claim from.
   const openLeads = marketingLeads.filter(l=>!l.leadOwner).slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   const canClaim = isSalesRole(currentUser);
+  const activeCount = pipelineSource.filter(l=>!['Won','Lost'].includes(leadStage(l))).length;
+  const wonCount = pipelineSource.filter(l=>leadStage(l)==='Won').length;
+  const lostCount = pipelineSource.filter(l=>leadStage(l)==='Lost').length;
+  const winRate = (wonCount+lostCount) ? Math.round(wonCount/(wonCount+lostCount)*100) : null;
+  const paidWaiting = pipelineSource.filter(l=>!l.convertedClientId && l.paidTotal>0);
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">In Pipeline</div><div class="kpi-value mono">${activeCount}</div><div class="kpi-sub">not yet won or lost</div></div>
+    <div class="kpi-card"><div class="kpi-label">Converted to Client</div><div class="kpi-value mono pos">${wonCount}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Paid, Not Yet Client</div><div class="kpi-value mono ${paidWaiting.length?'warn':''}">${paidWaiting.length}</div><div class="kpi-sub">${paidWaiting.length?inr(paidWaiting.reduce((a,l)=>a+l.paidTotal,0))+' recorded':'nothing pending'}</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Win Rate</div><div class="kpi-value mono">${winRate==null?'—':winRate+'%'}</div><div class="kpi-sub">${wonCount} won · ${lostCount} lost</div></div>
+  </div>
+  <div class="banner muted" style="align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div style="flex:1;"><b>Conversion rule.</b> Convert a lead to a client any time — paid or not. Once a lead's recorded payments reach <b>${inr(leadConversionThreshold)}</b> it converts automatically. Payments are only recorded here; they reach the books through Finance when an invoice is raised.</div>${isAdminUser()?`<button class="btn btn-sm ghost" onclick="openLeadThresholdSetting()">Change</button>`:''}</div>
   ${openLeads.length ? `
   <div class="panel">
     <div class="panel-head">
@@ -4628,12 +5044,19 @@ function mktLeads(){
       <tbody>${openLeads.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("")}</tbody>
     </table></div>
   </div>` : ''}
+  ${leadsView==='board' ? `
+  <div class="panel">
+    <div class="panel-head"><div><h3>${isSalesViewer?'My lead flow':'Lead flow'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)} · move each lead along as it progresses</div></div></div>
+    <div class="board-scroll" style="padding:0 14px 14px;"><div class="board">${LEAD_STAGES.map(st=>{ const inSt = sorted.filter(l=>leadStage(l)===st); return `<div class="col"><div class="col-head"><span class="name">${st}</span><span class="count">${inSt.length}</span></div><div class="col-cards">${inSt.map(leadCardHTML).join('') || '<div class="empty" style="padding:14px 6px;">None</div>'}</div></div>`; }).join('')}</div></div>
+  </div>
+  ` : `
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My leads':'Lead pipeline'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)}</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
-      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?6:7}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th><th>Stage</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
+      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td>${leadStageControl(l)}${leadStage(l)==='Lost'&&l.lostReason?`<div class="subtext">${esc(l.lostReason)}</div>`:''}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?7:8}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
     </table></div>
-  </div>`;
+  </div>
+  `}`;
 }
 // Any Sales caller can claim an unowned lead for themselves — Leadership/Admin
 // don't get the claim button since they're not the ones working the pipeline.
@@ -4646,7 +5069,9 @@ function leadOwnerActionsCell(l){
   // Mirrors deleteLead() server-side: Admin / Sales Head delete any; a Sales rep only their own claimed leads.
   const canDelete = currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD') || (l.leadOwner && l.leadOwner===currentUser.name));
   const delBtn = canDelete ? `<button class="btn btn-sm ghost" onclick="openConfirmDelete('lead','${l.id}')" title="Delete lead"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>` : '';
-  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignPick}${assignBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
+  const flowBtns = (!l.convertedClientId && canWorkLead(l)) ? `${leadStage(l)!=='Lost'?`<button class="btn btn-sm ghost" onclick="openRecordLeadPayment('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Payment</button>`:''}<button class="btn btn-sm primary" onclick="openConvertLead('${l.id}')">Convert</button>` : '';
+  const clientBtn = l.convertedClientId ? `<button class="btn btn-sm ghost" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : '';
+  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignPick}${assignBtn}${flowBtns}${clientBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
 }
 async function assignLeadToMe(id){
   if(!currentUser) return;
@@ -5245,6 +5670,14 @@ function acctOverview(){
 // clear heads-up before asking.
 function deleteWarningFor(kind, id){
   const fallback = "This permanently removes it from the records. This can't be undone.";
+  if(kind==='clientMeeting'){
+    const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).meetings||[]).find(x=>x.id===mid); if(!m) return {label:"this meeting log", warning:fallback};
+    return {label:"this meeting log", warning:`${fmtDate(m.date)} — ${esc(m.attendees)}. The notes are permanently removed. This can't be undone.`};
+  }
+  if(kind==='clientAdMetric'){
+    const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).adMetrics||[]).find(x=>x.id===mid); if(!m) return {label:"this entry", warning:fallback};
+    return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
+  }
   if(kind==='ownAdMetric'){
     const m = ownAdMetrics.find(x=>x.id===id); if(!m) return {label:"this entry", warning:fallback};
     return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
@@ -5316,11 +5749,13 @@ async function performDelete(kind, id){
     quote: { url:`/api/crm/quotes/${id}`, reload: loadQuotes, label:"Quote" },
     // Deleting an unpaid invoice puts the quote that produced it back to Sent, so refresh quotes as well.
     invoice: { url:`/api/finance/invoices/${id}`, reload: async ()=>{ await loadInvoices(); if(canLoadQuotes()) await loadQuotes(); }, label:"Invoice" },
+    clientMeeting: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/meetings/${mid}`, reload: ()=>loadClientCollab(cid), label:"Meeting log" }; })(),
     payable: { url:`/api/finance/payables/${id}`, reload: loadPayables, label:"Payable" },
     expense: { url:`/api/finance/expenses/${id}`, reload: loadExpenses, label:"Expense" },
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
     // A bank-line journal entry also posted a real ledger row, so its removal changes account
     // balances — refresh banks and the finance reports (which read off the ledger) alongside it.
+    clientAdMetric: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/ad-metrics/${mid}`, reload: ()=>loadClientCollab(cid), label:"Ad performance entry" }; })(),
     ownAdMetric: { url:`/api/content/own-ad-metrics/${id}`, reload: loadOwnAdMetrics, label:"Ad performance entry" },
     journal: { url:`/api/finance/journal/${id}`, reload: async ()=>{ await Promise.all([loadJournalEntries(), loadBankAccounts()]); await refreshFinanceReports(); }, label:"Journal entry" },
   };
@@ -5499,7 +5934,7 @@ function acctPaymentReceipts(){
   const tab = (id, label, n) => `<button class="chip ${receiptsTab===id?'active':''}" onclick="setReceiptsTab('${id}')">${label}${n?' · '+n:''}</button>`;
   return `<div class="filter-group" style="margin-bottom:14px;">${tab('pending','Pending',pending)}${tab('approved','Approved',approvedReceiptsLoaded?approvedReceiptsTotal:0)}</div>`
     + receiptsToolbar()
-    + (receiptsTab==='approved' ? acctApprovedReceipts() : acctPendingReceipts());
+    + (receiptsTab==='approved' ? acctApprovedReceipts() : acctPendingReceipts() + leadAdvancesPanelHTML());
 }
 function acctPendingReceipts(){
   const rows = filteredPendingPayments();
