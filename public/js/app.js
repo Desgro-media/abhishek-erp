@@ -578,9 +578,83 @@ function adMetrics(c){
 const LEAD_SOURCES = ["Meta","Organic","References"];
 let marketingLeads = [];
 function mapLead(l){
-  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), convertedClientId:l.convertedClientId||null, notes:l.notes||"" };
+  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), stage:TITLECASE_FROM_API(l.stage), lostReason:l.lostReason||null, lostNote:l.lostNote||null, stageSetBy:l.stageSetBy||null, convertedClientId:l.convertedClientId||null, notes:l.notes||"" };
 }
 async function loadLeads(){ marketingLeads = (await apiJson("/api/crm/leads")).leads.map(mapLead); }
+// Pipeline stages. "Won" is only ever reached by converting the lead into a client (today: quote -> invoice),
+// never by moving a card; "Lost" needs a reason. The server enforces both.
+const LEAD_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
+const LEAD_OPEN_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation"];
+const LEAD_STAGE_KIND = {"New":"neutral","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
+const LEAD_LOST_REASONS = ["Budget","Went with a competitor","No response","Not a fit","Other"];
+let leadsView = "board";
+function setLeadsView(v){ leadsView = v; render(); }
+// A converted lead is Won no matter what; a lead the old status field already marked Lost shows as Lost even
+// before the one-off backfill has staged it.
+function leadStage(l){
+  if(l.convertedClientId) return "Won";
+  if(l.stage==="Lost" || (l.status==="Lost" && !l.stageSetBy)) return "Lost";
+  return l.stage || "New";
+}
+// Reps work their own leads; Admin / Sales Head any. (The server enforces this; the UI just hides what won't work.)
+function canWorkLead(l){
+  if(!currentUser) return false;
+  if(currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD')) return true;
+  return !!l.leadOwner && l.leadOwner===currentUser.name;
+}
+async function setLeadStage(id, stage){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) { render(); return; }
+  if(stage==="Lost"){ render(); openMarkLeadLost(id); return; }
+  try{
+    await apiJson(`/api/crm/leads/${id}/stage`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ stage: TITLECASE_TO_API(stage) }) });
+    await loadLeads();
+    toast(l.name+" moved to "+stage);
+  }catch(err){ toast(err.message || "Couldn't move lead"); }
+  render();
+}
+function openMarkLeadLost(id){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) return;
+  showModal(`
+    <div class="modal-head"><h3>Mark as lost — ${esc(l.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-lead-lost"><div class="modal-body">
+      <div><label class="field-label">Reason</label><select class="field-input" name="reason">${LEAD_LOST_REASONS.map(r=>`<option>${esc(r)}</option>`).join('')}</select></div>
+      <div><label class="field-label">Note</label><input class="field-input" name="note" maxlength="500" placeholder="Optional"></div>
+      <div class="subtext">You can move it back into the pipeline later if it comes back.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Mark lost</button></div></div>
+    </form>`);
+  document.getElementById("f-lead-lost").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    try{
+      await apiJson(`/api/crm/leads/${id}/lost`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ reason:f.get("reason"), note:f.get("note") }) });
+      await loadLeads(); toast(l.name+" marked lost"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't mark lost"); }
+  });
+}
+function goToClient(id){ setSub('clients','all'); openClientDetail(id); }
+// Stage control: a dropdown for leads you can work, a plain pill otherwise (Won/Lost-by-someone-else, other reps' leads).
+function leadStageControl(l){
+  const stage = leadStage(l);
+  if(l.convertedClientId || !canWorkLead(l)) return pill(stage, LEAD_STAGE_KIND[stage]);
+  const opts = (stage==='Lost' ? ["Lost"] : []).concat(LEAD_OPEN_STAGES, stage==='Lost' ? [] : ["Lost"]);
+  return `<select class="select-sm" onchange="setLeadStage('${l.id}', this.value)" title="Move along the pipeline">${opts.map(o=>`<option value="${o}" ${o===stage?'selected':''}>${o==='Lost'&&stage!=='Lost'?'Lost…':o}</option>`).join('')}</select>`;
+}
+function leadCardHTML(l){
+  const stage = leadStage(l), claimable = !l.leadOwner && currentUser && isSalesRole(currentUser);
+  return `
+  <div class="card" style="cursor:default;">
+    <div class="card-title">${esc(l.name)}</div>
+    <div class="card-meta"><span class="tag type">${esc(l.serviceInterested)}</span><span class="tag">${esc(l.source)}</span></div>
+    ${l.phone?`<div class="subtext mono"><a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a></div>`:''}
+    ${stage==='Lost' && l.lostReason ? `<div class="subtext">Lost — ${esc(l.lostReason)}${l.lostNote?': '+esc(l.lostNote):''}</div>` : ''}
+    <div class="card-foot"><span class="assignee">${l.leadOwner?`<span class="mini-avatar sm">${initials(l.leadOwner)}</span>${esc(l.leadOwner)}`:pill('Open','warn')}</span><span class="due">${fmtDateShort(l.createdDate)}</span></div>
+    ${(!l.convertedClientId && canWorkLead(l)) ? `<div class="card-move">${leadStageControl(l)}<button type="button" class="card-edit" title="Edit lead" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>` : ''}
+    ${l.convertedClientId ? `<button type="button" class="btn btn-sm ghost" style="justify-content:center;" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : ''}
+    ${claimable ? `<button type="button" class="btn btn-sm primary" style="justify-content:center;" onclick="assignLeadToMe('${l.id}')">Assign to me</button>` : ''}
+  </div>`;
+}
 
 /* ===================== QUOTES =====================
    Sales lifecycle: Sales creates a quote for an existing client OR a lead (Draft), possibly quoting
@@ -4771,8 +4845,18 @@ function mktLeads(){
   // they claim from.
   const openLeads = marketingLeads.filter(l=>!l.leadOwner).slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   const canClaim = isSalesRole(currentUser);
+  const activeCount = pipelineSource.filter(l=>!['Won','Lost'].includes(leadStage(l))).length;
+  const wonCount = pipelineSource.filter(l=>leadStage(l)==='Won').length;
+  const lostCount = pipelineSource.filter(l=>leadStage(l)==='Lost').length;
+  const winRate = (wonCount+lostCount) ? Math.round(wonCount/(wonCount+lostCount)*100) : null;
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">In Pipeline</div><div class="kpi-value mono">${activeCount}</div><div class="kpi-sub">not yet won or lost</div></div>
+    <div class="kpi-card"><div class="kpi-label">Converted to Client</div><div class="kpi-value mono pos">${wonCount}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Lost</div><div class="kpi-value mono">${lostCount}</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Win Rate</div><div class="kpi-value mono">${winRate==null?'—':winRate+'%'}</div><div class="kpi-sub">${wonCount} won · ${lostCount} lost</div></div>
+  </div>
   ${openLeads.length ? `
   <div class="panel">
     <div class="panel-head">
@@ -4783,12 +4867,19 @@ function mktLeads(){
       <tbody>${openLeads.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("")}</tbody>
     </table></div>
   </div>` : ''}
+  ${leadsView==='board' ? `
+  <div class="panel">
+    <div class="panel-head"><div><h3>${isSalesViewer?'My lead flow':'Lead flow'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)} · move each lead along as it progresses</div></div></div>
+    <div class="board-scroll" style="padding:0 14px 14px;"><div class="board">${LEAD_STAGES.map(st=>{ const inSt = sorted.filter(l=>leadStage(l)===st); return `<div class="col"><div class="col-head"><span class="name">${st}</span><span class="count">${inSt.length}</span></div><div class="col-cards">${inSt.map(leadCardHTML).join('') || '<div class="empty" style="padding:14px 6px;">None</div>'}</div></div>`; }).join('')}</div></div>
+  </div>
+  ` : `
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My leads':'Lead pipeline'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)}</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
-      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?6:7}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th><th>Stage</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
+      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td>${leadStageControl(l)}${leadStage(l)==='Lost'&&l.lostReason?`<div class="subtext">${esc(l.lostReason)}</div>`:''}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?7:8}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
     </table></div>
-  </div>`;
+  </div>
+  `}`;
 }
 // Any Sales caller can claim an unowned lead for themselves — Leadership/Admin
 // don't get the claim button since they're not the ones working the pipeline.
