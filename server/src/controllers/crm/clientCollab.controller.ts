@@ -10,7 +10,7 @@ import { adAccessSchema, campaignBriefSchema, brandAssetSchema, clientMeetingSch
 // guarded exactly like getClient — Admin / Sales Head / Clients role see every client, a plain Sales rep
 // only their own book. (This is the same data the future client portal will expose to that client alone.)
 
-async function loadClientFor(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1]) {
+export async function loadClientFor(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1]) {
   const client = await prisma.client.findUnique({ where: { id: req.params.id } });
   if (!client) { res.status(404).json({ error: "Client not found" }); return null; }
   if (!seesAllClients(req.user?.roles) && client.salesPerson !== req.user!.name) {
@@ -21,7 +21,7 @@ async function loadClientFor(req: Parameters<RequestHandler>[0], res: Parameters
 }
 
 // Ad account access and the brief only make sense for clients whose ads we run.
-const isPerformanceClient = (c: { services: string[] }) => c.services.includes("Performance Marketing");
+export const isPerformanceClient = (c: { services: string[] }) => c.services.includes("Performance Marketing");
 
 const dayString = (d: Date) => d.toISOString().slice(0, 10);
 const serializeMeeting = (m: { id: string; date: Date; attendees: string; notes: string; loggedBy: string; createdAt: Date }) => ({

@@ -165,3 +165,6 @@ export const ownAdMetricSchema = z.object({
   leads: z.number().int().nonnegative().max(1_000_000),
   purchases: z.number().int().nonnegative().max(1_000_000),
 });
+
+// A Performance Marketing client's daily ad numbers have exactly the shape of DesGro's own.
+export const clientAdMetricSchema = ownAdMetricSchema;

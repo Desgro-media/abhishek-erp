@@ -7,6 +7,7 @@ import * as leads from "../controllers/crm/leads.controller";
 import * as quotes from "../controllers/crm/quotes.controller";
 import * as tasks from "../controllers/crm/tasks.controller";
 import * as collab from "../controllers/crm/clientCollab.controller";
+import * as adMetrics from "../controllers/crm/clientAdMetrics.controller";
 
 const router = Router();
 
@@ -32,6 +33,9 @@ router.post("/clients/:id/brand-assets", requireClientsUser, collab.addBrandAsse
 router.delete("/clients/:id/brand-assets/:assetId", requireClientsUser, collab.removeBrandAsset);
 router.post("/clients/:id/meetings", requireClientsUser, collab.logMeeting);
 router.delete("/clients/:id/meetings/:meetingId", requireClientsUser, collab.deleteMeeting);
+router.get("/clients/:id/ad-metrics", requireClientsUser, adMetrics.listClientAdMetrics);
+router.post("/clients/:id/ad-metrics", requireClientsUser, adMetrics.upsertClientAdMetric);
+router.delete("/clients/:id/ad-metrics/:metricId", requireClientsUser, adMetrics.deleteClientAdMetric);
 
 router.use(requireCrmUser);
 router.post("/clients", clients.createClient);

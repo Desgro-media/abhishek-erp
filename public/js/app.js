@@ -4427,6 +4427,7 @@ function isPerformanceMarketingClient(c){ return !!(c && c.services && c.service
 async function loadClientCollab(id){
   try{
     clientCollab[id] = await apiJson(`/api/crm/clients/${id}/collab`);
+    if(isPerformanceMarketingClient(clientById(id))) clientCollab[id].adMetrics = (await apiJson(`/api/crm/clients/${id}/ad-metrics`)).metrics;
   }catch(err){ clientCollab[id] = { error: err.message || "Couldn't load" }; }
   // Redraw only if the user is still looking at this client's page.
   if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
@@ -4440,7 +4441,7 @@ function clientCollabHTML(c){
   const d = clientCollab[c.id];
   if(!d) return collabHead('Client details') + `<div class="empty">Loading…</div>`;
   if(d.error) return collabHead('Client details') + `<div class="empty">${esc(d.error)}</div>`;
-  return brandAssetsSectionHTML(c, d) + (isPerformanceMarketingClient(c) ? adAccessSectionHTML(c, d) + campaignBriefSectionHTML(c, d) : '') + meetingsSectionHTML(c, d);
+  return brandAssetsSectionHTML(c, d) + (isPerformanceMarketingClient(c) ? adPerformanceSectionHTML(c, d) + adAccessSectionHTML(c, d) + campaignBriefSectionHTML(c, d) : '') + meetingsSectionHTML(c, d);
 }
 function brandAssetsSectionHTML(c, d){
   const assets = d.brandAssets || [];
@@ -4453,6 +4454,22 @@ function brandAssetsSectionHTML(c, d){
       </span>
       <button type="button" class="btn btn-sm ghost" title="Remove asset" onclick="removeBrandAsset('${c.id}','${esc(a.id)}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>
     </div>`; }).join('')}</div>` : `<div class="empty">No brand assets shared yet.</div>`);
+}
+// A Performance Marketing client's daily ad numbers, typed in from what their ad platform reports. Same
+// tracker and log form as DesGro's own Meta Ads (adDailyTrackerHTML / logAdMetricModal); rows carry a
+// "clientId|metricId" id so the shared edit/delete buttons know which client they belong to.
+function adPerformanceSectionHTML(c, d){
+  const rows = (d.adMetrics||[]).slice(0,30).map(m=>({...m, id:`${c.id}|${m.id}`}));
+  return adDailyTrackerHTML(rows, "Ad Performance", {logFn:`openLogClientAdMetric('${c.id}')`, editFn:"openLogClientAdMetric", deleteKind:"clientAdMetric"});
+}
+function openLogClientAdMetric(arg){
+  const [clientId, metricId] = arg.split('|');
+  const c = clientById(clientId);
+  const existing = metricId ? ((clientCollab[clientId]||{}).adMetrics||[]).find(m=>m.id===metricId) : null;
+  logAdMetricModal(c ? c.name : "Client", existing, async payload=>{
+    await apiJson(`/api/crm/clients/${clientId}/ad-metrics`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    await loadClientCollab(clientId);
+  });
 }
 function adAccessSectionHTML(c, d){
   const a = d.adAccess;
@@ -5387,6 +5404,10 @@ function deleteWarningFor(kind, id){
     const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).meetings||[]).find(x=>x.id===mid); if(!m) return {label:"this meeting log", warning:fallback};
     return {label:"this meeting log", warning:`${fmtDate(m.date)} — ${esc(m.attendees)}. The notes are permanently removed. This can't be undone.`};
   }
+  if(kind==='clientAdMetric'){
+    const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).adMetrics||[]).find(x=>x.id===mid); if(!m) return {label:"this entry", warning:fallback};
+    return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
+  }
   if(kind==='ownAdMetric'){
     const m = ownAdMetrics.find(x=>x.id===id); if(!m) return {label:"this entry", warning:fallback};
     return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
@@ -5464,6 +5485,7 @@ async function performDelete(kind, id){
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
     // A bank-line journal entry also posted a real ledger row, so its removal changes account
     // balances — refresh banks and the finance reports (which read off the ledger) alongside it.
+    clientAdMetric: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/ad-metrics/${mid}`, reload: ()=>loadClientCollab(cid), label:"Ad performance entry" }; })(),
     ownAdMetric: { url:`/api/content/own-ad-metrics/${id}`, reload: loadOwnAdMetrics, label:"Ad performance entry" },
     journal: { url:`/api/finance/journal/${id}`, reload: async ()=>{ await Promise.all([loadJournalEntries(), loadBankAccounts()]); await refreshFinanceReports(); }, label:"Journal entry" },
   };
