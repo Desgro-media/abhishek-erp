@@ -4941,6 +4941,42 @@ function openLogOwnAdMetric(id){
     await loadOwnAdMetrics();
   });
 }
+// Daily "ad numbers not logged" reminders (Admin only). Sending is automatic once the server has it switched on;
+// this panel only SHOWS what would be sent — it never sends anything.
+function adRemindersPanelHTML(){
+  if(!(currentUser && currentUser.isAdmin)) return '';
+  return `<div class="panel"><div class="modal-body">
+    <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div>Daily update reminders</div>
+      <button class="btn btn-sm ghost" onclick="openAdReminderPreview()"><svg class="icon" style="width:12px;height:12px"><use href="#i-bell"/></svg>Check status &amp; preview</button>
+    </div>
+    <div class="subtext">If a Performance Marketing client's numbers (or our own) aren't logged for a working day, the account manager — and for our own ads, the Performance Marketing team — gets one email each morning listing what's missing. Admins are copied once it's been missing 3 working days in a row.</div>
+  </div></div>`;
+}
+async function openAdReminderPreview(){
+  let d;
+  try{ d = await apiJson("/api/ad-reminders/preview"); }catch(err){ toast(err.message || "Couldn't load preview"); return; }
+  const dl = a => a.map(x=>fmtDateShort(x)).join(', ');
+  showModal(`
+    <div class="modal-head"><h3>Daily update reminders</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        ${pill(d.enabled?'Switched on':'Switched off', d.enabled?'pos':'neg')}
+        ${pill(d.emailConfigured?'Email configured':'Email NOT configured', d.emailConfigured?'pos':'warn')}
+        <span class="subtext">Runs daily at ${String(d.hourIst).padStart(2,'0')}:00 IST${d.lastRun?` · last run ${fmtDateShort(d.lastRun.date)}`:' · has not run yet'}</span>
+      </div>
+      ${d.enabled && d.emailConfigured ? '' : `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${!d.enabled?'Reminders are <b>off</b> on this server, so nothing is being sent.':''} ${!d.emailConfigured?'Email isn’t configured here, so nothing could be sent.':''} The list below is only a preview.</div></div>`}
+      <div class="section-label">Would be sent today · checking ${d.checkedDates.length?dl(d.checkedDates.slice().reverse()):'no working days yet'}</div>
+      ${d.digests.length ? d.digests.map(g=>`
+        <div style="padding:9px 11px;border:1px solid var(--line);border-radius:7px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><b style="font-size:12.5px;">${esc(g.to.name)}</b><span class="subtext mono">${esc(g.to.email)}</span></div>
+          ${g.fallback?`<div class="subtext">Sent to Admin because no account manager / team member was found.</div>`:''}
+          ${g.items.map(i=>`<div style="font-size:12.5px;margin-top:4px;">${esc(i.label)} <span class="faint">— ${dl(i.dates)}${i.streak>=d.escalateAfter?` · ${i.streak} days in a row`:''}</span></div>`).join('')}
+          ${g.cc.length?`<div class="subtext" style="margin-top:4px;">Admin copied: ${g.cc.map(esc).join(', ')}</div>`:''}
+        </div>`).join('') : `<div class="empty">Nothing is missing — nobody would be emailed.</div>`}
+    </div>
+    <div class="modal-foot"><div></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`, true);
+}
 function mktPerformance(){
   const rows = metaAdsCampaigns.map(adMetrics);
   const totals = rows.reduce((s,r)=>({spend:s.spend+r.spend, impressions:s.impressions+r.impressions, clicks:s.clicks+r.clicks, leads:s.leads+r.leads}),{spend:0,impressions:0,clicks:0,leads:0});
@@ -4961,6 +4997,7 @@ function mktPerformance(){
   <div class="panel"><div class="modal-body">
     ${adDailyTrackerHTML(ownAdMetrics.slice(0,30), "Daily Tracking", {logFn:"openLogOwnAdMetric()", editFn:"openLogOwnAdMetric", deleteKind:"ownAdMetric"})}
   </div></div>
+  ${adRemindersPanelHTML()}
   <div class="panel">
     <div class="panel-head"><div><h3>Campaigns</h3><div class="sub">DesGro Media's own Meta Ads accounts</div></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Campaign</th><th>Objective</th><th>Platform</th><th class="num">Spend</th><th class="num">Impressions</th><th class="num">Clicks</th><th class="num">CTR</th><th class="num">CPC</th><th class="num">Leads</th><th class="num">Cost / Lead</th><th>Status</th></tr></thead>

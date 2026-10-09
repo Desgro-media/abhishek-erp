@@ -43,6 +43,9 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       HR_MAIL_USER: ${HR_MAIL_USER:-hr@desgromedia.com}
       COMPANY_MAIL_USER: ${COMPANY_MAIL_USER:-hr@desgromedia.com}
+      # Daily "ad numbers not logged" reminder emails. OFF unless set to true.
+      AD_REMINDERS_ENABLED: ${AD_REMINDERS_ENABLED:-false}
+      AD_REMINDERS_HOUR: ${AD_REMINDERS_HOUR:-10}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@desgromedia.com}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-ChangeMe!2026}
       SEED_SAMPLE_DATA: ${SEED_SAMPLE_DATA:-true}

@@ -37,6 +37,11 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   HR_MAIL_USER: z.string().default("hr@desgromedia.com"),
   COMPANY_MAIL_USER: z.string().default("Official@desgromedia.com"),
+
+  // Daily "ad numbers not logged" reminder emails for the Performance Marketing team. OFF unless explicitly
+  // enabled, so a dev/test server never emails anyone by accident. Runs once a day, IST, at/after this hour.
+  AD_REMINDERS_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  AD_REMINDERS_HOUR: z.coerce.number().int().min(0).max(23).default(10),
 });
 
 const parsed = envSchema.safeParse(process.env);

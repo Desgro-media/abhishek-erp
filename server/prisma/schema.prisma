@@ -1409,3 +1409,17 @@ model LeadPayment {
   @@index([leadId])
   @@map("lead_payments")
 }
+
+// One row per day the daily "ad numbers not logged" reminder has run (date = the IST calendar date). The unique
+// date is what guarantees a reminder is sent at most once a day — even across a restart or a second instance —
+// and the earliest row marks where the reminders began, so history from before the feature is never flagged.
+model AdReminderRun {
+  id         String    @id @default(uuid())
+  runDate    DateTime  @unique @map("run_date") @db.Date
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  // { digests, sent, failed, errors[] } — what this run did.
+  summary    Json?
+
+  @@map("ad_reminder_runs")
+}
