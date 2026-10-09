@@ -10,6 +10,7 @@ import { sumAmounts, invoiceTotal, invoicePaidAsOf, invoiceStatus } from "../../
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
 import { assertReceivedDate, lockUnapprovedPending } from "../../services/finance/pendingPayment";
+import { carryLeadAdvances } from "../../services/leadPayments";
 import {
   invoiceCreateSchema,
   invoiceUpdateSchema,
@@ -57,14 +58,18 @@ export const createInvoice: RequestHandler = asyncHandler(async (req, res) => {
   const d = parsed.data;
 
   // The number is always generated here, in the create transaction — never taken from the client.
-  const invoice = await prisma.$transaction(async (tx) =>
-    tx.invoice.create({
+  const invoice = await prisma.$transaction(async (tx) => {
+    const created = await tx.invoice.create({
       data: {
         clientId: d.clientId, invoiceNo: await nextInvoiceNo(tx), issuedAt: new Date(d.issuedAt), dueAt: new Date(d.dueAt),
         items: { create: d.items },
       },
       include: INCLUDE,
-    }));
+    });
+    // Advances this client's lead paid before converting become pending payments on this invoice (Finance approves them as usual).
+    const carried = await carryLeadAdvances(tx, { clientId: d.clientId, invoiceId: created.id, actorUserId: req.user!.sub });
+    return carried.length ? tx.invoice.findUniqueOrThrow({ where: { id: created.id }, include: INCLUDE }) : created;
+  });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_CREATE", entityType: "Invoice", entityId: invoice.id, afterData: d, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   const created = withComputed(invoice);

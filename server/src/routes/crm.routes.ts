@@ -6,6 +6,8 @@ import * as clients from "../controllers/crm/clients.controller";
 import * as leads from "../controllers/crm/leads.controller";
 import * as quotes from "../controllers/crm/quotes.controller";
 import * as tasks from "../controllers/crm/tasks.controller";
+import * as collab from "../controllers/crm/clientCollab.controller";
+import * as adMetrics from "../controllers/crm/clientAdMetrics.controller";
 
 const router = Router();
 
@@ -21,6 +23,20 @@ router.use(authenticate);
 router.get("/clients", requireClientsUser, clients.listClients);
 router.get("/clients/:id", requireClientsUser, clients.getClient);
 router.get("/tasks", requireClientsUser, tasks.listTasks);
+router.get("/clients/:id/lead-advances", requireClientsUser, leads.getClientLeadAdvances);
+
+// Client collaboration data (ad access, brief, brand assets, meetings) — row-scoped to the one client in
+// the URL inside each handler, so it's open to anyone with Clients access, reads and writes alike.
+router.get("/clients/:id/collab", requireClientsUser, collab.getClientCollab);
+router.put("/clients/:id/ad-access", requireClientsUser, collab.upsertAdAccess);
+router.put("/clients/:id/campaign-brief", requireClientsUser, collab.upsertCampaignBrief);
+router.post("/clients/:id/brand-assets", requireClientsUser, collab.addBrandAsset);
+router.delete("/clients/:id/brand-assets/:assetId", requireClientsUser, collab.removeBrandAsset);
+router.post("/clients/:id/meetings", requireClientsUser, collab.logMeeting);
+router.delete("/clients/:id/meetings/:meetingId", requireClientsUser, collab.deleteMeeting);
+router.get("/clients/:id/ad-metrics", requireClientsUser, adMetrics.listClientAdMetrics);
+router.post("/clients/:id/ad-metrics", requireClientsUser, adMetrics.upsertClientAdMetric);
+router.delete("/clients/:id/ad-metrics/:metricId", requireClientsUser, adMetrics.deleteClientAdMetric);
 
 router.use(requireCrmUser);
 router.post("/clients", clients.createClient);
@@ -32,6 +48,14 @@ router.delete("/clients/:id", clients.deleteClient);
 router.get("/leads", leads.listLeads);
 router.post("/leads", leads.createLead);
 router.patch("/leads/:id", leads.updateLead);
+router.patch("/leads/:id/stage", leads.setLeadStage);
+router.post("/leads/:id/lost", leads.markLeadLost);
+router.get("/leads/:id/payments", leads.listLeadPayments);
+router.post("/leads/:id/payments", leads.recordLeadPayment);
+router.delete("/leads/:id/payments/:paymentId", leads.deleteLeadPayment);
+router.post("/leads/:id/convert", leads.convertLead);
+router.get("/lead-settings", leads.getLeadSettings);
+router.put("/lead-settings", leads.updateLeadSettings);
 router.delete("/leads/:id", leads.deleteLead);
 
 router.get("/quotes", quotes.listQuotes);
