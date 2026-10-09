@@ -154,3 +154,14 @@ export const clientMeetingSchema = z.object({
   attendees: z.string().trim().min(1).max(500),
   notes: z.string().trim().min(1).max(5000),
 });
+
+// One day of DesGro's own Meta ad numbers. Money is capped well above any real daily spend so a
+// stray extra zero is caught rather than stored. The "no future dates" rule needs today's date, so
+// it lives in the controller.
+export const ownAdMetricSchema = z.object({
+  date: dateStr,
+  spend: z.number().nonnegative().max(100_000_000),
+  revenue: z.number().nonnegative().max(1_000_000_000),
+  leads: z.number().int().nonnegative().max(1_000_000),
+  purchases: z.number().int().nonnegative().max(1_000_000),
+});

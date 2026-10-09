@@ -1305,3 +1305,21 @@ model ClientMeeting {
   @@index([clientId, date])
   @@map("client_meetings")
 }
+
+// DesGro Media's OWN daily Meta ad numbers (our lead-gen spend), one row per day.
+// Separate from MetaAdsCampaign (campaign-level totals) and from any client's ad
+// metrics. Logging a date that already has a row updates it, so the date is unique.
+model OwnAdMetric {
+  id        String   @id @default(uuid())
+  date      DateTime @unique @db.Date
+  spend     Decimal  @db.Decimal(12, 2)
+  leads     Int
+  purchases Int
+  revenue   Decimal  @db.Decimal(12, 2)
+  loggedBy  String?  @map("logged_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("own_ad_metrics")
+}
