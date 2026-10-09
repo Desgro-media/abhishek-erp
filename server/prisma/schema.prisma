@@ -1023,6 +1023,16 @@ enum LeadStatus {
   LOST
 }
 
+enum LeadStage {
+  NEW
+  CONTACTED
+  MEETING
+  PROPOSAL_SENT
+  NEGOTIATION
+  WON
+  LOST
+}
+
 model Lead {
   id                String     @id @default(uuid())
   leadCode          String     @unique @map("lead_code")
@@ -1041,6 +1051,17 @@ model Lead {
   convertedClientId String?    @map("converted_client_id")
   convertedClient   Client?    @relation(fields: [convertedClientId], references: [id])
   createdAt         DateTime   @default(now()) @map("created_at")
+
+  // Pipeline stage (the Leads board). `status` above is the older coarse field and is kept in step with
+  // this one (see services/leadStage.ts) because the Dashboard reads it. Won is only ever reached by a
+  // real conversion to a client; Lost carries a reason.
+  stage          LeadStage @default(NEW)
+  lostReason     String?   @map("lost_reason")
+  lostNote       String?   @map("lost_note")
+  stageChangedAt DateTime? @map("stage_changed_at")
+  // Who last set the stage: a user's name, "migration" (set by the one-off backfill of old leads), or
+  // null (never set — default New). The backfill only ever touches null rows and can undo only its own.
+  stageSetBy     String?   @map("stage_set_by")
 
   quotes Quote[]
 

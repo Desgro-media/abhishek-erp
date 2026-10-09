@@ -32,6 +32,8 @@ router.delete("/clients/:id", clients.deleteClient);
 router.get("/leads", leads.listLeads);
 router.post("/leads", leads.createLead);
 router.patch("/leads/:id", leads.updateLead);
+router.patch("/leads/:id/stage", leads.setLeadStage);
+router.post("/leads/:id/lost", leads.markLeadLost);
 router.delete("/leads/:id", leads.deleteLead);
 
 router.get("/quotes", quotes.listQuotes);

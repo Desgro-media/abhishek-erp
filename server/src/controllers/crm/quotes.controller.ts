@@ -152,7 +152,7 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
         clientId = newClient.id;
         convertedClientName = quote.lead.name;
       }
-      await tx.lead.update({ where: { id: quote.leadId }, data: { status: "CONVERTED", convertedClientId: clientId } });
+      await tx.lead.update({ where: { id: quote.leadId }, data: { status: "CONVERTED", convertedClientId: clientId, stage: "WON", lostReason: null, lostNote: null, stageChangedAt: new Date(), stageSetBy: "Converted via quote" } });
       await tx.quote.update({ where: { id: quote.id }, data: { clientId } });
     }
 
@@ -260,7 +260,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
         });
         clientId = newClient.id;
       }
-      await tx.lead.update({ where: { id: quote.leadId }, data: { status: "CONVERTED", convertedClientId: clientId } });
+      await tx.lead.update({ where: { id: quote.leadId }, data: { status: "CONVERTED", convertedClientId: clientId, stage: "WON", lostReason: null, lostNote: null, stageChangedAt: new Date(), stageSetBy: "Converted via quote" } });
       await tx.quote.update({ where: { id: quoteId }, data: { clientId } });
     }
 

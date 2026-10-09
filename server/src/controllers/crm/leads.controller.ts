@@ -3,7 +3,8 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { recordAudit } from "../../services/audit.service";
-import { leadCreateSchema, leadUpdateSchema } from "../../validation/crm.schemas";
+import { leadCreateSchema, leadUpdateSchema, leadStageSchema, leadLostSchema } from "../../validation/crm.schemas";
+import { STAGE_TO_STATUS, STATUS_TO_STAGE } from "../../services/leadStage";
 import { nextSequentialCode } from "../../utils/sequentialCode";
 
 async function nextLeadCode(): Promise<string> {
@@ -47,7 +48,14 @@ export const updateLead: RequestHandler = asyncHandler(async (req, res) => {
   if (!seesWholeSalesTeam(req.user?.roles) && existing.leadOwner && existing.leadOwner !== req.user!.name) {
     return res.status(403).json({ error: "Forbidden — not your lead" });
   }
-  const lead = await prisma.lead.update({ where: { id: existing.id }, data: parsed.data });
+  // The older PATCH can still set the coarse `status` directly; keep the pipeline stage in step with it so
+  // the two never disagree. (The Leads page itself doesn't send `status` — it uses the stage endpoints.)
+  const data: Record<string, unknown> = { ...parsed.data };
+  if (parsed.data.status) {
+    Object.assign(data, { stage: STATUS_TO_STAGE[parsed.data.status], stageChangedAt: new Date(), stageSetBy: req.user!.name });
+    if (parsed.data.status !== "LOST") Object.assign(data, { lostReason: null, lostNote: null });
+  }
+  const lead = await prisma.lead.update({ where: { id: existing.id }, data });
 
   await recordAudit({ userId: req.user!.sub, action: "CRM_LEAD_UPDATE", entityType: "Lead", entityId: lead.id, afterData: parsed.data });
   res.json({ lead });
@@ -71,4 +79,57 @@ export const deleteLead: RequestHandler = asyncHandler(async (req, res) => {
 
   await recordAudit({ userId: req.user!.sub, action: "CRM_LEAD_DELETE", entityType: "Lead", entityId: lead.id, beforeData: { leadCode: lead.leadCode, name: lead.name, leadOwner: lead.leadOwner } });
   res.status(204).send();
+});
+
+// ---- Pipeline stage ----
+// Same ownership rule as everywhere else on a lead (a plain rep only works their own), plus: an unclaimed lead
+// in the shared Open queue can't be moved by a rep — they claim it first. Admin / Sales Head move anyone's.
+async function loadWorkableLead(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1]) {
+  const lead = await prisma.lead.findUnique({ where: { id: req.params.id } });
+  if (!lead) { res.status(404).json({ error: "Lead not found" }); return null; }
+  if (!seesWholeSalesTeam(req.user?.roles)) {
+    if (!lead.leadOwner) { res.status(403).json({ error: "Claim this lead first" }); return null; }
+    if (lead.leadOwner !== req.user!.name) { res.status(403).json({ error: "Forbidden — not your lead" }); return null; }
+  }
+  // A converted lead is Won and stays Won — it's a client now; its history lives on the client.
+  if (lead.convertedClientId || lead.stage === "WON") { res.status(409).json({ error: "This lead has already been converted to a client" }); return null; }
+  return lead;
+}
+
+export const setLeadStage: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = leadStageSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const lead = await loadWorkableLead(req, res);
+  if (!lead) return;
+  const { stage } = parsed.data;
+  if (lead.stage === stage) return res.json({ lead });
+
+  // Moving back out of Lost reopens it, so the old lost reason goes.
+  const updated = await prisma.lead.update({
+    where: { id: lead.id },
+    data: { stage, status: STAGE_TO_STATUS[stage], lostReason: null, lostNote: null, stageChangedAt: new Date(), stageSetBy: req.user!.name },
+  });
+  await recordAudit({
+    userId: req.user!.sub, action: "CRM_LEAD_STAGE", entityType: "Lead", entityId: lead.id,
+    beforeData: { stage: lead.stage, lostReason: lead.lostReason }, afterData: { stage: updated.stage },
+  });
+  res.json({ lead: updated });
+});
+
+export const markLeadLost: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = leadLostSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const lead = await loadWorkableLead(req, res);
+  if (!lead) return;
+  if (lead.stage === "LOST") return res.status(409).json({ error: "Already marked lost — move it back into the pipeline first to change the reason" });
+
+  const updated = await prisma.lead.update({
+    where: { id: lead.id },
+    data: { stage: "LOST", status: STAGE_TO_STATUS.LOST, lostReason: parsed.data.reason, lostNote: parsed.data.note, stageChangedAt: new Date(), stageSetBy: req.user!.name },
+  });
+  await recordAudit({
+    userId: req.user!.sub, action: "CRM_LEAD_LOST", entityType: "Lead", entityId: lead.id,
+    beforeData: { stage: lead.stage }, afterData: { stage: "LOST", reason: parsed.data.reason, note: parsed.data.note },
+  });
+  res.json({ lead: updated });
 });

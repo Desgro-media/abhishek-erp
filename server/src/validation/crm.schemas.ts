@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MOVABLE_STAGES, LOST_REASONS } from "../services/leadStage";
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
 
@@ -112,3 +113,11 @@ export const metaCampaignCreateSchema = z.object({
   startAt: dateStr,
 });
 export const metaCampaignUpdateSchema = metaCampaignCreateSchema.partial();
+
+// Moving a lead along the pipeline. WON isn't accepted (only a real conversion makes a lead Won) and LOST
+// has its own endpoint because it needs a reason.
+export const leadStageSchema = z.object({ stage: z.enum(MOVABLE_STAGES) });
+export const leadLostSchema = z.object({
+  reason: z.enum(LOST_REASONS),
+  note: z.string().trim().max(500).optional().transform((v) => (v ? v : null)),
+});
