@@ -23,6 +23,7 @@ router.use(authenticate);
 router.get("/clients", requireClientsUser, clients.listClients);
 router.get("/clients/:id", requireClientsUser, clients.getClient);
 router.get("/tasks", requireClientsUser, tasks.listTasks);
+router.get("/clients/:id/lead-advances", requireClientsUser, leads.getClientLeadAdvances);
 
 // Client collaboration data (ad access, brief, brand assets, meetings) — row-scoped to the one client in
 // the URL inside each handler, so it's open to anyone with Clients access, reads and writes alike.
@@ -49,6 +50,12 @@ router.post("/leads", leads.createLead);
 router.patch("/leads/:id", leads.updateLead);
 router.patch("/leads/:id/stage", leads.setLeadStage);
 router.post("/leads/:id/lost", leads.markLeadLost);
+router.get("/leads/:id/payments", leads.listLeadPayments);
+router.post("/leads/:id/payments", leads.recordLeadPayment);
+router.delete("/leads/:id/payments/:paymentId", leads.deleteLeadPayment);
+router.post("/leads/:id/convert", leads.convertLead);
+router.get("/lead-settings", leads.getLeadSettings);
+router.put("/lead-settings", leads.updateLeadSettings);
 router.delete("/leads/:id", leads.deleteLead);
 
 router.get("/quotes", quotes.listQuotes);

@@ -578,9 +578,14 @@ function adMetrics(c){
 const LEAD_SOURCES = ["Meta","Organic","References"];
 let marketingLeads = [];
 function mapLead(l){
-  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), stage:TITLECASE_FROM_API(l.stage), lostReason:l.lostReason||null, lostNote:l.lostNote||null, stageSetBy:l.stageSetBy||null, convertedClientId:l.convertedClientId||null, notes:l.notes||"" };
+  return { id:l.id, name:l.name, phone:l.phone||"", email:l.email||"", source:l.source, serviceInterested:l.serviceInterested, leadOwner:l.leadOwner||"", createdDate:isoDate(l.createdAt), status:TITLECASE_FROM_API(l.status), stage:TITLECASE_FROM_API(l.stage), lostReason:l.lostReason||null, lostNote:l.lostNote||null, stageSetBy:l.stageSetBy||null, paidTotal:Number(l.paidTotal||0), convertedClientId:l.convertedClientId||null, notes:l.notes||"" };
 }
-async function loadLeads(){ marketingLeads = (await apiJson("/api/crm/leads")).leads.map(mapLead); }
+let leadConversionThreshold = 5000;
+async function loadLeads(){
+  const [d, settings] = await Promise.all([apiJson("/api/crm/leads"), apiJson("/api/crm/lead-settings").catch(()=>null)]);
+  marketingLeads = d.leads.map(mapLead);
+  if(settings) leadConversionThreshold = Number(settings.conversionThreshold);
+}
 // Pipeline stages. "Won" is only ever reached by converting the lead into a client (today: quote -> invoice),
 // never by moving a card; "Lost" needs a reason. The server enforces both.
 const LEAD_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
@@ -633,6 +638,136 @@ function openMarkLeadLost(id){
     }catch(err){ toast(err.message || "Couldn't mark lost"); }
   });
 }
+// ---- Lead advance payments, convert, threshold ----
+// A lead payment is only a record: it moves no money. It waits for an invoice, then becomes a pending payment on
+// it that Finance approves like any other (Accounts > Payment Receipts) — bank entry, commission and revenue
+// follow the received date Finance sets. The server enforces all of this; these screens just explain it.
+const LEAD_PAYMENT_MODES = [["BANK_TRANSFER","Bank transfer"],["UPI","UPI"],["CASH","Cash"],["CHEQUE","Cheque"]];
+const LEAD_PAYMENT_STATUS = {AWAITING_INVOICE:["Awaiting invoice","warn"], ON_INVOICE_PENDING:["With Finance","blue"], APPROVED:["Approved","pos"]};
+const isAdminUser = () => !!(currentUser && currentUser.isAdmin);
+const localToday = ()=>{ const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); };
+async function openRecordLeadPayment(id){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) return;
+  let hist = [];
+  try{ hist = (await apiJson(`/api/crm/leads/${id}/payments`)).payments; }catch(err){ toast(err.message || "Couldn't load payments"); return; }
+  const paid = hist.reduce((a,p)=>a+p.amount,0), today = localToday();
+  showModal(`
+    <div class="modal-head"><h3>Record payment — ${esc(l.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-lead-payment"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Paid so far: <b>${inr(paid)}</b>. When total payments reach <b>${inr(leadConversionThreshold)}</b> this lead becomes a client automatically. <b>This only records the payment</b> — nothing is booked until an invoice is raised and Finance approves it.</div></div>
+      ${hist.length?`<div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Mode</th><th class="num">Amount</th><th>Status</th><th></th></tr></thead><tbody>${hist.map(p=>{ const st=LEAD_PAYMENT_STATUS[p.status]; return `<tr><td class="muted">${fmtDateShort(p.paymentDate)}</td><td class="muted">${esc(p.modeLabel)}${p.note?`<div class="subtext">${esc(p.note)}</div>`:''}</td><td class="num mono">${inr(p.amount)}</td><td>${pill(st[0],st[1])}${p.invoiceNo?`<div class="subtext mono">${esc(p.invoiceNo)}</div>`:''}</td><td>${p.status==='AWAITING_INVOICE'?`<button type="button" class="btn btn-sm ghost" title="Remove this entry" onclick="deleteLeadPayment('${l.id}','${p.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`:''}
+      <div class="field-row">
+        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" min="0.01" step="0.01" name="amount" required></div>
+        <div><label class="field-label">Date received</label><input class="field-input" type="date" name="paymentDate" value="${today}" max="${today}" required></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label">Mode</label><select class="field-input" name="mode">${LEAD_PAYMENT_MODES.map(([v,t])=>`<option value="${v}">${t}</option>`).join('')}</select></div>
+        <div><label class="field-label">Note</label><input class="field-input" name="note" maxlength="500" placeholder="e.g. Token advance"></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Close</button><button type="submit" class="btn primary">Record payment</button></div></div>
+    </form>`, true);
+  document.getElementById("f-lead-payment").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    try{
+      const r = await apiJson(`/api/crm/leads/${id}/payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount:Number(f.get("amount")), paymentDate:f.get("paymentDate"), mode:f.get("mode"), note:f.get("note") }) });
+      await loadLeads(); if(r.converted) await loadClients();
+      closeModal();
+      toast(r.converted ? l.name+" has paid "+inr(r.paidTotal)+" — converted to a client automatically" : "Payment recorded · "+inr(Math.max(0,leadConversionThreshold-r.paidTotal))+" more auto-converts");
+      render();
+    }catch(err){ toast(err.message || "Couldn't record payment"); }
+  });
+}
+async function deleteLeadPayment(leadId, paymentId){
+  try{
+    await apiJson(`/api/crm/leads/${leadId}/payments/${paymentId}`, { method:"DELETE" });
+    await loadLeads(); toast("Payment entry removed"); closeModal(); render(); openRecordLeadPayment(leadId);
+  }catch(err){ toast(err.message || "Couldn't remove"); }
+}
+function openConvertLead(id){
+  const l = leadById(id);
+  if(!l || l.convertedClientId || !canWorkLead(l)) return;
+  const today = localToday();
+  showModal(`
+    <div class="modal-head"><h3>Convert to client — ${esc(l.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-convert-lead"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>You can convert any time, paid or not. ${l.paidTotal>0?`The <b>${inr(l.paidTotal)}</b> they've paid so far goes onto their first invoice for Finance to approve.`:''} If a client with this name already exists, the lead is linked to them instead of creating a duplicate.</div></div>
+      <div><label class="field-label">Client name</label><input class="field-input" name="name" maxlength="200" required value="${esc(l.name)}"></div>
+      <div class="field-row">
+        <div><label class="field-label">Industry</label><input class="field-input" name="industry" maxlength="100" placeholder="e.g. FMCG"></div>
+        <div><label class="field-label">City</label><input class="field-input" name="city" maxlength="100" placeholder="e.g. Kozhikode, India"></div>
+      </div>
+      <div><label class="field-label">Services</label><div class="check-row">${SERVICE_DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="services" value="${esc(d)}" ${d===l.serviceInterested?'checked':''}>${esc(d)}</label>`).join('')}</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Billing</label><select class="field-input" name="billingType"><option value="PREPAID">Prepaid — amount agreed up front</option><option value="POSTPAID">Postpaid — finalized once work is complete</option></select></div>
+        <div><label class="field-label">Onboarded</label><input class="field-input" type="date" name="onboardedAt" value="${today}" max="${today}" required></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Convert to client</button></div></div>
+    </form>`, true);
+  document.getElementById("f-convert-lead").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    try{
+      const r = await apiJson(`/api/crm/leads/${id}/convert`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name:f.get("name"), industry:f.get("industry"), city:f.get("city"), services:f.getAll("services"), billingType:f.get("billingType"), onboardedAt:f.get("onboardedAt") }) });
+      await Promise.all([loadLeads(), loadClients()]);
+      closeModal(); toast(l.name+(r.created?" converted to a new client":" linked to an existing client")); render();
+    }catch(err){ toast(err.message || "Couldn't convert"); }
+  });
+}
+function openLeadThresholdSetting(){
+  if(!isAdminUser()) return;
+  showModal(`
+    <div class="modal-head"><h3>Auto-convert threshold</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-lead-threshold"><div class="modal-body">
+      <div class="field-label">Convert a lead to a client once it has paid (₹)</div>
+      <input class="field-input" type="number" min="1" step="1" name="threshold" required value="${leadConversionThreshold}">
+      <div class="subtext" id="threshold-hint"></div>
+      <div class="subtext">Lowering it converts any lead that has already paid at least the new amount. Only Admin can change this; every change is logged.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  const f = document.getElementById("f-lead-threshold");
+  const hint = ()=>{ const v=Number(f.threshold.value); const n = v>0 ? marketingLeads.filter(l=>!l.convertedClientId && l.paidTotal>0 && l.paidTotal>=v).length : 0; document.getElementById("threshold-hint").textContent = n ? `${n} lead${n===1?'':'s'} already paid this much and will convert now.` : ''; };
+  f.threshold.addEventListener("input", hint); hint();
+  f.addEventListener("submit", async e=>{
+    e.preventDefault();
+    try{
+      const r = await apiJson("/api/crm/lead-settings", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ conversionThreshold:Number(f.threshold.value) }) });
+      await Promise.all([loadLeads(), loadClients()]);
+      closeModal(); toast("Threshold set to "+inr(r.conversionThreshold)+(r.converted.length?` · ${r.converted.length} lead${r.converted.length===1?'':'s'} converted`:'')); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
+}
+// What a client's lead paid before becoming a client, and where each advance is now (client detail page).
+let clientLeadAdvances = {};
+async function loadClientLeadAdvances(id){
+  try{ clientLeadAdvances[id] = await apiJson(`/api/crm/clients/${id}/lead-advances`); }catch(err){ clientLeadAdvances[id] = null; }
+  if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
+}
+function leadAdvanceBannerHTML(c){
+  const d = clientLeadAdvances[c.id];
+  if(!d || !d.payments.length) return '';
+  const t = d.totals, parts = [];
+  if(t.awaitingInvoice>0) parts.push(`<b>${inr(t.awaitingInvoice)}</b> waiting for their next invoice`);
+  if(t.onInvoicePending>0) parts.push(`<b>${inr(t.onInvoicePending)}</b> with Finance for approval (Accounts → Payment Receipts)`);
+  if(t.approved>0) parts.push(`<b>${inr(t.approved)}</b> approved`);
+  return `<div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-coins"/></svg><div><b>Advance paid while they were a lead:</b> ${parts.join(' · ')}.</div></div>`;
+}
+// Finance: advances leads have paid that haven't reached the books yet, so none is forgotten. Read-only.
+let leadAdvances = null;
+async function loadLeadAdvances(){ leadAdvances = await apiJson("/api/finance/lead-advances"); }
+function leadAdvancesPanelHTML(){
+  const rows = leadAdvances ? leadAdvances.advances : [];
+  if(!rows.length) return '';
+  const total = rows.reduce((a,r)=>a+r.amount,0), old = rows.filter(r=>r.olderThanApprovalWindow).length;
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Lead advances not yet on the books</h3><div class="sub">Money leads paid before becoming clients — ${rows.length} entr${rows.length===1?'y':'ies'}, ${inr(total)}. Nothing is booked until an invoice exists and you approve it above.</div></div>${old?pill(old+' older than '+leadAdvances.maxBackdateDays+' days','warn'):''}</div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Lead / client</th><th class="num">Amount</th><th>Reported</th><th>Mode</th><th>Sales person</th><th>Where it is</th></tr></thead>
+      <tbody>${rows.map(r=>{ const st=LEAD_PAYMENT_STATUS[r.status]; return `<tr><td><div style="font-weight:700;font-size:13px;">${esc(r.lead.name)}</div><div class="subtext">${r.clientId?`Client: ${clientLink(r.clientId, r.clientName||'client')}`:'Not a client yet'}</div></td><td class="num mono">${inr(r.amount)}</td><td class="muted">${fmtDateShort(r.reportedDate)}${r.olderThanApprovalWindow?`<div class="subtext" style="color:var(--warn);">${r.ageDays} days old</div>`:''}</td><td class="muted">${esc(r.mode)}</td><td class="muted">${esc(r.salesPerson)}</td><td>${pill(st[0],st[1])}${r.invoiceNo?`<div class="subtext mono">${esc(r.invoiceNo)}</div>`:''}</td></tr>`; }).join('')}</tbody>
+    </table></div>
+  </div>`;
+}
 function goToClient(id){ setSub('clients','all'); openClientDetail(id); }
 // Stage control: a dropdown for leads you can work, a plain pill otherwise (Won/Lost-by-someone-else, other reps' leads).
 function leadStageControl(l){
@@ -650,7 +785,9 @@ function leadCardHTML(l){
     ${l.phone?`<div class="subtext mono"><a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a></div>`:''}
     ${stage==='Lost' && l.lostReason ? `<div class="subtext">Lost — ${esc(l.lostReason)}${l.lostNote?': '+esc(l.lostNote):''}</div>` : ''}
     <div class="card-foot"><span class="assignee">${l.leadOwner?`<span class="mini-avatar sm">${initials(l.leadOwner)}</span>${esc(l.leadOwner)}`:pill('Open','warn')}</span><span class="due">${fmtDateShort(l.createdDate)}</span></div>
-    ${(!l.convertedClientId && canWorkLead(l)) ? `<div class="card-move">${leadStageControl(l)}<button type="button" class="card-edit" title="Edit lead" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>` : ''}
+    ${l.paidTotal>0 ? `<div style="font-size:11.5px;color:var(--ink-soft);"><b class="mono" style="color:var(--ink);">${inr(l.paidTotal)}</b> paid${l.convertedClientId?'':` · <span class="faint">${inr(Math.max(0,leadConversionThreshold-l.paidTotal))} more auto-converts</span>`}</div>` : ''}
+    ${(!l.convertedClientId && canWorkLead(l)) ? `<div class="card-move">${leadStageControl(l)}<button type="button" class="card-edit" title="Edit lead" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>
+    <div style="display:flex;gap:6px;">${stage!=='Lost'?`<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openRecordLeadPayment('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Payment</button>`:''}<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openConvertLead('${l.id}')">Convert</button></div>` : ''}
     ${l.convertedClientId ? `<button type="button" class="btn btn-sm ghost" style="justify-content:center;" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : ''}
     ${claimable ? `<button type="button" class="btn btn-sm primary" style="justify-content:center;" onclick="assignLeadToMe('${l.id}')">Assign to me</button>` : ''}
   </div>`;
@@ -1844,7 +1981,7 @@ const TAB_REFRESH = {
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
-  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():loadReceiptsSummary()],
+  "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():loadReceiptsSummary(), ()=>isFinanceAdminUser(currentUser)?loadLeadAdvances().catch(()=>{}):null],
   "accounts/overview":[()=>isFinanceAdminUser(currentUser)?refreshFinanceReports():null],
   "accounts/commissions":[()=>isFinanceAdminUser(currentUser)?loadCommissionSummary():null],
 };
@@ -4647,7 +4784,7 @@ function openLogMeeting(clientId){
   });
 }
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
-function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); }
+function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
 function clientDetailPage(id){
@@ -4675,6 +4812,7 @@ function clientDetailPage(id){
         <div><label class="field-label">Billing</label><div>${billingType==='Postpaid'?pill('Postpaid','blue'):esc(billingType)}</div></div>
         <div><label class="field-label">Services</label><div>${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</div></div>
       </div>
+      ${hidePayment ? '' : leadAdvanceBannerHTML(c)}
       ${hidePayment ? '' : `
       <div class="section-label">Payment</div>
       ${isUnbilledPostpaid ? `<div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Post-paid client.</b> Amount is only finalized and invoiced once the work is complete.</div></div>` : `
@@ -4849,14 +4987,16 @@ function mktLeads(){
   const wonCount = pipelineSource.filter(l=>leadStage(l)==='Won').length;
   const lostCount = pipelineSource.filter(l=>leadStage(l)==='Lost').length;
   const winRate = (wonCount+lostCount) ? Math.round(wonCount/(wonCount+lostCount)*100) : null;
+  const paidWaiting = pipelineSource.filter(l=>!l.convertedClientId && l.paidTotal>0);
   return `
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">In Pipeline</div><div class="kpi-value mono">${activeCount}</div><div class="kpi-sub">not yet won or lost</div></div>
     <div class="kpi-card"><div class="kpi-label">Converted to Client</div><div class="kpi-value mono pos">${wonCount}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Lost</div><div class="kpi-value mono">${lostCount}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Paid, Not Yet Client</div><div class="kpi-value mono ${paidWaiting.length?'warn':''}">${paidWaiting.length}</div><div class="kpi-sub">${paidWaiting.length?inr(paidWaiting.reduce((a,l)=>a+l.paidTotal,0))+' recorded':'nothing pending'}</div></div>
     <div class="kpi-card hero"><div class="kpi-label">Win Rate</div><div class="kpi-value mono">${winRate==null?'—':winRate+'%'}</div><div class="kpi-sub">${wonCount} won · ${lostCount} lost</div></div>
   </div>
+  <div class="banner muted" style="align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div style="flex:1;"><b>Conversion rule.</b> Convert a lead to a client any time — paid or not. Once a lead's recorded payments reach <b>${inr(leadConversionThreshold)}</b> it converts automatically. Payments are only recorded here; they reach the books through Finance when an invoice is raised.</div>${isAdminUser()?`<button class="btn btn-sm ghost" onclick="openLeadThresholdSetting()">Change</button>`:''}</div>
   ${openLeads.length ? `
   <div class="panel">
     <div class="panel-head">
@@ -4892,7 +5032,9 @@ function leadOwnerActionsCell(l){
   // Mirrors deleteLead() server-side: Admin / Sales Head delete any; a Sales rep only their own claimed leads.
   const canDelete = currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD') || (l.leadOwner && l.leadOwner===currentUser.name));
   const delBtn = canDelete ? `<button class="btn btn-sm ghost" onclick="openConfirmDelete('lead','${l.id}')" title="Delete lead"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>` : '';
-  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignPick}${assignBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
+  const flowBtns = (!l.convertedClientId && canWorkLead(l)) ? `${leadStage(l)!=='Lost'?`<button class="btn btn-sm ghost" onclick="openRecordLeadPayment('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Payment</button>`:''}<button class="btn btn-sm primary" onclick="openConvertLead('${l.id}')">Convert</button>` : '';
+  const clientBtn = l.convertedClientId ? `<button class="btn btn-sm ghost" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : '';
+  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignPick}${assignBtn}${flowBtns}${clientBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
 }
 async function assignLeadToMe(id){
   if(!currentUser) return;
@@ -5755,7 +5897,7 @@ function acctPaymentReceipts(){
   const tab = (id, label, n) => `<button class="chip ${receiptsTab===id?'active':''}" onclick="setReceiptsTab('${id}')">${label}${n?' · '+n:''}</button>`;
   return `<div class="filter-group" style="margin-bottom:14px;">${tab('pending','Pending',pending)}${tab('approved','Approved',approvedReceiptsLoaded?approvedReceiptsTotal:0)}</div>`
     + receiptsToolbar()
-    + (receiptsTab==='approved' ? acctApprovedReceipts() : acctPendingReceipts());
+    + (receiptsTab==='approved' ? acctApprovedReceipts() : acctPendingReceipts() + leadAdvancesPanelHTML());
 }
 function acctPendingReceipts(){
   const rows = filteredPendingPayments();

@@ -10,6 +10,7 @@ import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
 import { assertReceivedDate, lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
 import { nextInvoiceNo } from "../../services/finance/invoiceNumber";
+import { carryLeadAdvances } from "../../services/leadPayments";
 import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   quoteCreateSchema,
@@ -164,6 +165,8 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
       },
     });
     await tx.quote.update({ where: { id: quote.id }, data: { invoiceId: invoice.id, status: "INVOICED" } });
+    // Advances this client's lead paid before converting become pending payments on this invoice (Finance approves them as usual).
+    await carryLeadAdvances(tx, { clientId: clientId!, invoiceId: invoice.id, actorUserId: req.user!.sub });
 
     return { invoiceId: invoice.id, invoiceNo: invoice.invoiceNo, clientId, convertedClientName };
   });
@@ -267,7 +270,9 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
     // Create the invoice on the first approved payment, then top it up on
     // every later one — same rule as the old prototype.
     let invoiceId = quote.invoiceId;
+    let invoiceCreatedNow = false;
     if (!invoiceId) {
+      invoiceCreatedNow = true;
       const invoice = await tx.invoice.create({
         data: {
           clientId: clientId!, invoiceNo: await nextInvoiceNo(tx),
@@ -292,6 +297,8 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
       salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: quote.createdBy, paymentAmount: Number(pending.amount), date, sourcePaymentId: payment.id });
     }
     await tx.quotePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
+    // First invoice for this client: advances their lead paid before converting become pending payments on it.
+    if (invoiceCreatedNow) await carryLeadAdvances(tx, { clientId: clientId!, invoiceId, actorUserId: req.user!.sub });
 
     const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { items: true, payments: true } });
     const balance = invoiceTotal(invoice.items) - sumAmounts(invoice.payments);
