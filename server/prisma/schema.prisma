@@ -1012,6 +1012,11 @@ model Client {
   quotes   Quote[]
   tasks    ClientTask[]
 
+  adAccess      ClientAdAccess?
+  campaignBrief ClientCampaignBrief?
+  brandAssets   ClientBrandAsset[]
+  meetings      ClientMeeting[]
+
   @@map("clients")
 }
 
@@ -1222,4 +1227,81 @@ model MetaAdsCampaign {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("meta_ads_campaigns")
+}
+
+// ---- Client collaboration data (shown on the client detail page) -------------------------------
+// Ad account access, brand assets and the campaign brief are what DesGro needs from a client to run
+// their ads; the meetings log is DesGro's own check-in notes. Everything deletes with the client,
+// like its tasks do. No passwords are ever stored here — access is granted on the ad platform itself.
+
+enum AdAccessStatus {
+  GRANTED
+  PENDING
+  REVOKED
+}
+
+// One row per client.
+model ClientAdAccess {
+  id          String         @id @default(uuid())
+  clientId    String         @unique @map("client_id")
+  client      Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  platform    String
+  accountId   String?        @map("account_id")
+  accessEmail String?        @map("access_email")
+  status      AdAccessStatus @default(PENDING)
+  notes       String?
+  updatedBy   String         @map("updated_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("client_ad_access")
+}
+
+// One row per client. Budget is free text on purpose ("AED 15,000 / month") — clients budget in
+// different currencies and cadences.
+model ClientCampaignBrief {
+  id        String  @id @default(uuid())
+  clientId  String  @unique @map("client_id")
+  client    Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  objective String?
+  audience  String?
+  budget    String?
+  updatedBy String  @map("updated_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("client_campaign_briefs")
+}
+
+// A link to where the asset lives (Drive etc.) — no file is stored here.
+model ClientBrandAsset {
+  id       String  @id @default(uuid())
+  clientId String  @map("client_id")
+  client   Client  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name     String
+  link     String?
+  notes    String?
+  addedBy  String  @map("added_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId])
+  @@map("client_brand_assets")
+}
+
+model ClientMeeting {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  attendees String
+  notes     String
+  loggedBy  String   @map("logged_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId, date])
+  @@map("client_meetings")
 }

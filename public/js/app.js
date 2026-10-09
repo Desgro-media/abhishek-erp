@@ -4414,8 +4414,145 @@ async function restoreClient(id){
   }catch(err){ toast(err.message || "Couldn't restore client"); }
 }
 // Mirrors deleteClient() server-side: only Admin / Sales Head may delete (a Sales rep can still edit).
+// ---- Client collaboration data: brand assets, ad account access, campaign brief, meetings ----
+// Loaded per client when its page opens (GET /api/crm/clients/:id/collab) and cached here; every save
+// reloads it. The server scopes and validates everything — these helpers only draw and submit.
+let clientCollab = {};
+const AD_ACCESS_STATUSES = ["Granted","Pending","Revoked"];
+function isPerformanceMarketingClient(c){ return !!(c && c.services && c.services.includes("Performance Marketing")); }
+async function loadClientCollab(id){
+  try{
+    clientCollab[id] = await apiJson(`/api/crm/clients/${id}/collab`);
+  }catch(err){ clientCollab[id] = { error: err.message || "Couldn't load" }; }
+  // Redraw only if the user is still looking at this client's page.
+  if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
+}
+const collabHead = (title, count, btn)=>`<div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+    <div>${title}${count!=null?`<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;"> · ${count}</span>`:''}</div>${btn||''}</div>`;
+const collabBtn = (onclick, icon, label)=>`<button class="btn btn-sm ghost" onclick="${onclick}"><svg class="icon" style="width:12px;height:12px"><use href="#${icon}"/></svg>${label}</button>`;
+// Only http(s) links become clickable (the server enforces the same rule on save).
+const safeHref = u => /^https?:\/\//i.test(u||'') ? esc(u) : null;
+function clientCollabHTML(c){
+  const d = clientCollab[c.id];
+  if(!d) return collabHead('Client details') + `<div class="empty">Loading…</div>`;
+  if(d.error) return collabHead('Client details') + `<div class="empty">${esc(d.error)}</div>`;
+  return brandAssetsSectionHTML(c, d) + (isPerformanceMarketingClient(c) ? adAccessSectionHTML(c, d) + campaignBriefSectionHTML(c, d) : '') + meetingsSectionHTML(c, d);
+}
+function brandAssetsSectionHTML(c, d){
+  const assets = d.brandAssets || [];
+  return collabHead('Brand Assets', assets.length, collabBtn(`openAddBrandAsset('${c.id}')`,'i-plus','Add asset')) +
+  (assets.length ? `<div style="display:flex;flex-direction:column;gap:6px;">${assets.map(a=>{ const href = safeHref(a.link); return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;font-size:12.5px;">
+      <span style="overflow:hidden;">
+        ${href?`<a href="${href}" target="_blank" rel="noopener noreferrer" style="font-weight:700;">${esc(a.name)}</a>`:`<span style="font-weight:700;">${esc(a.name)}</span>`}
+        ${a.notes?`<div class="subtext">${esc(a.notes)}</div>`:''}
+      </span>
+      <button type="button" class="btn btn-sm ghost" title="Remove asset" onclick="removeBrandAsset('${c.id}','${esc(a.id)}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>
+    </div>`; }).join('')}</div>` : `<div class="empty">No brand assets shared yet.</div>`);
+}
+function adAccessSectionHTML(c, d){
+  const a = d.adAccess;
+  return collabHead('Ad Account Access', null, collabBtn(`openEditAdAccess('${c.id}')`,'i-edit','Update access')) +
+  (a ? `<div class="field-row cols-3">
+    <div><label class="field-label">Platform</label><div>${esc(a.platform)}</div></div>
+    <div><label class="field-label">Account ID</label><div class="mono">${esc(a.accountId||'—')}</div></div>
+    <div><label class="field-label">Access Email</label><div class="mono">${esc(a.accessEmail||'—')}</div></div>
+    <div><label class="field-label">Status</label><div>${pill(TITLECASE_FROM_API(a.status), a.status==='GRANTED'?'pos':a.status==='PENDING'?'warn':'neg')}</div></div>
+    <div style="grid-column:span 2;"><label class="field-label">Notes</label><div>${a.notes?esc(a.notes):'<span class="faint">—</span>'}</div></div>
+  </div><div class="subtext">Updated by ${esc(a.updatedBy)} · ${fmtDateShort(isoDate(a.updatedAt))}</div>` : `<div class="empty">No ad account access on record yet.</div>`);
+}
+function campaignBriefSectionHTML(c, d){
+  const b = d.campaignBrief;
+  const has = b && (b.objective||b.audience||b.budget);
+  const val = v => v ? esc(v) : '<span class="faint">—</span>';
+  return collabHead('Campaign Brief', null, collabBtn(`openEditCampaignBrief('${c.id}')`,'i-edit','Edit brief')) +
+  (has ? `<div class="field-row cols-3">
+    <div><label class="field-label">Objective</label><div>${val(b.objective)}</div></div>
+    <div><label class="field-label">Audience</label><div>${val(b.audience)}</div></div>
+    <div><label class="field-label">Budget</label><div>${val(b.budget)}</div></div>
+  </div><div class="subtext">Updated by ${esc(b.updatedBy)} · ${fmtDateShort(isoDate(b.updatedAt))}</div>` : `<div class="empty">No campaign brief set yet.</div>`);
+}
+function meetingsSectionHTML(c, d){
+  const ms = d.meetings || [];
+  return collabHead('Weekly Client Meetings', ms.length, collabBtn(`openLogMeeting('${c.id}')`,'i-plus','Log meeting')) +
+  (ms.length ? `<div style="display:flex;flex-direction:column;gap:8px;">${ms.map(m=>`
+    <div style="padding:9px 11px;border:1px solid var(--line);border-radius:7px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;"><b style="font-size:12.5px;">${fmtDate(m.date)}</b><span class="subtext">Logged by ${esc(m.loggedBy)}${canDeleteClients()?` <button type="button" class="btn btn-sm ghost" title="Delete this meeting log" onclick="openConfirmDelete('clientMeeting','${c.id}|${esc(m.id)}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-x"/></svg></button>`:''}</span></div>
+      <div class="subtext" style="margin-top:3px;">${esc(m.attendees)}</div>
+      <div style="font-size:12.5px;margin-top:5px;white-space:pre-wrap;">${esc(m.notes)}</div>
+    </div>`).join('')}</div>` : `<div class="empty">No meetings logged yet.</div>`);
+}
+const collabModalHead = t => `<div class="modal-head"><h3>${t}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>`;
+const collabModalFoot = label => `<div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${label}</button></div></div>`;
+// Shared submit plumbing: send, reload this client's collab data, toast, close.
+async function collabSave(clientId, method, path, payload, okMsg){
+  try{
+    await apiJson(`/api/crm/clients/${clientId}${path}`, { method, headers:{"Content-Type":"application/json"}, body: payload?JSON.stringify(payload):undefined });
+    await loadClientCollab(clientId);
+    toast(okMsg); closeModal();
+  }catch(err){ toast(err.message || "Couldn't save"); }
+}
+function openEditAdAccess(clientId){
+  const a = (clientCollab[clientId]||{}).adAccess || {};
+  showModal(`${collabModalHead('Update ad account access')}
+    <form id="f-edit-ad-access"><div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Record who has access and where. <b>Never enter a password here</b> — access is granted on the ad platform itself.</div></div>
+      <div class="field-row">
+        <div><label class="field-label">Platform</label><input class="field-input" name="platform" maxlength="100" value="${esc(a.platform||'Meta Business Manager')}" required></div>
+        <div><label class="field-label">Account ID</label><input class="field-input" name="accountId" maxlength="100" value="${esc(a.accountId||'')}" placeholder="act_xxxxxxxxxx"></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label">Access Email</label><input class="field-input" type="email" name="accessEmail" maxlength="200" value="${esc(a.accessEmail||'')}" placeholder="ads@desgromedia.com"></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${AD_ACCESS_STATUSES.map(s=>`<option value="${s.toUpperCase()}" ${s.toUpperCase()===(a.status||'PENDING')?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label">Notes</label><textarea class="field-input" name="notes" rows="2" maxlength="1000" placeholder="Anything about how access is set up">${esc(a.notes||'')}</textarea></div>
+    </div>${collabModalFoot('Save')}</form>`);
+  document.getElementById("f-edit-ad-access").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "PUT", "/ad-access", { platform:f.get("platform"), accountId:f.get("accountId"), accessEmail:f.get("accessEmail"), status:f.get("status"), notes:f.get("notes") }, "Ad account access updated");
+  });
+}
+function openEditCampaignBrief(clientId){
+  const b = (clientCollab[clientId]||{}).campaignBrief || {};
+  showModal(`${collabModalHead('Edit campaign brief')}
+    <form id="f-edit-campaign-brief"><div class="modal-body">
+      <div><label class="field-label">Objective</label><input class="field-input" name="objective" maxlength="500" value="${esc(b.objective||'')}" placeholder="e.g. Lead generation — showroom visits"></div>
+      <div><label class="field-label">Audience</label><input class="field-input" name="audience" maxlength="500" value="${esc(b.audience||'')}" placeholder="e.g. Homeowners, 28–55, UAE"></div>
+      <div><label class="field-label">Budget</label><input class="field-input" name="budget" maxlength="200" value="${esc(b.budget||'')}" placeholder="e.g. AED 15,000 / month"></div>
+    </div>${collabModalFoot('Save')}</form>`);
+  document.getElementById("f-edit-campaign-brief").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "PUT", "/campaign-brief", { objective:f.get("objective"), audience:f.get("audience"), budget:f.get("budget") }, "Campaign brief updated");
+  });
+}
+function openAddBrandAsset(clientId){
+  showModal(`${collabModalHead('Add brand asset')}
+    <form id="f-add-brand-asset"><div class="modal-body">
+      <div><label class="field-label">Name</label><input class="field-input" name="name" maxlength="200" required placeholder="e.g. Logo pack"></div>
+      <div><label class="field-label">Link</label><input class="field-input" type="url" name="link" maxlength="2000" placeholder="https://drive.google.com/..."></div>
+      <div><label class="field-label">Notes</label><input class="field-input" name="notes" maxlength="500" placeholder="Optional"></div>
+    </div>${collabModalFoot('Add')}</form>`);
+  document.getElementById("f-add-brand-asset").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "POST", "/brand-assets", { name:f.get("name"), link:f.get("link"), notes:f.get("notes") }, "Brand asset added");
+  });
+}
+function removeBrandAsset(clientId, assetId){ collabSave(clientId, "DELETE", `/brand-assets/${assetId}`, null, "Brand asset removed"); }
+function openLogMeeting(clientId){
+  const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  showModal(`${collabModalHead('Log client meeting')}
+    <form id="f-log-meeting"><div class="modal-body">
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${local}" max="${local}" required></div>
+      <div><label class="field-label">Attendees</label><input class="field-input" name="attendees" maxlength="500" required placeholder="e.g. Hafsa Rahman, Client Ops Manager"></div>
+      <div><label class="field-label">Notes</label><textarea class="field-input" name="notes" rows="3" maxlength="5000" required placeholder="What was discussed / decided"></textarea></div>
+    </div>${collabModalFoot('Save')}</form>`);
+  document.getElementById("f-log-meeting").addEventListener("submit", e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    collabSave(clientId, "POST", "/meetings", { date:f.get("date"), attendees:f.get("attendees"), notes:f.get("notes") }, "Meeting logged");
+  });
+}
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
-function openClientDetail(id){ nav.detail = {type:'client', id}; render(); }
+function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
 function clientDetailPage(id){
@@ -4458,6 +4595,7 @@ function clientDetailPage(id){
       <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>Services</th><th class="num">Total</th>${hidePayment?'':'<th class="num">Paid</th>'}<th>Status</th></tr></thead>
         <tbody>${cq.map(q=>`<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td>${hidePayment?'':`<td class="num mono">${quoteApprovedPaid(q)>0?inr(quoteApprovedPaid(q)):'<span class="faint">—</span>'}</td>`}<td>${pill(q.status,quoteStatusKind(q.status))}</td></tr>`).join("")}</tbody>
       </table></div>` : ''; })()}
+      ${clientCollabHTML(c)}
       <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">Workflow<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;">${boardTasksFiltered.length} of ${boardTasks.length}${dateFilterSuffix(boardFilter)}</span></div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -5174,6 +5312,10 @@ function acctOverview(){
 // clear heads-up before asking.
 function deleteWarningFor(kind, id){
   const fallback = "This permanently removes it from the records. This can't be undone.";
+  if(kind==='clientMeeting'){
+    const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).meetings||[]).find(x=>x.id===mid); if(!m) return {label:"this meeting log", warning:fallback};
+    return {label:"this meeting log", warning:`${fmtDate(m.date)} — ${esc(m.attendees)}. The notes are permanently removed. This can't be undone.`};
+  }
   if(kind==='client'){
     const c = clientById(id); if(!c) return {label:"this client", warning:fallback};
     const inv = invoices.filter(i=>i.clientId===id).length, qs = quotes.filter(x=>x.clientId===id).length, tasks = tasksOf(id).length;
@@ -5241,6 +5383,7 @@ async function performDelete(kind, id){
     quote: { url:`/api/crm/quotes/${id}`, reload: loadQuotes, label:"Quote" },
     // Deleting an unpaid invoice puts the quote that produced it back to Sent, so refresh quotes as well.
     invoice: { url:`/api/finance/invoices/${id}`, reload: async ()=>{ await loadInvoices(); if(canLoadQuotes()) await loadQuotes(); }, label:"Invoice" },
+    clientMeeting: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/meetings/${mid}`, reload: ()=>loadClientCollab(cid), label:"Meeting log" }; })(),
     payable: { url:`/api/finance/payables/${id}`, reload: loadPayables, label:"Payable" },
     expense: { url:`/api/finance/expenses/${id}`, reload: loadExpenses, label:"Expense" },
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },

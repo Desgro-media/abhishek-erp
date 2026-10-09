@@ -112,3 +112,45 @@ export const metaCampaignCreateSchema = z.object({
   startAt: dateStr,
 });
 export const metaCampaignUpdateSchema = metaCampaignCreateSchema.partial();
+
+// ---- Client collaboration data ----
+// Optional text: trimmed, and a blank string means "not set" (stored as null).
+const optText = (max: number) => z.string().trim().max(max).optional().transform((v) => (v ? v : null));
+// Asset links are rendered as <a href>, so only http(s) is accepted — never javascript: or data: URLs.
+const httpUrl = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((v) => /^https?:\/\/[^\s]+$/i.test(v), "Must be a http(s) link");
+
+export const adAccessSchema = z.object({
+  platform: z.string().trim().min(1).max(100),
+  accountId: optText(100),
+  accessEmail: z
+    .string()
+    .trim()
+    .max(200)
+    .refine((v) => v === "" || z.string().email().safeParse(v).success, "Invalid email")
+    .optional()
+    .transform((v) => (v ? v : null)),
+  status: z.enum(["GRANTED", "PENDING", "REVOKED"]),
+  notes: optText(1000),
+});
+export const campaignBriefSchema = z.object({
+  objective: optText(500),
+  audience: optText(500),
+  budget: optText(200),
+});
+export const brandAssetSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  link: z
+    .union([httpUrl, z.literal("")])
+    .optional()
+    .transform((v) => (v ? v : null)),
+  notes: optText(500),
+});
+export const clientMeetingSchema = z.object({
+  date: dateStr,
+  attendees: z.string().trim().min(1).max(500),
+  notes: z.string().trim().min(1).max(5000),
+});

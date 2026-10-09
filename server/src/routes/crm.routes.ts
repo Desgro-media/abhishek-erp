@@ -6,6 +6,7 @@ import * as clients from "../controllers/crm/clients.controller";
 import * as leads from "../controllers/crm/leads.controller";
 import * as quotes from "../controllers/crm/quotes.controller";
 import * as tasks from "../controllers/crm/tasks.controller";
+import * as collab from "../controllers/crm/clientCollab.controller";
 
 const router = Router();
 
@@ -21,6 +22,16 @@ router.use(authenticate);
 router.get("/clients", requireClientsUser, clients.listClients);
 router.get("/clients/:id", requireClientsUser, clients.getClient);
 router.get("/tasks", requireClientsUser, tasks.listTasks);
+
+// Client collaboration data (ad access, brief, brand assets, meetings) — row-scoped to the one client in
+// the URL inside each handler, so it's open to anyone with Clients access, reads and writes alike.
+router.get("/clients/:id/collab", requireClientsUser, collab.getClientCollab);
+router.put("/clients/:id/ad-access", requireClientsUser, collab.upsertAdAccess);
+router.put("/clients/:id/campaign-brief", requireClientsUser, collab.upsertCampaignBrief);
+router.post("/clients/:id/brand-assets", requireClientsUser, collab.addBrandAsset);
+router.delete("/clients/:id/brand-assets/:assetId", requireClientsUser, collab.removeBrandAsset);
+router.post("/clients/:id/meetings", requireClientsUser, collab.logMeeting);
+router.delete("/clients/:id/meetings/:meetingId", requireClientsUser, collab.deleteMeeting);
 
 router.use(requireCrmUser);
 router.post("/clients", clients.createClient);
