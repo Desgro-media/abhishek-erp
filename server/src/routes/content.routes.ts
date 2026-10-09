@@ -3,6 +3,7 @@ import { authenticate } from "../middleware/auth";
 import { requireContentUser } from "../middleware/crmAccess";
 import * as items from "../controllers/content/items.controller";
 import * as campaigns from "../controllers/content/metaCampaigns.controller";
+import * as ownAd from "../controllers/content/ownAdMetrics.controller";
 
 const router = Router();
 // Any signed-in employee can see the cards assigned to them (My Workspace > My Tasks), whether or
@@ -21,5 +22,9 @@ router.delete("/items/:id", items.deleteContentItem);
 router.get("/meta-campaigns", campaigns.listMetaCampaigns);
 router.post("/meta-campaigns", campaigns.createMetaCampaign);
 router.patch("/meta-campaigns/:id", campaigns.updateMetaCampaign);
+
+router.get("/own-ad-metrics", ownAd.listOwnAdMetrics);
+router.post("/own-ad-metrics", ownAd.upsertOwnAdMetric);
+router.delete("/own-ad-metrics/:id", ownAd.deleteOwnAdMetric);
 
 export default router;

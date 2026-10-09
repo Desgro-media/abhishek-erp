@@ -538,7 +538,7 @@ async function loadCrmModule(){
 }
 async function loadContentModule(){
   // Content-only logins (e.g. SMM) can't call the HR employee list; the name-only directory feeds the assignee pickers.
-  await Promise.all([loadContentItems(), loadMetaCampaigns(), loadEmployeeDirectory().catch(err=>console.error("Employee directory failed to load", err))]);
+  await Promise.all([loadContentItems(), loadMetaCampaigns(), loadOwnAdMetrics(), loadEmployeeDirectory().catch(err=>console.error("Employee directory failed to load", err))]);
 }
 function contentAssignees(){ return employees.length ? employees : employeeDirectory; }
 
@@ -564,6 +564,10 @@ function mapMetaCampaign(c){
   return { id:c.id, name:c.name, objective:c.objective, platform:c.platform, status:TITLECASE_FROM_API(c.status), spend:Number(c.spend), impressions:c.impressions, clicks:c.clicks, leads:c.leads, startDate:isoDate(c.startAt) };
 }
 async function loadMetaCampaigns(){ metaAdsCampaigns = (await apiJson("/api/content/meta-campaigns")).campaigns.map(mapMetaCampaign); }
+// DesGro's own daily Meta ad numbers (Marketing > Meta Ads > Daily Tracking). CPL/CPA/ROAS come from the
+// server (null when there's nothing to divide by) so every screen shows the same figures.
+let ownAdMetrics = [];
+async function loadOwnAdMetrics(){ ownAdMetrics = (await apiJson("/api/content/own-ad-metrics")).metrics; }
 function adMetrics(c){
   const ctr = c.impressions ? (c.clicks/c.impressions*100) : 0;
   const cpc = c.clicks ? c.spend/c.clicks : 0;
@@ -4506,6 +4510,70 @@ function openEditClient(id){
     }catch(err){ toast(err.message || "Couldn't update client"); }
   });
 }
+// Daily ad-performance tracker, shared by DesGro's own Meta Ads page and (later) per-client ad logs.
+// `rows` are API rows ({id,date,spend,leads,purchases,revenue,cpl,cpa,roas}); opts: logFn (adds the
+// "Log" button), editFn (name of a function taking the row id), deleteKind (openConfirmDelete kind).
+function adDailyTrackerHTML(rows, label, opts){
+  opts = opts || {};
+  const t = rows.reduce((a,m)=>({spend:a.spend+m.spend, leads:a.leads+m.leads, purchases:a.purchases+m.purchases, revenue:a.revenue+m.revenue}), {spend:0,leads:0,purchases:0,revenue:0});
+  const avgCpl = t.leads>0 ? t.spend/t.leads : null;
+  const avgCpa = t.purchases>0 ? t.spend/t.purchases : null;
+  const roas = t.spend>0 ? t.revenue/t.spend : null;
+  const dash = v => v==null ? '—' : inr(v);
+  const hasActions = !!(opts.editFn || opts.deleteKind);
+  return `
+  <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+    <div>${esc(label)}<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;"> · ${rows.length} day${rows.length===1?'':'s'} shown</span></div>
+    ${opts.logFn?`<button class="btn btn-sm ghost" onclick="${opts.logFn}"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log today's numbers</button>`:''}
+  </div>
+  ${rows.length ? `
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">Total Spend</div><div class="kpi-value mono" style="font-size:18px;">${inr(t.spend)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Leads / Purchases</div><div class="kpi-value mono" style="font-size:18px;">${t.leads} / ${t.purchases}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Avg. CPL / CPA</div><div class="kpi-value mono" style="font-size:18px;">${dash(avgCpl)} / ${dash(avgCpa)}</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">ROAS</div><div class="kpi-value mono" style="font-size:18px;">${roas!=null?roas.toFixed(2)+'x':'—'}</div><div class="kpi-sub">${inr(t.revenue)} revenue tracked</div></div>
+  </div>
+  <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Purchases</th><th class="num">Revenue</th><th class="num">CPL</th><th class="num">CPA</th><th class="num">ROAS</th>${hasActions?'<th></th>':''}</tr></thead>
+    <tbody>${rows.map(m=>`<tr><td class="muted">${fmtDateShort(m.date)}</td><td class="num mono">${inr(m.spend)}</td><td class="num mono">${m.leads}</td><td class="num mono">${m.purchases}</td><td class="num mono">${inr(m.revenue)}</td><td class="num mono">${dash(m.cpl)}</td><td class="num mono">${dash(m.cpa)}</td><td class="num mono">${m.roas!=null?m.roas.toFixed(2)+'x':'—'}</td>${hasActions?`<td><div style="display:flex;gap:6px;justify-content:flex-end;">${opts.editFn?`<button class="btn btn-sm ghost" onclick="${opts.editFn}('${esc(m.id)}')" title="Edit this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>`:''}${opts.deleteKind?`<button class="btn btn-sm ghost" onclick="openConfirmDelete('${opts.deleteKind}','${esc(m.id)}')" title="Delete this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td>`:''}</tr>`).join('')}</tbody>
+  </table></div>` : `<div class="empty">No ad performance logged yet.</div>`}`;
+}
+// Log (or correct) one day's numbers. Saving a date that already exists updates it. `save` receives the
+// validated payload and POSTs it; the server re-validates everything (no future dates, no negatives).
+function logAdMetricModal(forLabel, existing, save){
+  const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  const v = existing || {date:local, spend:'', revenue:'', leads:'', purchases:''};
+  showModal(`
+    <div class="modal-head"><h3>${existing?'Edit':'Log'} ad performance</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-log-ad-metric"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${esc(forLabel)}</div>
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(v.date)}" max="${local}" required ${existing?'readonly':''}></div>
+      ${existing?'':'<div class="subtext" style="font-size:12px;">Logging a date that already has numbers replaces them.</div>'}
+      <div class="field-row">
+        <div><label class="field-label">Spend</label><input class="field-input" type="number" step="0.01" min="0" name="spend" value="${esc(v.spend)}" required></div>
+        <div><label class="field-label">Revenue</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" required></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" required></div>
+        <div><label class="field-label">Purchases</label><input class="field-input" type="number" step="1" min="0" name="purchases" value="${esc(v.purchases)}" required></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-log-ad-metric").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const payload = { date:f.get("date"), spend:Number(f.get("spend")), revenue:Number(f.get("revenue")), leads:Number(f.get("leads")), purchases:Number(f.get("purchases")) };
+    try{ await save(payload); toast("Ad performance saved"); closeModal(); render(); }
+    catch(err){ toast(err.message || "Couldn't save ad performance"); }
+  });
+}
+function openLogOwnAdMetric(id){
+  const existing = id ? ownAdMetrics.find(m=>m.id===id) : null;
+  logAdMetricModal("DesGro Media — own Meta Ads", existing, async payload=>{
+    await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    await loadOwnAdMetrics();
+  });
+}
 function mktPerformance(){
   const rows = metaAdsCampaigns.map(adMetrics);
   const totals = rows.reduce((s,r)=>({spend:s.spend+r.spend, impressions:s.impressions+r.impressions, clicks:s.clicks+r.clicks, leads:s.leads+r.leads}),{spend:0,impressions:0,clicks:0,leads:0});
@@ -4523,6 +4591,9 @@ function mktPerformance(){
     <div class="kpi-card"><div class="kpi-label">Avg. CTR</div><div class="kpi-value mono" style="font-size:20px;">${avgCtr.toFixed(2)}%</div></div>
     <div class="kpi-card hero"><div class="kpi-label">Cost per Lead</div><div class="kpi-value mono" style="font-size:20px;">${inr(avgCpl)}</div><div class="kpi-sub">${totals.leads} leads total</div></div>
   </div>
+  <div class="panel"><div class="modal-body">
+    ${adDailyTrackerHTML(ownAdMetrics.slice(0,30), "Daily Tracking", {logFn:"openLogOwnAdMetric()", editFn:"openLogOwnAdMetric", deleteKind:"ownAdMetric"})}
+  </div></div>
   <div class="panel">
     <div class="panel-head"><div><h3>Campaigns</h3><div class="sub">DesGro Media's own Meta Ads accounts</div></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Campaign</th><th>Objective</th><th>Platform</th><th class="num">Spend</th><th class="num">Impressions</th><th class="num">Clicks</th><th class="num">CTR</th><th class="num">CPC</th><th class="num">Leads</th><th class="num">Cost / Lead</th><th>Status</th></tr></thead>
@@ -5174,6 +5245,10 @@ function acctOverview(){
 // clear heads-up before asking.
 function deleteWarningFor(kind, id){
   const fallback = "This permanently removes it from the records. This can't be undone.";
+  if(kind==='ownAdMetric'){
+    const m = ownAdMetrics.find(x=>x.id===id); if(!m) return {label:"this entry", warning:fallback};
+    return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
+  }
   if(kind==='client'){
     const c = clientById(id); if(!c) return {label:"this client", warning:fallback};
     const inv = invoices.filter(i=>i.clientId===id).length, qs = quotes.filter(x=>x.clientId===id).length, tasks = tasksOf(id).length;
@@ -5246,6 +5321,7 @@ async function performDelete(kind, id){
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
     // A bank-line journal entry also posted a real ledger row, so its removal changes account
     // balances — refresh banks and the finance reports (which read off the ledger) alongside it.
+    ownAdMetric: { url:`/api/content/own-ad-metrics/${id}`, reload: loadOwnAdMetrics, label:"Ad performance entry" },
     journal: { url:`/api/finance/journal/${id}`, reload: async ()=>{ await Promise.all([loadJournalEntries(), loadBankAccounts()]); await refreshFinanceReports(); }, label:"Journal entry" },
   };
   const ep = ENDPOINTS[kind];
