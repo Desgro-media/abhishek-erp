@@ -90,5 +90,8 @@ router.get("/payroll/:employeeId/:month", payroll.getPayrollEntry); // self-or-H
 router.post("/payroll/entries", requireHRAdmin, payroll.upsertPayrollEntry);
 router.put("/payroll/:employeeId/:month/schedule", requireHRAdminOrFinance, payroll.setPayrollSchedule);
 router.post("/payroll/:employeeId/:month/payments", requireHRAdminOrFinance, payroll.recordPayrollPayment);
+router.patch("/payroll/payments/:paymentId", requireHRAdminOrFinance, payroll.updatePayrollPayment);
+router.delete("/payroll/payments/:paymentId", requireHRAdminOrFinance, payroll.deletePayrollPayment);
+router.delete("/payroll/:employeeId/:month", requireHRAdminOrFinance, payroll.deletePayrollEntry);
 
 export default router;

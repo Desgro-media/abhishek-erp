@@ -3,7 +3,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { resolveScopedEmployeeId } from "../../middleware/hrAccess";
-import { payrollEntrySchema, payrollPaymentSchema, payrollScheduleSchema } from "../../validation/hr.schemas";
+import { payrollEntrySchema, payrollPaymentSchema, payrollPaymentEditSchema, payrollScheduleSchema } from "../../validation/hr.schemas";
 import { computePayrollRow as computeRow, applyAdvanceRecovery } from "../../services/hr/payrollCalc";
 import { buildSchedule, parseSplit, replaceSchedule } from "../../services/hr/payrollSchedule";
 
@@ -129,6 +129,90 @@ export const recordPayrollPayment: RequestHandler = asyncHandler(async (req, res
   });
 
   res.status(201).json({ payment, isFull });
+});
+
+// Correct or remove one recorded payment (a wrong amount/date, or a duplicate). Payments paid out through an
+// approved salary withdrawal are locked — reject/adjust those from the withdrawal itself.
+const loadPayment = (id: string) =>
+  prisma.payrollPayment.findUnique({ where: { id }, include: { withdrawalRequest: { select: { id: true } } } });
+
+async function findEditablePayment(paymentId: string): Promise<{ payment?: NonNullable<Awaited<ReturnType<typeof loadPayment>>>; fail?: { status: number; error: string } }> {
+  const payment = await loadPayment(paymentId);
+  if (!payment) return { fail: { status: 404, error: "Payment not found" } };
+  if (payment.withdrawalRequest) return { fail: { status: 409, error: "This payment is the payout of an approved salary withdrawal and can't be edited here." } };
+  return { payment };
+}
+
+export const updatePayrollPayment: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = payrollPaymentEditSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const d = parsed.data;
+  const found = await findEditablePayment(req.params.paymentId);
+  if (!found.payment) return res.status(found.fail!.status).json({ error: found.fail!.error });
+  const { payment } = found;
+
+  const updated = await prisma.payrollPayment.update({
+    where: { id: payment.id },
+    data: {
+      ...(d.amount !== undefined ? { amount: d.amount } : {}),
+      ...(d.paidDate ? { paidDate: new Date(d.paidDate) } : {}),
+      ...(d.note !== undefined ? { note: d.note || null } : {}),
+    },
+  });
+  await recordAudit({
+    userId: req.user!.sub,
+    action: "HR_PAYROLL_PAYMENT_EDIT",
+    entityType: "PayrollEntry",
+    entityId: payment.payrollEntryId,
+    beforeData: { amount: Number(payment.amount), paidDate: payment.paidDate, note: payment.note },
+    afterData: { amount: Number(updated.amount), paidDate: updated.paidDate, note: updated.note },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"] ?? null,
+  });
+  res.json({ payment: updated });
+});
+
+export const deletePayrollPayment: RequestHandler = asyncHandler(async (req, res) => {
+  const found = await findEditablePayment(req.params.paymentId);
+  if (!found.payment) return res.status(found.fail!.status).json({ error: found.fail!.error });
+  const { payment } = found;
+
+  await prisma.payrollPayment.delete({ where: { id: payment.id } });
+  await recordAudit({
+    userId: req.user!.sub,
+    action: "HR_PAYROLL_PAYMENT_DELETE",
+    entityType: "PayrollEntry",
+    entityId: payment.payrollEntryId,
+    beforeData: { amount: Number(payment.amount), paidDate: payment.paidDate, note: payment.note },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"] ?? null,
+  });
+  res.json({ ok: true });
+});
+
+// Remove an employee from one month's payroll (entry, its payments and its schedule). Refused if any payment
+// was the payout of an approved salary withdrawal.
+export const deletePayrollEntry: RequestHandler = asyncHandler(async (req, res) => {
+  const { employeeId, month } = req.params;
+  const entry = await prisma.payrollEntry.findUnique({
+    where: { employeeId_month: { employeeId, month } },
+    include: { payments: { include: { withdrawalRequest: { select: { id: true } } } } },
+  });
+  if (!entry) return res.status(404).json({ error: "No payroll entry for that employee/month" });
+  if (entry.payments.some((p) => p.withdrawalRequest)) {
+    return res.status(409).json({ error: "This month includes the payout of an approved salary withdrawal, so it can't be removed." });
+  }
+  await prisma.payrollEntry.delete({ where: { id: entry.id } });
+  await recordAudit({
+    userId: req.user!.sub,
+    action: "HR_PAYROLL_ENTRY_DELETE",
+    entityType: "PayrollEntry",
+    entityId: entry.id,
+    beforeData: { employeeId, month, gross: Number(entry.gross), payments: entry.payments.map((p) => ({ amount: Number(p.amount), paidDate: p.paidDate, note: p.note })) },
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"] ?? null,
+  });
+  res.json({ ok: true });
 });
 
 // HR/Finance/Admin — set this employee-month's payout plan: an explicit list of instalments, or reset to

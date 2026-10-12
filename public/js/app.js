@@ -133,7 +133,7 @@ function mapPayrollRow(r){
     wfhExcessDays:r.wfhExcessDays||0, wfhDeduction:r.wfhDeduction||0,
     monthWorkingDays:r.monthWorkingDays, totalDeductions:r.totalDeductions, net:r.net,
     paid:r.paid, balance:r.balance, payStatus:r.payStatus,
-    payments:(r.payments||[]).map(p=>({amount:Number(p.amount), date:isoDate(p.paidDate), note:p.note})),
+    payments:(r.payments||[]).map(p=>({id:p.id, amount:Number(p.amount), date:isoDate(p.paidDate), note:p.note, locked:false})),
     schedule:r.schedule||{scheduled:false,instalments:[],nextDue:null,overpayment:0} };
 }
 
@@ -2851,7 +2851,7 @@ function statusKind(s){
   const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Work From Home":"blue","Partially Paid WFH":"blue",
     Approved:"pos",Pending:"warn",Rejected:"neg",Recovering:"warn",Recovered:"pos",Paid:"pos",Open:"blue",Interview:"warn",Offer:"pos",Hired:"pos",Applied:"neutral",
     Permanent:"pos",Probation:"warn",
-    Unpaid:"neg","Partially Paid":"warn","Payments pending":"warn","Adding entries":"neutral",
+    Unpaid:"neg",Overpaid:"neg","Partially Paid":"warn","Payments pending":"warn","Adding entries":"neutral",
     New:"warn",Reviewed:"blue",Resolved:"pos"};
   return map[s] || "neutral";
 }
@@ -3263,7 +3263,7 @@ function payrollView(readOnly){
   <div class="panel">
     <div class="panel-head"><h3>Payroll — ${MONTH_LABEL[month]}</h3><div class="sub">${includedEmployees.length} added</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Next due</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${nextDueCell(r.calc)}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button><button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit gross"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="9"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
+      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${nextDueCell(r.calc)}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button>${(!readOnly&&(isHRRole(currentUser)||isFinanceAdminUser(currentUser)))?`<button class="btn btn-sm ghost" onclick="openDeletePayroll('${r.emp.id}')" title="Delete a payment or remove from this month's payroll" style="color:var(--neg);">Delete</button>`:""}<button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit this month's gross salary (not payments — use Payslip to fix payments)"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="9"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4253,6 +4253,7 @@ async function savePayrollSplit(){
 function openPayslip(id, readOnly){
   const e = byId(id); const month = payroll.selectedMonth; const c = computePayrollRow(e, month);
   if(!c){ toast("Add "+e.name+" to this month's payroll first"); return; }
+  const canEditPayrollPayments = isHRRole(currentUser)||isFinanceAdminUser(currentUser);
   showModal(`
     <div class="modal-head"><h3>Payslip — ${MONTH_LABEL[month]}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
@@ -4269,7 +4270,7 @@ function openPayslip(id, readOnly){
       ${c.lopDeduction>0?`<div class="calc-line"><span>Loss of Pay (${c.lopDays} day${c.lopDays===1?"":"s"} · ${MONTH_LABEL[month]} has ${c.monthWorkingDays} working days)</span><span class="mono" style="color:var(--neg);">−${inr(c.lopDeduction)}</span></div>`:""}
       <div class="calc-line total"><span>Net pay</span><span class="mono">${inr(c.net)}</span></div>
       <div class="section-label">Payments</div>
-      ${c.payments.length ? c.payments.map(p=>`<div class="calc-line"><span>${fmtDateShort(p.date)}${p.note?" · "+esc(p.note):""}</span><span class="mono">${inr(p.amount)}</span></div>`).join("") : `<div class="empty" style="padding:12px 0;">No payments recorded yet.</div>`}
+      ${c.payments.length ? c.payments.map(p=>`<div class="calc-line"><span>${fmtDateShort(p.date)}${p.note?" · "+esc(p.note):""}</span><span style="display:flex;align-items:center;gap:6px;"><span class="mono">${inr(p.amount)}</span>${canEditPayrollPayments&&!readOnly&&p.id?`<button class="btn btn-sm ghost" title="Edit payment" onclick="openEditPayrollPayment('${e.id}','${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button><button class="btn btn-sm ghost" title="Delete payment" onclick="deletePayrollPayment('${e.id}','${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:""}</span></div>`).join("") : `<div class="empty" style="padding:12px 0;">No payments recorded yet.</div>`}
       <div class="calc-line total"><span>Balance due</span><span class="mono" style="${c.balance>0?'color:var(--warn);':''}">${inr(c.balance)}</span></div>
       <div class="section-label">Payout schedule</div>
       ${scheduleTableHTML(c)}
@@ -4343,6 +4344,7 @@ async function openAddPayrollEntry(id){
     <div class="modal-head"><h3>${existing?"Edit":"Add to"} payroll — ${MONTH_LABEL[month]}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-add-payroll-entry"><div class="modal-body">
       <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
+      ${existing && payroll.history[month].entries[id] && computePayrollRow(e,month) && computePayrollRow(e,month).paid>0 ? `<div class="banner muted"><div>This only changes the <b>salary</b>. Already paid: <b>${inr(computePayrollRow(e,month).paid)}</b>. To correct a payment amount, close this and open <b>Payslip</b> — each payment has an edit/delete button.</div></div>` : ""}
       <div class="section-label">Before you set this month's pay</div>
       <div class="calc-line"><span>Attendance — ${esc(MONTH_LABEL[closedMonth]||closedMonth)}</span><span class="mono">${lastMonthAttendance ? `${lastMonthAttendance.present}/${lastMonthAttendance.workingDays} present${lastMonthAttendance.absentDays?`, ${lastMonthAttendance.absentDays} absent`:""}` : "no record"}</span></div>
       <div class="calc-line"><span>Advance salary paid to date</span><span class="mono">${advPaidTotal>0?inr(advPaidTotal):"—"}${advOutstanding>0?` <span class="faint" style="font-size:11.5px;">(${inr(advOutstanding)} still owed)</span>`:""}</span></div>
@@ -4361,6 +4363,8 @@ async function openAddPayrollEntry(id){
     ev.preventDefault();
     const f = new FormData(ev.target);
     const gross = Number(f.get("gross"));
+    const paidSoFar = existing ? (computePayrollRow(e,month)||{paid:0}).paid : 0;
+    if(paidSoFar>gross && !confirm(`${e.name} has already been paid ${inr(paidSoFar)}, which is more than the ${inr(gross)} you entered.\n\nThis field is the month's SALARY, not the amount paid. Saving will mark them as overpaid.\n\nSave anyway?`)) return;
     try{
       await apiJson("/api/hr/payroll/entries", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId: employeeDbIdByCode[id], month, gross }) });
       await loadPayrollMonth(month);
@@ -4368,6 +4372,66 @@ async function openAddPayrollEntry(id){
       closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't save payroll entry"); }
   });
+}
+function openEditPayrollPayment(id, paymentId){
+  const e = byId(id); const month = payroll.selectedMonth; const c = computePayrollRow(e, month);
+  const p = c && c.payments.find(x=>x.id===paymentId); if(!p) return;
+  showModal(`
+    <div class="modal-head"><h3>Edit payment</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-edit-payroll-payment"><div class="modal-body">
+      <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
+      <div class="field-row">
+        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="1" step="1" required value="${p.amount}"></div>
+        <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${p.date}" required></div>
+      </div>
+      <div><label class="field-label">Note</label><input class="field-input" name="note" value="${esc(p.note||"")}"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="openPayslip('${e.id}')">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-edit-payroll-payment").addEventListener("submit", async ev=>{
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    try{
+      await apiJson(`/api/hr/payroll/payments/${paymentId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount:Number(f.get("amount")), paidDate:f.get("date"), note:f.get("note").trim() }) });
+      await loadPayrollMonth(month);
+      toast("Payment updated"); render(); openPayslip(id);
+    }catch(err){ toast(err.message || "Couldn't update payment"); }
+  });
+}
+function openDeletePayroll(id){
+  const e = byId(id); const month = payroll.selectedMonth; const c = computePayrollRow(e, month);
+  if(!c) return;
+  showModal(`
+    <div class="modal-head"><h3>Delete — ${MONTH_LABEL[month]}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
+      <div class="calc-line"><span>Net pay</span><span class="mono">${inr(c.net)}</span></div>
+      <div class="calc-line"><span>Paid</span><span class="mono">${inr(c.paid)}</span></div>
+      <div class="section-label">Payments — delete one</div>
+      ${c.payments.length ? c.payments.map(p=>`<div class="calc-line"><span>${fmtDateShort(p.date)}${p.note?" · "+esc(p.note):""} · <span class="mono">${inr(p.amount)}</span></span><button class="btn btn-sm ghost" style="color:var(--neg);" onclick="deletePayrollPayment('${e.id}','${p.id}',true)">Delete</button></div>`).join("") : `<div class="empty" style="padding:12px 0;">No payments recorded.</div>`}
+      <div class="section-label">Remove from payroll</div>
+      <div class="faint" style="font-size:12.5px;margin-bottom:8px;">Removes ${esc(e.name)} from ${MONTH_LABEL[month]}'s payroll along with all their payments and payout schedule. They go back to "Not yet added".</div>
+      <button class="btn" style="color:var(--neg);" onclick="deletePayrollEntry('${e.id}')">Remove from ${MONTH_LABEL[month]} payroll</button>
+    </div>
+    <div class="modal-foot"><div></div><button class="btn ghost" onclick="closeModal()">Close</button></div>`);
+}
+async function deletePayrollEntry(id){
+  const e = byId(id); const month = payroll.selectedMonth;
+  if(!confirm(`Remove ${e.name} from ${MONTH_LABEL[month]} payroll?\n\nAll their payments for this month are deleted too. This can't be undone.`)) return;
+  try{
+    await apiJson(`/api/hr/payroll/${employeeDbIdByCode[id]}/${month}`, { method:"DELETE" });
+    await Promise.all([loadPayrollMonth(month), loadAdvances()]);
+    toast(e.name+" removed from "+monthLabel(month)+" payroll"); closeModal(); render();
+  }catch(err){ toast(err.message || "Couldn't remove payroll entry"); }
+}
+async function deletePayrollPayment(id, paymentId, fromDeleteModal){
+  const month = payroll.selectedMonth;
+  if(!confirm("Delete this payment? The balance due will go back up by that amount.")) return;
+  try{
+    await apiJson(`/api/hr/payroll/payments/${paymentId}`, { method:"DELETE" });
+    await loadPayrollMonth(month);
+    toast("Payment deleted"); render(); if(fromDeleteModal) openDeletePayroll(id); else openPayslip(id);
+  }catch(err){ toast(err.message || "Couldn't delete payment"); }
 }
 function openRecordPayment(id){
   const e = byId(id); const month = payroll.selectedMonth; const c = computePayrollRow(e, month);
