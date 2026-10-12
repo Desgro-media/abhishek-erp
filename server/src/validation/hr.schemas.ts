@@ -203,6 +203,12 @@ export const payrollPaymentSchema = z.object({
   note: z.string().optional(),
 });
 
+export const payrollPaymentEditSchema = z.object({
+  amount: z.number().positive().optional(),
+  paidDate: dateStr.optional(),
+  note: z.string().optional(),
+});
+
 // HR grants (+) or removes (−) paid-leave days for one month; always with a reason.
 export const leaveAdjustmentSchema = z.object({
   month: z.string().regex(/^\d{4}-\d{2}$/, "Expected YYYY-MM"),

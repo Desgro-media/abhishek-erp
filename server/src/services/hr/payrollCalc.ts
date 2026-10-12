@@ -46,7 +46,7 @@ export async function computePayrollRow(employeeId: string, month: string, db: P
   const net = gross - totalDeductions;
   const paid = entry.payments.reduce((sum, p) => sum + Number(p.amount), 0);
   const balance = Math.max(0, net - paid);
-  const payStatus = paid <= 0 ? "Unpaid" : balance > 0 ? "Partially Paid" : "Paid";
+  const payStatus = paid <= 0 ? "Unpaid" : balance > 0 ? "Partially Paid" : paid > net ? "Overpaid" : "Paid";
 
   return {
     employeeId,
