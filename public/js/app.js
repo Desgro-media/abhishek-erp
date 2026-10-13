@@ -3092,10 +3092,31 @@ function hrLeave(){
   })()}`;
 }
 
+let hiringFilter = { dept:"", role:"" };
+function setHiringFilter(key, val){
+  hiringFilter[key] = val;
+  if(key==="dept" && hiringFilter.role && !openPositions.some(p=>p.dept===val && p.role===hiringFilter.role) && val) hiringFilter.role = "";
+  render();
+}
+function clearHiringFilter(){ hiringFilter = { dept:"", role:"" }; render(); }
+function hiringFilterBar(){
+  const depts = [...new Set(openPositions.map(p=>p.dept).filter(Boolean))].sort();
+  const roles = [...new Set(openPositions.filter(p=>!hiringFilter.dept || p.dept===hiringFilter.dept).map(p=>p.role).filter(Boolean))].sort();
+  const opt = (v,cur)=>`<option value="${esc(v)}" ${v===cur?"selected":""}>${esc(v)}</option>`;
+  return `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+    <div class="filter-group"><span class="filter-label">Department</span><select class="select-sm" onchange="setHiringFilter('dept',this.value)"><option value="">All departments</option>${depts.map(d=>opt(d,hiringFilter.dept)).join("")}</select></div>
+    <div class="filter-group"><span class="filter-label">Role</span><select class="select-sm" onchange="setHiringFilter('role',this.value)"><option value="">All roles</option>${roles.map(r=>opt(r,hiringFilter.role)).join("")}</select></div>
+    ${(hiringFilter.dept||hiringFilter.role)?`<button class="btn btn-sm ghost" onclick="clearHiringFilter()">Clear filters</button>`:""}
+  </div>`;
+}
 function hrHiring(){
+  const filtering = !!(hiringFilter.dept || hiringFilter.role);
+  const posMatch = p => (!hiringFilter.dept || p.dept===hiringFilter.dept) && (!hiringFilter.role || p.role===hiringFilter.role);
+  const candMatch = c => { if(!filtering) return true; const pos=openPositions.find(p=>p.id===c.posId); return !!pos && posMatch(pos); };
   const activePositions = openPositions.filter(p=>!p.archived);
   const archivedPositions = openPositions.filter(p=>p.archived);
-  const activeCandidates = candidates.filter(c=>!c.archived);
+  const allActiveCandidates = candidates.filter(c=>!c.archived);
+  const activeCandidates = allActiveCandidates.filter(candMatch);
   const archivedCandidates = candidates.filter(c=>c.archived);
   const shortlisted = activeCandidates.filter(c=>c.stage==="Shortlisted");
   return `
@@ -3128,9 +3149,9 @@ function hrHiring(){
     </table></div>
   </div>` : ""}
   <div class="panel">
-    <div class="panel-head"><h3>Candidates</h3><div class="sub">${activeCandidates.length} in pipeline</div></div>
+    <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Candidates</h3><div class="sub">${filtering?`${activeCandidates.length} of ${allActiveCandidates.length} shown`:`${allActiveCandidates.length} in pipeline`}</div></div>${hiringFilterBar()}</div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Contact</th><th>Applied</th><th>Stage</th><th></th></tr></thead>
-      <tbody>${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td><select class="select-sm" onchange="updateCandidateStage('${c.id}',this.value)">${CANDIDATE_STAGES.map(s=>`<option value="${s}" ${s===c.stage?'selected':''}>${s}</option>`).join("")}</select></td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${c.hasResume?`<button class="btn btn-sm ghost" onclick="downloadCandidateResume('${c.id}')" title="Download resume"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Resume</button>`:""}<button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
+      <tbody>${(activeCandidates.length||!filtering)?"":`<tr><td colspan="6"><div class="empty">No candidates match the filter.</div></td></tr>`}${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td><select class="select-sm" onchange="updateCandidateStage('${c.id}',this.value)">${CANDIDATE_STAGES.map(s=>`<option value="${s}" ${s===c.stage?'selected':''}>${s}</option>`).join("")}</select></td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${c.hasResume?`<button class="btn btn-sm ghost" onclick="downloadCandidateResume('${c.id}')" title="Download resume"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Resume</button>`:""}<button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
     </table></div>
   </div>
   ${archivedCandidates.length ? `
