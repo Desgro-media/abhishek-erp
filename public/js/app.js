@@ -543,7 +543,7 @@ async function loadContentModule(){
 function contentAssignees(){ return employees.length ? employees : employeeDirectory; }
 
 /* ===================== MARKETING ===================== */
-const STAGES = ['Idea','Scripting','Production','Review','Scheduled','Published'];
+const STAGES = ['Idea','Scripting','Production','Edit','Graphic','Review','Scheduled','Published'];
 const PLATFORMS = [
   {key:'Instagram', icon:'i-instagram'}, {key:'LinkedIn', icon:'i-linkedin'},
   {key:'YouTube', icon:'i-youtube'}, {key:'Facebook', icon:'i-facebook'}, {key:'Blog', icon:'i-globe'},
@@ -5981,7 +5981,7 @@ function mktOverview(){
   </div>
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Content In Flight</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-board"/></svg></div></div><div class="kpi-value mono">${activeContent}</div><div class="kpi-sub">${overdueContent} overdue</div></div>
-    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Published This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg></div></div><div class="kpi-value mono">${publishedMTD}</div><div class="kpi-sub">our own channels</div></div>
+    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label" id="kpi-published-label">Published This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg></div></div><div class="kpi-value mono">${publishedMTD}</div><div class="kpi-sub">our own channels</div></div>
     <div class="kpi-card hero"><div class="kpi-top"><span class="kpi-label">Meta Ads Spend</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg></div></div><div class="kpi-value mono">${inr(totalAdSpend)}</div><div class="kpi-sub">${totalAdLeads} leads generated</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Total Leads</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-handshake"/></svg></div></div><div class="kpi-value mono">${totalLeads}</div><div class="kpi-sub">${sourceRows.length?sourceRows[0][0]+" is the top source":"no leads yet"}</div></div>
   </div>
@@ -5997,16 +5997,21 @@ function mktOverview(){
   </div>`;
 }
 
+// Content pipeline month filter — by each card's due date, like the Leads / Quotes / Invoices filters.
+let contentMonthFilter = "All";
+function setContentMonthFilter(v){ contentMonthFilter = v; render(); }
+const contentInView = ()=>contentItems.filter(i=>matchesDateFilter(i.due, contentMonthFilter));
 function mktContent(){
   return `
   <div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Sample data.</b> Drag a card between columns, or use the stage dropdown on each card — both update the same record.</div></div>
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Active Content</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-board"/></svg></div></div><div class="kpi-value mono" id="kpi-active">0</div><div class="kpi-sub">not yet published</div></div>
-    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">In Production</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-edit"/></svg></div></div><div class="kpi-value mono" id="kpi-production">0</div><div class="kpi-sub">scripting + production</div></div>
+    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">In Production</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-edit"/></svg></div></div><div class="kpi-value mono" id="kpi-production">0</div><div class="kpi-sub">scripting, production, edit + graphic</div></div>
     <div class="kpi-card hero"><div class="kpi-top"><span class="kpi-label">Published This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg></div></div><div class="kpi-value mono" id="kpi-published">0</div><div class="kpi-sub">across all platforms</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Overdue</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-calendar"/></svg></div></div><div class="kpi-value mono" id="kpi-overdue">0</div><div class="kpi-sub">past due, not yet published</div></div>
   </div>
   <div class="toolbar">
+    <div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setContentMonthFilter(this.value)">${dateFilterOptions(contentItems.map(i=>i.due), contentMonthFilter)}</select></div>
     <div class="filter-group"><span class="filter-label">Platform</span><div id="platform-chips"></div></div>
     <div class="filter-group"><select class="select-sm" id="assignee-filter" onchange="renderBoard()"></select><button class="btn primary" onclick="openContentModal()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New Content</button></div>
   </div>
@@ -6050,7 +6055,7 @@ function renderBoard(){
   const board = document.getElementById('board');
   if(!board) return;
   board.innerHTML = STAGES.map(stage=>{
-    const inStage = contentItems.filter(i=>i.stage===stage);
+    const inStage = contentInView().filter(i=>i.stage===stage);
     const cards = inStage.map(contentCardHTML).join('');
     const visibleCount = inStage.filter(i=>contentCardHTML(i)!=='').length;
     return `<div class="col" data-stage="${stage}" ondragover="onDragOver(event)" ondrop="onDrop(event,'${stage}')" ondragleave="onDragLeave(event)">
@@ -6062,14 +6067,18 @@ function renderBoard(){
   renderContentKPIs();
 }
 function renderContentKPIs(){
-  const active = contentItems.filter(i=>i.stage!=='Published').length;
-  const production = contentItems.filter(i=>i.stage==='Scripting'||i.stage==='Production').length;
+  const items = contentInView();
+  const active = items.filter(i=>i.stage!=='Published').length;
+  const production = items.filter(i=>['Scripting','Production','Edit','Graphic'].includes(i.stage)).length;
   const thisMonth = TODAY.slice(0,7);
-  const published = contentItems.filter(i=>i.stage==='Published' && i.due && i.due.slice(0,7)<=thisMonth).length;
-  const overdue = contentItems.filter(isContentOverdue).length;
+  // No filter: published up to this month (as before). With a month/day picked: published cards in that view.
+  const published = contentMonthFilter==='All' ? items.filter(i=>i.stage==='Published' && i.due && i.due.slice(0,7)<=thisMonth).length : items.filter(i=>i.stage==='Published').length;
+  const overdue = items.filter(isContentOverdue).length;
   document.getElementById('kpi-active').textContent = active;
   document.getElementById('kpi-production').textContent = production;
   document.getElementById('kpi-published').textContent = published;
+  const lbl = document.getElementById('kpi-published-label');
+  if(lbl) lbl.textContent = contentMonthFilter==='All' ? 'Published This Month' : contentMonthFilter==='Today' ? 'Published Today' : 'Published · '+monthLabel(contentMonthFilter);
   const overdueEl = document.getElementById('kpi-overdue');
   overdueEl.textContent = overdue;
   overdueEl.classList.toggle('warn', overdue>0);
