@@ -95,7 +95,7 @@ export const contentItemCreateSchema = z.object({
   type: z.string().min(1),
   platforms: z.array(z.string()).default([]),
   assignee: z.string().optional(),
-  stage: z.enum(["IDEA", "SCRIPTING", "PRODUCTION", "REVIEW", "SCHEDULED", "PUBLISHED"]).default("IDEA"),
+  stage: z.enum(["IDEA", "SCRIPTING", "PRODUCTION", "EDIT", "GRAPHIC", "REVIEW", "SCHEDULED", "PUBLISHED"]).default("IDEA"),
   dueAt: dateStr,
   notes: z.string().optional(),
 });
