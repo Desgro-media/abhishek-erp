@@ -1029,6 +1029,7 @@ model Client {
   @@map("clients")
   feedback      ClientFeedback[]
   feedbackLinks ClientFeedbackLink[]
+  reportLink    ClientReportLink?
 }
 
 enum LeadStatus {
@@ -1650,4 +1651,18 @@ model SalesMeeting {
   @@index([date])
   @@index([by])
   @@map("sales_meetings")
+}
+
+// A shareable, no-login, read-only report for one Performance Marketing client: their ad numbers, campaign brief and
+// meetings log. One permanent link per client; regenerating swaps the token (the old link stops working) and deleting the row
+// switches the report off.
+model ClientReportLink {
+  id        String   @id @default(uuid())
+  clientId  String   @unique @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("client_report_links")
 }
