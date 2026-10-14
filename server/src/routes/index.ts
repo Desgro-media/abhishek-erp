@@ -7,6 +7,7 @@ import contentRoutes from "./content.routes";
 import searchRoutes from "./search.routes";
 import publicRoutes from "./public.routes";
 import adReminderRoutes from "./adReminders.routes";
+import calendarRoutes from "./calendar.routes";
 
 const router = Router();
 
@@ -17,6 +18,7 @@ router.use("/crm", crmRoutes);
 router.use("/content", contentRoutes);
 router.use("/search", searchRoutes);
 router.use("/ad-reminders", adReminderRoutes);
+router.use("/calendar", calendarRoutes);
 // Genuinely unauthenticated — see public.controller.ts. Mounted last so it reads, next to the
 // others, as the one deliberate exception rather than an accident of ordering.
 router.use("/public", publicRoutes);

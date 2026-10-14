@@ -1423,3 +1423,23 @@ model AdReminderRun {
 
   @@map("ad_reminder_runs")
 }
+
+// A company-wide calendar entry (meeting, deadline, event). `audience` is ["All"] or a list of departments; only
+// Admin/HR (and whoever created it) can add, edit or delete. Holidays are NOT stored here — they stay in `Holiday`.
+model CompanyEvent {
+  id        String   @id @default(uuid())
+  title     String
+  date      DateTime @db.Date
+  // "HH:MM" or empty — kept as text, it's a wall-clock label, not an instant.
+  time      String   @default("")
+  kind      String   @default("Meeting")
+  venue     String   @default("")
+  audience  String[]
+  notes     String   @default("")
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([date])
+  @@map("company_events")
+}

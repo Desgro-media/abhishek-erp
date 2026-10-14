@@ -1800,6 +1800,345 @@ async function loadFinanceModule(){
   // this just avoids firing requests the server would 403 anyway.
 }
 
+/* ===================== CALENDAR =====================
+   One company calendar: client tasks (drag to reschedule), events & meetings (HR/Admin add them), holidays,
+   leave & WFH, birthdays/anniversaries and content due dates — each a layer that can be switched off. Month
+   view, plus a Team week with a Company row and one row per person. Leave shows what the signed-in user's
+   data already allows (HR/Admin see everyone; others see their own). */
+const EVENT_KINDS = {"Meeting":"blue", "Company event":"pos", "Deadline":"neg", "Other":"neutral"};
+let companyEvents = [];
+async function loadCompanyEvents(){ companyEvents = (await apiJson("/api/calendar/events")).events; }
+const CAL_LAYERS = [
+  {k:"tasks", label:"Client tasks", sw:"var(--ink-faint)"},
+  {k:"events", label:"Events & meetings", sw:"var(--blue)"},
+  {k:"holidays", label:"Holidays", sw:"var(--neg)"},
+  {k:"leave", label:"Leave & WFH", sw:"var(--ink-soft)"},
+  {k:"people", label:"Birthdays & anniversaries", sw:"var(--warn)"},
+  {k:"content", label:"Content", sw:"var(--ink)"},
+];
+let calLayersOff = new Set();
+function toggleCalLayer(k){ if(calLayersOff.has(k)) calLayersOff.delete(k); else calLayersOff.add(k); render(); }
+function calOn(k){ return !calLayersOff.has(k); }
+function addDays(ds, n){ const d = new Date(ds+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+function isPlanWorkingDay(ds){ return new Date(ds+"T00:00:00").getDay()!==hrPolicy.weeklyOff && !isHolidayDate(ds); }
+function activeEmployees(){ return employees.filter(e=>e.employmentStatus!=="Left" && e.employmentStatus!=="Terminated" && e.employmentStatus!=="Resigned"); }
+// The server only lets HR/Admin write events and holidays; the UI mirrors that so nobody sees buttons that would 403.
+function canEditCalendar(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser)); }
+function canManageHolidays(){ return canEditCalendar(); }
+// Moving a task needs the same access as editing it (Clients/Sales/Admin).
+function canMoveCalTasks(){ return !!currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'||r==='CLIENTS')); }
+
+let taskCalView = "month";
+let taskCalMonth = TODAY.slice(0,7);
+let taskCalWeekStart = addDays(TODAY, -new Date(TODAY+"T00:00:00").getDay());
+let taskCalPerson = null;
+let taskCalClient = "All";
+let taskCalHideDone = false;
+let taskCalSelected = TODAY;
+function taskCalPersonValue(){
+  if(taskCalPerson!=null) return taskCalPerson;
+  if(!currentUser) return "All";
+  return isLeadershipRole(currentUser) ? "All" : currentUser.name;
+}
+function setTaskCal(k, v){
+  if(k==="view") taskCalView = v;
+  else if(k==="person") taskCalPerson = v;
+  else if(k==="client") taskCalClient = v;
+  else if(k==="hideDone") taskCalHideDone = !!v;
+  else if(k==="select") taskCalSelected = v;
+  render();
+}
+function shiftTaskCal(delta){
+  if(taskCalView==="month"){ const [y,m] = taskCalMonth.split("-").map(Number); taskCalMonth = new Date(Date.UTC(y, m-1+delta, 1)).toISOString().slice(0,7); }
+  else taskCalWeekStart = addDays(taskCalWeekStart, 7*delta);
+  render();
+}
+function taskCalToday(){ taskCalMonth = TODAY.slice(0,7); taskCalWeekStart = addDays(TODAY, -new Date(TODAY+"T00:00:00").getDay()); taskCalSelected = TODAY; render(); }
+function taskCalTasks(){
+  const person = taskCalPersonValue();
+  return clientTasks.filter(t=>t.due
+    && (person==="All" || t.assignedTo===person)
+    && (taskCalClient==="All" || t.clientId===taskCalClient)
+    && (!taskCalHideDone || t.status!=="Done"));
+}
+function taskCalChipClass(t){
+  if(t.status==="Done") return "done";
+  if(t.due<TODAY) return "overdue";
+  return t.status==="In Progress" ? "progress" : t.status==="Review" ? "review" : "todo";
+}
+function clientShortName(c){ const w = c ? c.name.split(" ") : []; return w.slice(0, w[0] && w[0].length<=3 ? 2 : 1).join(" "); }
+function taskCalChip(t, showWho, showClient){
+  const c = clientById(t.clientId);
+  const who = initials(t.assignedTo);
+  const label = `${showWho?who+" · ":""}${showClient&&c?clientShortName(c)+" · ":""}${t.title}`;
+  const tip = `${t.title} — ${c?c.name:""} · ${t.assignedTo} · ${t.status}${t.status!=="Done"&&t.due<TODAY?" · overdue":""}`;
+  const canMove = canMoveCalTasks();
+  return `<span class="tcal-chip ${taskCalChipClass(t)}" title="${esc(tip)}" ${canMove?`draggable="true" ondragstart="taskCalDragStart(event,'${t.id}')"`:''} onclick="event.stopPropagation();openEditTask('${t.id}')">${esc(label)}</span>`;
+}
+let taskCalDragId = null;
+function taskCalDragStart(e, id){ taskCalDragId = id; e.dataTransfer.effectAllowed = "move"; e.stopPropagation(); }
+function taskCalDragOver(e){ e.preventDefault(); e.currentTarget.classList.add("drop-hover"); }
+function taskCalDragLeave(e){ e.currentTarget.classList.remove("drop-hover"); }
+// Reschedule (and in Team week, hand over when dropped on another person's row).
+function taskCalDrop(e, date, person){
+  e.preventDefault(); e.currentTarget.classList.remove("drop-hover");
+  const t = clientTasks.find(x=>x.id===taskCalDragId); taskCalDragId = null;
+  if(!t || !canMoveCalTasks()) return;
+  moveTaskOnCalendar(t, date, person);
+}
+async function moveTaskOnCalendar(t, date, person){
+  const body = {}; const changes = [];
+  if(t.due!==date){ body.dueAt = date; changes.push("moved to "+fmtDateShort(date)); }
+  if(person && t.assignedTo!==person){ body.assignedTo = person; changes.push("assigned to "+person); }
+  if(!changes.length) return;
+  try{
+    await apiJson(`/api/crm/tasks/${t.id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    if(body.dueAt) t.due = body.dueAt;
+    if(body.assignedTo) t.assignedTo = body.assignedTo;
+    toast(t.title+" "+changes.join(", "));
+  }catch(err){ toast(err.message || "Couldn't move the task"); }
+  render();
+}
+function taskCalFilterBar(){
+  const people = [...new Set(activeEmployees().map(e=>e.name))].sort();
+  const p = taskCalPersonValue();
+  const me = currentUser ? currentUser.name : null;
+  const title = taskCalView==="month" ? monthLabel(taskCalMonth) : `${fmtDateShort(taskCalWeekStart)} – ${fmtDateShort(addDays(taskCalWeekStart,6))}`;
+  const clientOpts = (typeof liveClients==="function" ? liveClients() : clients);
+  return `
+  <div class="toolbar" style="flex-wrap:wrap;gap:10px;">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-sm ghost" onclick="shiftTaskCal(-1)" title="Previous"><svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-left"/></svg></button>
+      <div style="font-weight:800;font-size:14px;min-width:150px;text-align:center;">${title}</div>
+      <button class="btn btn-sm ghost" onclick="shiftTaskCal(1)" title="Next"><svg class="icon" style="width:12px;height:12px;transform:rotate(180deg)"><use href="#i-chevron-left"/></svg></button>
+      <button class="btn btn-sm ghost" onclick="taskCalToday()">Today</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <div class="filter-group"><span class="filter-label">Staff</span><select class="select-sm" onchange="setTaskCal('person', this.value)">
+        <option value="All" ${p==="All"?'selected':''}>Everyone</option>
+        ${me?`<option value="${esc(me)}" ${p===me?'selected':''}>Me (${esc(me)})</option>`:''}
+        ${people.filter(n=>n!==me).map(n=>`<option value="${esc(n)}" ${p===n?'selected':''}>${esc(n)}</option>`).join('')}
+      </select></div>
+      <div class="filter-group"><span class="filter-label">Client</span><select class="select-sm" onchange="setTaskCal('client', this.value)"><option value="All">All clients</option>${clientOpts.map(c=>`<option value="${c.id}" ${taskCalClient===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <label class="check-chip" style="padding:5px 9px;"><input type="checkbox" ${taskCalHideDone?'checked':''} onchange="setTaskCal('hideDone', this.checked)">Hide done</label>
+      <div style="display:flex;gap:4px;"><button class="btn btn-sm ${taskCalView==='month'?'primary':'ghost'}" onclick="setTaskCal('view','month')">Month</button><button class="btn btn-sm ${taskCalView==='team'?'primary':'ghost'}" onclick="setTaskCal('view','team')">Team week</button></div>
+    </div>
+  </div>`;
+}
+const TASK_STATUS_KIND = {"To Do":"neutral","In Progress":"blue","Review":"warn","Done":"pos"};
+function taskCalAgendaHTML(date, tasks){
+  const list = tasks.filter(t=>t.due===date).sort((a,b)=>a.assignedTo.localeCompare(b.assignedTo));
+  return `
+  <div class="panel">
+    <div class="panel-head"><div><h3>Tasks due</h3><div class="sub">${list.length} task${list.length===1?'':'s'}</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Task</th><th>Client</th><th>Assigned to</th><th>Status</th><th></th></tr></thead><tbody>${list.map(t=>{ const c=clientById(t.clientId); return `<tr>
+      <td style="font-weight:700;">${esc(t.title)}${t.status!=="Done"&&t.due<TODAY?' '+pill('Overdue','neg'):''}</td>
+      <td class="muted">${c?esc(c.name):'—'}</td>
+      <td><span class="assignee"><span class="mini-avatar sm">${initials(t.assignedTo)}</span>${esc(t.assignedTo)}</span></td>
+      <td>${pill(t.status, TASK_STATUS_KIND[t.status]||'neutral')}</td>
+      <td class="num"><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEditTask('${t.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${c?`<button class="btn btn-sm ghost" onclick="goToClient('${t.clientId}')">Open client</button>`:''}</div></td>
+    </tr>`; }).join('')}</tbody></table></div>
+  </div>`;
+}
+// Everything except client tasks for one date, in display order.
+function calItemsOn(ds){
+  const out = [], p = taskCalPersonValue();
+  const personOk = name => p==="All" || name===p;
+  if(calOn("holidays")) hrPolicy.holidays.filter(h=>h.date===ds).forEach(h=>out.push({kind:"Holiday", label:h.name, tip:"Holiday · "+h.name, cls:"holiday"}));
+  if(calOn("events")) companyEvents.filter(e=>e.date===ds).forEach(e=>{ const k = EVENT_KINDS[e.kind]||"neutral";
+    out.push({kind:e.kind, label:(e.time?e.time+" ":"")+e.title, tip:`${e.kind} · ${e.title}${e.time?" · "+e.time:""}${e.venue?" · "+e.venue:""}`, style:k==="neutral"?"background:var(--surface-sunk);color:var(--ink);":`background:var(--${k}-soft);color:var(--${k});`, onclick:`openCompanyEvent('${e.id}')`, sub:[e.time, e.venue].filter(Boolean).join(" · ")}); });
+  if(calOn("people")) activeEmployees().forEach(e=>{
+    if(e.dob && e.dob.slice(5)===ds.slice(5)) out.push({kind:"Birthday", label:"🎂 "+e.name.split(" ")[0], tip:e.name+"'s birthday", cls:"people", sub:e.name});
+    if(e.joined && e.joined.slice(5)===ds.slice(5) && e.joined.slice(0,4)<ds.slice(0,4)){ const y = Number(ds.slice(0,4))-Number(e.joined.slice(0,4)); out.push({kind:"Work anniversary", label:"🎉 "+e.name.split(" ")[0]+" · "+y+"y", tip:`${e.name} · ${y}-year work anniversary`, cls:"people", sub:`${e.name} · ${y} year${y>1?"s":""}`}); }
+  });
+  if(calOn("leave")) leaveRequests.filter(l=>l.from<=ds && l.to>=ds && (l.status==="Approved" || (l.status==="Pending" && (canEditCalendar() || (currentUser && l.empId===currentUser.id))))).forEach(l=>{ const e = byId(l.empId); if(!e || !personOk(e.name)) return;
+    const wfh = l.type==="WFH" || /WFH/.test(l.type); out.push({kind:wfh?"WFH":"Leave", label:`${wfh?"WFH":"Off"} · ${e.name.split(" ")[0]}${l.status==="Pending"?" (pending)":""}`, tip:`${e.name} · ${wfh?"work from home":"leave"} · ${l.status}`, cls:"leave"+(l.status==="Pending"?" pending":""), sub:`${e.name} · ${l.status}`}); });
+  if(calOn("content")) (contentItems.length?contentItems:myContentItems).filter(c=>c.due===ds && personOk(c.assignee)).forEach(c=>out.push({kind:"Content", label:(c.stage==="Published"?"✓ ":"")+c.title, tip:`Content · ${c.title} · ${c.stage}${c.assignee?" · "+c.assignee:""}`, cls:"ci-content", sub:`${c.type} · ${c.stage}${c.assignee?" · "+c.assignee:""}`}));
+  return out;
+}
+function calItemChip(it){
+  return `<span class="cal-item ${it.cls||""}" style="${it.style||""}" title="${esc(it.tip)}" ${it.onclick?`onclick="event.stopPropagation();${it.onclick}"`:""}>${esc(it.label)}</span>`;
+}
+function calLayerBarHTML(){
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">${CAL_LAYERS.map(l=>`<button class="chip ${calOn(l.k)?"active":""}" style="display:inline-flex;align-items:center;gap:6px;" onclick="toggleCalLayer('${l.k}')" aria-pressed="${calOn(l.k)}"><span style="width:8px;height:8px;border-radius:50%;background:${l.sw};"></span>${l.label}</button>`).join("")}</div>`;
+}
+function calKpisHTML(days, tasks, rangeLabel){
+  const open = tasks.filter(t=>t.status!=="Done"), overdue = open.filter(t=>t.due<TODAY);
+  const evs = days.reduce((s,d)=>s+companyEvents.filter(e=>e.date===d).length, 0);
+  const hols = days.filter(d=>isHolidayDate(d));
+  const offToday = leaveRequests.filter(l=>l.status==="Approved" && !/WFH/.test(l.type) && l.from<=TODAY && l.to>=TODAY).length;
+  return `<div class="kpi-grid cols-5">
+    <div class="kpi-card"><div class="kpi-label">Tasks ${rangeLabel}</div><div class="kpi-value mono">${tasks.length}</div><div class="kpi-sub">${open.length} open</div></div>
+    <div class="kpi-card"><div class="kpi-label">Overdue tasks</div><div class="kpi-value mono ${overdue.length?"neg":""}">${overdue.length}</div><div class="kpi-sub">past due, not done</div></div>
+    <div class="kpi-card"><div class="kpi-label">Events</div><div class="kpi-value mono">${evs}</div><div class="kpi-sub">${rangeLabel}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Holidays</div><div class="kpi-value mono">${hols.length}</div><div class="kpi-sub">${hols.length?hols.map(d=>fmtDateShort(d)).join(", "):rangeLabel}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Off today</div><div class="kpi-value mono">${offToday}</div><div class="kpi-sub">on approved leave</div></div>
+  </div>`;
+}
+function calMonthHTML(){
+  const month = taskCalMonth;
+  const tasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due.slice(0,7)===month) : [];
+  const p = taskCalPersonValue(), showWho = p==="All";
+  const [y,m] = month.split("-").map(Number);
+  const daysIn = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const firstDow = new Date(`${month}-01T00:00:00`).getDay();
+  const days = Array.from({length:daysIn}, (_,i)=>`${month}-${String(i+1).padStart(2,"0")}`);
+  const cells = [];
+  for(let i=0;i<firstDow;i++) cells.push(`<div class="cal-day empty"></div>`);
+  days.forEach((ds,i)=>{
+    const dayTasks = tasks.filter(t=>t.due===ds).sort((a,b)=>(a.status==="Done")-(b.status==="Done"));
+    const items = calItemsOn(ds);
+    const hol = items.some(x=>x.cls==="holiday");
+    const all = [...items.map(calItemChip), ...dayTasks.map(t=>taskCalChip(t, showWho, true))];
+    cells.push(`<div class="cal-day ${!isPlanWorkingDay(ds)?"off":""} ${hol?"holiday":""} ${ds===TODAY?"today":""} ${ds===taskCalSelected?"selected":""}" style="min-height:112px;" onclick="setTaskCal('select','${ds}')" ondragover="taskCalDragOver(event)" ondragleave="taskCalDragLeave(event)" ondrop="taskCalDrop(event,'${ds}')">
+      <div style="display:flex;justify-content:space-between;align-items:center;"><span class="cal-daynum">${i+1}</span>${all.length?`<span class="faint" style="font-size:10px;font-weight:700;">${all.length}</span>`:""}</div>
+      ${all.slice(0,4).join("")}
+      ${all.length>4?`<span class="tcal-more">+${all.length-4} more</span>`:""}
+    </div>`);
+  });
+  const sel = taskCalSelected.slice(0,7)===month ? taskCalSelected : (TODAY.slice(0,7)===month ? TODAY : month+"-01");
+  return `
+  ${calKpisHTML(days, tasks, "this month")}
+  <div class="panel"><div class="modal-body">
+    <div class="cal-legend">
+      <span class="cal-legend-item"><b style="color:var(--ink);">Tasks:</b></span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--ink-faint);"></span>To Do</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--blue);"></span>In Progress</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--warn);"></span>Review</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--pos);"></span>Done</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--neg);"></span>Overdue</span>
+      <span class="faint">· ${canMoveCalTasks()?"Drag a task to reschedule · ":""}click a day for everything on it · shaded = holiday or weekly off</span>
+    </div>
+    <div class="cal-weekdays">${WEEKDAY_NAMES.map(w=>`<div>${w.slice(0,3)}</div>`).join("")}</div>
+    <div class="cal-grid">${cells.join("")}</div>
+  </div></div>
+  ${calAgendaHTML(sel)}`;
+}
+// Team week: a "Company" row for everything that isn't a task, then one row per person's tasks.
+function calTeamHTML(){
+  const days = Array.from({length:7}, (_,i)=>addDays(taskCalWeekStart, i));
+  const tasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due>=days[0] && t.due<=days[6]) : [];
+  const p = taskCalPersonValue();
+  let rows = [];
+  if(calOn("tasks")) rows = p==="All" ? [...new Set(tasks.map(t=>t.assignedTo))].sort().map(n=>({key:n, label:n})) : [{key:p, label:p}];
+  const rowTasks = r => tasks.filter(t=>t.assignedTo===r.key);
+  const head = `<div class="tcal-head">Who</div>${days.map(d=>`<div class="tcal-head ${d===TODAY?"today":""}">${WEEKDAY_NAMES[new Date(d+"T00:00:00").getDay()].slice(0,3)} ${Number(d.slice(8))}</div>`).join("")}`;
+  const company = `<div class="tcal-person"><span style="font-weight:800;">Company</span><span class="faint" style="font-size:11px;font-weight:600;">events, leave, holidays</span></div>
+    ${days.map(d=>`<div class="tcal-cell ${!isPlanWorkingDay(d)?"off":""} ${d===TODAY?"today":""}">${calItemsOn(d).map(calItemChip).join("")}</div>`).join("")}`;
+  const people = rows.map(r=>{ const rt = rowTasks(r), open = rt.filter(t=>t.status!=="Done").length; return `
+    <div class="tcal-person"><span class="assignee"><span class="mini-avatar sm">${initials(r.label)}</span>${esc(r.label)}</span><span class="faint" style="font-size:11px;font-weight:600;">${rt.length} task${rt.length===1?"":"s"} · ${open} open</span></div>
+    ${days.map(d=>`<div class="tcal-cell ${!isPlanWorkingDay(d)?"off":""} ${d===TODAY?"today":""}" ondragover="taskCalDragOver(event)" ondragleave="taskCalDragLeave(event)" ondrop="taskCalDrop(event,'${d}','${esc(r.key)}')">${rt.filter(t=>t.due===d).map(t=>taskCalChip(t, false, true)).join("")}</div>`).join("")}`; }).join("");
+  return `
+  ${calKpisHTML(days, tasks, "this week")}
+  <div class="panel"><div class="modal-body">
+    ${canMoveCalTasks()?`<div class="faint" style="font-size:12px;">Drag a task to another day to reschedule it, or onto someone else's row to hand it to them.</div>`:""}
+    <div style="overflow-x:auto;"><div class="tcal-week">${head}${company}${people}</div></div>
+    ${calOn("tasks") && !rows.length ? `<div class="empty">No client tasks due this week${p!=="All"?" for this filter":""}.</div>` : ""}
+  </div></div>`;
+}
+function calAgendaHTML(date){
+  const items = calItemsOn(date);
+  const dayTasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due===date) : [];
+  const hol = hrPolicy.holidays.find(h=>h.date===date);
+  const btns = [
+    canEditCalendar() ? `<button class="btn btn-sm primary" onclick="openCompanyEvent(null,'${date}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add event</button>` : "",
+    canManageHolidays() ? (hol ? `<button class="btn btn-sm ghost" onclick="removeHoliday('${date}')">Remove holiday</button>` : `<button class="btn btn-sm ghost" onclick="openMarkHoliday('${date}')">Add holiday</button>`) : "",
+  ].join("");
+  return `
+  <div class="panel">
+    <div class="panel-head" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;"><div><h3>${fmtDate(date)}${date===TODAY?" · Today":""}</h3><div class="sub">${items.length} event${items.length===1?"":"s"} & updates · ${dayTasks.length} task${dayTasks.length===1?"":"s"}${!isPlanWorkingDay(date)?" · non-working day":""}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${btns}</div></div>
+    ${items.length ? `<div class="panel-body" style="display:flex;flex-direction:column;gap:0;padding-top:4px;padding-bottom:4px;">${items.map(it=>`<div style="display:grid;grid-template-columns:130px minmax(0,1fr) auto;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);">
+      <div style="display:flex;"><span class="cal-item ${it.cls||""}" style="${it.style||""};display:inline-block;width:auto;max-width:100%;cursor:default;">${esc(it.kind)}</span></div>
+      <div style="min-width:0;"><div style="font-weight:700;font-size:13px;">${esc(it.label.replace(/^(🎂|🎉|✓) /u,""))}</div>${it.sub?`<div class="subtext">${esc(it.sub)}</div>`:""}</div>
+      ${it.onclick?`<button class="btn btn-sm ghost" onclick="${it.onclick}">Open</button>`:"<span></span>"}
+    </div>`).join("")}</div>` : (dayTasks.length ? "" : `<div class="empty">Nothing on this day.</div>`)}
+  </div>
+  ${dayTasks.length ? taskCalAgendaHTML(date, taskCalTasks()) : ""}`;
+}
+function calendarView(){
+  if(!currentUser) return "";
+  const undated = 0;
+  return `
+  ${taskCalFilterBar()}
+  <div class="panel" style="padding:12px 16px;"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="filter-label">Show</span>${calLayerBarHTML()}</div></div>
+  ${taskCalView==="month" ? calMonthHTML() : calTeamHTML()}`;
+}
+function openCompanyEvent(id, date){
+  const ev = id ? companyEvents.find(x=>x.id===id) : null;
+  if(id && !ev) return;
+  if(ev && !canEditCalendar()){
+    showModal(`
+      <div class="modal-head"><h3>${esc(ev.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+      <div class="modal-body">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${pill(ev.kind, EVENT_KINDS[ev.kind]||"neutral")}<span style="font-size:13px;">${fmtDate(ev.date)}${ev.time?" · "+esc(ev.time):""}${ev.venue?" · "+esc(ev.venue):""}</span></div>
+        ${ev.notes?`<div style="font-size:13px;line-height:1.55;">${esc(ev.notes)}</div>`:""}
+        <div class="subtext">For ${ev.audience.includes("All")?"everyone":esc(ev.audience.join(", "))} · added by ${esc(ev.createdBy)}</div>
+      </div>
+      <div class="modal-foot"><div></div><button class="btn ghost" onclick="closeModal()">Close</button></div>`);
+    return;
+  }
+  if(!canEditCalendar()) return;
+  const aud = ev ? ev.audience : ["All"];
+  showModal(`
+    <div class="modal-head"><h3>${ev?"Edit event":"Add event"}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-company-event"><div class="modal-body">
+      <div><label class="field-label" for="ev-title">Title</label><input class="field-input" id="ev-title" name="title" required value="${esc(ev?ev.title:"")}" placeholder="e.g. Monthly all-hands"></div>
+      <div class="field-row cols-3">
+        <div><label class="field-label" for="ev-date">Date</label><input class="field-input" type="date" id="ev-date" name="date" required value="${ev?ev.date:(date||TODAY)}"></div>
+        <div><label class="field-label" for="ev-time">Time (optional)</label><input class="field-input" type="time" id="ev-time" name="time" value="${ev?ev.time:""}"></div>
+        <div><label class="field-label" for="ev-kind">Type</label><select class="field-input" id="ev-kind" name="kind">${Object.keys(EVENT_KINDS).map(k=>`<option ${ev&&ev.kind===k?"selected":""}>${k}</option>`).join("")}</select></div>
+      </div>
+      <div><label class="field-label" for="ev-where">Where (optional)</label><input class="field-input" id="ev-where" name="venue" value="${esc(ev?ev.venue:"")}" placeholder="Conference room, Google Meet link…"></div>
+      <div><label class="field-label">Who's it for</label><div class="check-row">
+        <label class="check-chip"><input type="checkbox" name="audience" value="All" ${aud.includes("All")?"checked":""}>Everyone</label>
+        ${DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="audience" value="${esc(d)}" ${!aud.includes("All")&&aud.includes(d)?"checked":""}>${esc(d)}</label>`).join("")}
+      </div></div>
+      <div><label class="field-label" for="ev-notes">Notes (optional)</label><textarea class="field-input" id="ev-notes" name="notes" rows="2">${esc(ev?ev.notes:"")}</textarea></div>
+    </div>
+    <div class="modal-foot"><div>${ev?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="deleteCompanyEvent('${ev.id}')">Delete</button>`:""}</div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${ev?"Save":"Add event"}</button></div></div>
+    </form>`);
+  document.getElementById("f-company-event").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    let audience = f.getAll("audience"); if(!audience.length || audience.includes("All")) audience = ["All"];
+    const data = {title:(f.get("title")||"").trim(), date:f.get("date"), time:f.get("time")||"", kind:f.get("kind"), venue:(f.get("venue")||"").trim(), audience, notes:(f.get("notes")||"").trim()};
+    try{
+      await apiJson(ev?`/api/calendar/events/${ev.id}`:"/api/calendar/events", { method:ev?"PUT":"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(data) });
+      await loadCompanyEvents();
+      taskCalSelected = data.date; taskCalMonth = data.date.slice(0,7);
+      toast(ev?"Event updated":"Added to the calendar"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the event"); }
+  });
+}
+async function deleteCompanyEvent(id){
+  if(!canEditCalendar()) return;
+  if(!confirm("Delete this event?")) return;
+  try{ await Auth.apiFetch(`/api/calendar/events/${id}`, { method:"DELETE" }); await loadCompanyEvents(); toast("Event removed"); closeModal(); render(); }
+  catch(err){ toast("Couldn't delete the event"); }
+}
+function openMarkHoliday(date){
+  if(!canManageHolidays()) return;
+  showModal(`
+    <div class="modal-head"><h3>Add holiday</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-mark-holiday"><div class="modal-body">
+      <div class="field-row">
+        <div><label class="field-label" for="mh-date">Date</label><input class="field-input" type="date" id="mh-date" name="date" required value="${date||TODAY}"></div>
+        <div><label class="field-label" for="mh-name">Holiday name</label><input class="field-input" id="mh-name" name="name" required placeholder="e.g. Diwali"></div>
+      </div>
+      <div class="subtext">Holidays count as non-working days everywhere — attendance, leave and payroll. Only HR and Admin can add them.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Add holiday</button></div></div>
+    </form>`);
+  document.getElementById("f-mark-holiday").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target), d = f.get("date"), name = (f.get("name")||"").trim(); if(!d || !name) return;
+    try{
+      await apiJson("/api/hr/policy/holidays", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ date:d, name }) });
+      await loadPolicy(); taskCalSelected = d; taskCalMonth = d.slice(0,7);
+      toast("Holiday added"); closeModal(); render();
+    }catch(err){ toast(err.message || "A holiday is already set for that date"); }
+  });
+}
+
 /* ===================== NAV MODEL ===================== */
 const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
@@ -1813,6 +2152,7 @@ const MODULES = [
     {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
     {id:"complaints", label:"Complaints", icon:"i-megaphone"},
   ]},
+  {id:"calendar", label:"Calendar", icon:"i-calendar"},
   {id:"hr", label:"HR", icon:"i-users", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"directory", label:"Directory", icon:"i-users"},
@@ -1854,7 +2194,7 @@ const MODULES = [
     {id:"reports", label:"Reports", icon:"i-file"},
   ]},
 ];
-let nav = {module:"dashboard", sub:{workspace:"overview", hr:"overview", marketing:"overview", clients:"overview", accounts:"overview"}, detail:null};
+let nav = {module:"dashboard", sub:{workspace:"overview", calendar:"main", hr:"overview", marketing:"overview", clients:"overview", accounts:"overview"}, detail:null};
 
 // An "HR Executive" (role containing "HR") only manages HR — hiring, attendance, leave, payroll,
 // advances, complaints, policies — so their sidebar shows nothing else. Their payroll work already
@@ -1917,13 +2257,20 @@ function accessRolesFromForm(f, existing){
   return [...new Set(["EMPLOYEE", ...(existing||[]).filter(r=>!managed.includes(r)), ...f.getAll("grantRole")])];
 }
 function visibleModules(){
+  const mods = visibleModulesBase();
+  if(!currentUser || mods.some(m=>m.id==='calendar')) return mods;
+  const cal = MODULES.find(m=>m.id==='calendar');
+  const i = mods.findIndex(m=>m.id==='workspace');
+  return i>=0 ? [...mods.slice(0,i+1), cal, ...mods.slice(i+1)] : [cal, ...mods];
+}
+function visibleModulesBase(){
   // Real stored roles drive the sidebar (Admin = everything; otherwise the union of the modules
   // granted, always with My Workspace) — not the job-title guessing the legacy branch below does.
   if(currentUser && Array.isArray(currentUser.roles) && currentUser.roles.length){
     if(currentUser.isAdmin) return MODULES;
     const r = currentUser.roles;
     const sales = r.includes('SALES') || r.includes('SALES_HEAD');
-    const show = { workspace:true, hr:r.includes('HR'), marketing:sales||r.includes('CONTENT'), clients:sales||r.includes('CLIENTS'), accounts:r.includes('FINANCE') };
+    const show = { workspace:true, calendar:true, hr:r.includes('HR'), marketing:sales||r.includes('CONTENT'), clients:sales||r.includes('CLIENTS'), accounts:r.includes('FINANCE') };
     return MODULES.filter(m=>show[m.id]).map(m=>{
       if(m.id==='workspace' && sales) return {...m, sub:SALES_WORKSPACE_SUB};
       if(m.id==='marketing' && !sales) return {...m, sub:m.sub.filter(s=>s.id==='content')};
@@ -1976,6 +2323,7 @@ function visibleModulesLegacy(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
+  "calendar/main":[()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
@@ -2027,6 +2375,7 @@ function renderNav(){
 
 const TOPBAR_TITLES = {
   dashboard: ["Dashboard","Company overview · DesGro Media"],
+  calendar: { main:["Calendar", ()=>{ const p = taskCalPersonValue(); return "Tasks, events, holidays and leave · "+(p==="All"?"whole team":p); }] },
   workspace: {
     overview:["My Workspace", ()=>currentUser?currentUser.role+" · "+currentUser.name:"Your personal snapshot"],
     tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+" open across your clients":""],
@@ -2178,6 +2527,7 @@ function render(){
   }
   renderTopbar();
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
+  else if(nav.module==="calendar") root.innerHTML = calendarView();
   else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
@@ -6984,6 +7334,7 @@ Auth.init().then(async (authUser) => {
   else if(roles.includes('CLIENTS')) crmContentJobs.push(Promise.all([loadClients(), loadTasks()]));
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
+  crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
   await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
