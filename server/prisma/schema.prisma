@@ -229,6 +229,7 @@ model Employee {
 
   @@index([dept])
   @@map("employees")
+  departmentHeads DepartmentHead[]
 }
 
 // Append-only — a correction is a new row, not an edit to history. HR/Admin
@@ -1442,4 +1443,17 @@ model CompanyEvent {
 
   @@index([date])
   @@map("company_events")
+}
+
+// Who heads a department (files its daily action plan, sees its page under Departments, may add calendar events).
+// One head per department; a department with no row has no head. Deleting the employee just leaves it headless.
+model DepartmentHead {
+  id         String    @id @default(uuid())
+  dept       String    @unique
+  employeeId String?   @map("employee_id")
+  employee   Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  updatedBy  String    @map("updated_by")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("department_heads")
 }

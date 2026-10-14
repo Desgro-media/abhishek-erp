@@ -1823,8 +1823,12 @@ function addDays(ds, n){ const d = new Date(ds+"T00:00:00Z"); d.setUTCDate(d.get
 function isPlanWorkingDay(ds){ return new Date(ds+"T00:00:00").getDay()!==hrPolicy.weeklyOff && !isHolidayDate(ds); }
 function activeEmployees(){ return employees.filter(e=>e.employmentStatus!=="Left" && e.employmentStatus!=="Terminated" && e.employmentStatus!=="Resigned"); }
 // The server only lets HR/Admin write events and holidays; the UI mirrors that so nobody sees buttons that would 403.
-function canEditCalendar(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser)); }
-function canManageHolidays(){ return canEditCalendar(); }
+function calManagesAll(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser) || isLeadershipRole(currentUser)); }
+function canEditCalendar(){ return calManagesAll() || isDeptHead(currentUser); }
+// Holidays change working days for everyone, so they stay with HR/Admin (the server enforces this too).
+function canManageHolidays(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser)); }
+// A department head can change only the events they added; HR/Admin/leadership any.
+function canEditEvent(ev){ return canEditCalendar() && (!ev || calManagesAll() || ev.createdBy===currentUser.name); }
 // Moving a task needs the same access as editing it (Clients/Sales/Admin).
 function canMoveCalTasks(){ return !!currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'||r==='CLIENTS')); }
 
@@ -1951,7 +1955,7 @@ function calItemsOn(ds){
     if(e.dob && e.dob.slice(5)===ds.slice(5)) out.push({kind:"Birthday", label:"🎂 "+e.name.split(" ")[0], tip:e.name+"'s birthday", cls:"people", sub:e.name});
     if(e.joined && e.joined.slice(5)===ds.slice(5) && e.joined.slice(0,4)<ds.slice(0,4)){ const y = Number(ds.slice(0,4))-Number(e.joined.slice(0,4)); out.push({kind:"Work anniversary", label:"🎉 "+e.name.split(" ")[0]+" · "+y+"y", tip:`${e.name} · ${y}-year work anniversary`, cls:"people", sub:`${e.name} · ${y} year${y>1?"s":""}`}); }
   });
-  if(calOn("leave")) leaveRequests.filter(l=>l.from<=ds && l.to>=ds && (l.status==="Approved" || (l.status==="Pending" && (canEditCalendar() || (currentUser && l.empId===currentUser.id))))).forEach(l=>{ const e = byId(l.empId); if(!e || !personOk(e.name)) return;
+  if(calOn("leave")) leaveRequests.filter(l=>l.from<=ds && l.to>=ds && (l.status==="Approved" || (l.status==="Pending" && (canManageHolidays() || (currentUser && l.empId===currentUser.id))))).forEach(l=>{ const e = byId(l.empId); if(!e || !personOk(e.name)) return;
     const wfh = l.type==="WFH" || /WFH/.test(l.type); out.push({kind:wfh?"WFH":"Leave", label:`${wfh?"WFH":"Off"} · ${e.name.split(" ")[0]}${l.status==="Pending"?" (pending)":""}`, tip:`${e.name} · ${wfh?"work from home":"leave"} · ${l.status}`, cls:"leave"+(l.status==="Pending"?" pending":""), sub:`${e.name} · ${l.status}`}); });
   if(calOn("content")) (contentItems.length?contentItems:myContentItems).filter(c=>c.due===ds && personOk(c.assignee)).forEach(c=>out.push({kind:"Content", label:(c.stage==="Published"?"✓ ":"")+c.title, tip:`Content · ${c.title} · ${c.stage}${c.assignee?" · "+c.assignee:""}`, cls:"ci-content", sub:`${c.type} · ${c.stage}${c.assignee?" · "+c.assignee:""}`}));
   return out;
@@ -2066,7 +2070,7 @@ function calendarView(){
 function openCompanyEvent(id, date){
   const ev = id ? companyEvents.find(x=>x.id===id) : null;
   if(id && !ev) return;
-  if(ev && !canEditCalendar()){
+  if(ev && !canEditEvent(ev)){
     showModal(`
       <div class="modal-head"><h3>${esc(ev.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
       <div class="modal-body">
@@ -2077,7 +2081,7 @@ function openCompanyEvent(id, date){
       <div class="modal-foot"><div></div><button class="btn ghost" onclick="closeModal()">Close</button></div>`);
     return;
   }
-  if(!canEditCalendar()) return;
+  if(!canEditEvent(ev)) return;
   const aud = ev ? ev.audience : ["All"];
   showModal(`
     <div class="modal-head"><h3>${ev?"Edit event":"Add event"}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
@@ -2139,6 +2143,130 @@ function openMarkHoliday(date){
   });
 }
 
+/* ===================== DEPARTMENTS =====================
+   Overview: one tile per department. Each department then has its own page: head, team, clients and
+   revenue in one place. Leadership sees every department; a department head sees their own. Figures come
+   from /api/departments (computed server-side, so a head doesn't need Clients or Finance access). Score,
+   client feedback and the action plan attach to this page in later packages. */
+let deptHeads = {};            // dept -> head's name | null
+let deptOverviewTiles = [];
+let deptSummaries = {};        // dept -> last loaded /summary
+async function loadDeptHeads(){ deptHeads = (await apiJson("/api/departments/heads")).heads; }
+async function loadDeptOverview(){ deptOverviewTiles = (await apiJson("/api/departments/overview")).tiles; }
+async function loadDeptSummary(d){ deptSummaries[d] = await apiJson(`/api/departments/${encodeURIComponent(d)}/summary`); }
+function deptSlug(d){ return d.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
+function deptFromSlug(sl){ return DEPARTMENTS.find(d=>deptSlug(d)===sl) || null; }
+function deptHeadOf(d){ return deptHeads[d] || null; }
+function headDeptOf(name){ return DEPARTMENTS.find(d=>deptHeads[d]===name) || null; }
+function isDeptHead(u){ return !!(u && headDeptOf(u.name)); }
+function canSeeDeptPage(d){ return !!currentUser && (isLeadershipRole(currentUser) || headDeptOf(currentUser.name)===d); }
+function deptsVisibleTo(){ return DEPARTMENTS.filter(canSeeDeptPage); }
+function prevMonth(m){ const [y,mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo-2, 1)).toISOString().slice(0,7); }
+function shortInr(n){ n = Math.round(n||0); return n>=100000 ? '₹'+(n/100000).toFixed(n>=1000000?1:2).replace(/\.?0+$/,'')+'L' : n>=1000 ? '₹'+(n/1000).toFixed(n>=10000?0:1).replace(/\.0$/,'')+'K' : '₹'+n; }
+// "▲3 vs Sep" style change marker; `neutral` for figures where up/down isn't good or bad.
+function deltaHTML(now, was, opts){
+  opts = opts || {};
+  if(now==null || was==null) return '';
+  const d = now-was; if(Math.abs(d) < (opts.eps||0.5)) return `<span class="faint">no change</span>`;
+  const good = opts.neutral ? null : d>0;
+  const col = good==null ? 'var(--ink-soft)' : good ? 'var(--pos)' : 'var(--neg)';
+  return `<b style="color:${col};">${d>0?'▲':'▼'}${opts.fmt?opts.fmt(Math.abs(d)):Math.abs(Math.round(d*10)/10)}</b>`;
+}
+function openAssignDeptHead(dept){
+  if(!isLeadershipRole(currentUser)) return;
+  const cur = deptHeadOf(dept);
+  const people = employees.filter(e=>e.employmentStatus!=="Left").sort((a,b)=>(b.dept===dept)-(a.dept===dept) || a.name.localeCompare(b.name));
+  showModal(`
+    <div class="modal-head"><h3>${esc(dept)} — head</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-dept-head"><div class="modal-body">
+      <div><label class="field-label">Who heads ${esc(dept)}?</label><select class="field-input" name="employeeId"><option value="">— No head —</option>${people.map(e=>`<option value="${esc(e._dbId)}" ${e.name===cur?"selected":""}>${esc(e.name)} · ${esc(e.dept)}${e.dept===dept?"":" (other dept)"}</option>`).join("")}</select></div>
+      <div class="subtext">The head sees this department's page under Departments and can add calendar events. Only leadership can change this.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-dept-head").addEventListener("submit", async ev=>{
+    ev.preventDefault();
+    const id = new FormData(ev.target).get("employeeId") || null;
+    try{
+      await apiJson(`/api/departments/${encodeURIComponent(dept)}/head`, { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId:id }) });
+      await Promise.all([loadDeptHeads(), loadDeptOverview(), loadDeptSummary(dept).catch(()=>{})]);
+      toast(id?"Head updated":"Head cleared"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't update the head"); }
+  });
+}
+function deptTile(d){
+  const t = deptOverviewTiles.find(x=>x.dept===d) || {};
+  const head = deptHeadOf(d);
+  return `<div class="panel row-click" style="padding:16px;display:flex;flex-direction:column;gap:10px;" onclick="setSub('departments','${deptSlug(d)}')">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;"><div><div style="font-weight:800;font-size:14px;">${esc(d)}</div><div class="subtext">${head?'Head: '+esc(head):'No head assigned'}</div></div>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openAssignDeptHead('${esc(d)}')">${head?'Change':'Assign head'}</button>`:''}</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);">
+      <span><b class="mono" style="color:var(--ink);">${t.people==null?'—':t.people}</b> people</span>
+      ${t.clients!=null?`<span><b class="mono" style="color:var(--ink);">${t.clients}</b> clients</span>`:''}
+    </div>
+  </div>`;
+}
+function deptsOverview(){
+  const list = deptsVisibleTo();
+  return `
+  <div>
+    <div style="margin-bottom:12px;"><h3 style="margin:0;font-size:15px;">${isLeadershipRole(currentUser)?'All departments':'Your department'}</h3><div class="subtext" style="font-size:12px;">Open a department for its team, clients and revenue</div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;">${list.map(deptTile).join('') || '<div class="empty">No departments to show.</div>'}</div>
+  </div>`;
+}
+function deptInsightsHTML(s){
+  const a = s.insights.now, b = s.insights.prev, P = monthLabel(prevMonth(s.month)).slice(0,3);
+  const tiles = [
+    s.service ? {label:"Clients", now:a.clients, was:b.clients, fmt:x=>String(x)} : null,
+    s.canSeeMoney && a.paid!=null ? {label:"Payments", now:a.paid, was:b.paid, fmt:shortInr, dfmt:shortInr, tip:`Payments received · ${inr(a.paid)} vs ${inr(b.paid)}`} : null,
+    {label:"Team", now:a.team, was:b.team, fmt:x=>String(x), neutral:true},
+  ].filter(Boolean);
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;">${tiles.map(t=>`
+    <div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);min-width:0;" ${t.tip?`title="${esc(t.tip)}"`:''}>
+      <div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);">${t.label}</div>
+      <div class="mono" style="font-size:15px;font-weight:800;margin-top:2px;">${t.fmt(t.now)}</div>
+      <div style="font-size:11px;margin-top:1px;">${deltaHTML(t.now, t.was, {neutral:t.neutral, fmt:t.dfmt, eps:t.label==="Payments"?1:0.5})} <span class="faint">vs ${P}</span></div>
+    </div>`).join("")}</div>`;
+}
+function deptPage(d){
+  if(!d || !canSeeDeptPage(d)) return `<div class="empty">You don't have access to this department.</div>`;
+  const s = deptSummaries[d];
+  if(!s) return `<div class="empty">Loading ${esc(d)}…</div>`;
+  const M = monthLabel(s.month).split(' ')[0], head = s.head;
+  const attLabel = id => { const a = attendanceToday[id]; return a ? attendanceLabel(a.status) : null; };
+  const showToday = s.team.some(e=>attendanceToday[e.id]);
+  const header = `<div class="panel" style="padding:16px 18px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between;">
+    <div style="display:flex;align-items:center;gap:12px;"><div class="mini-avatar" style="width:40px;height:40px;font-size:13px;">${head?initials(head):'—'}</div><div><div class="kpi-label">Department head</div><div style="font-weight:800;font-size:14px;">${head?esc(head):'Not assigned'}</div></div></div>
+    <div style="display:flex;gap:22px;flex-wrap:wrap;">
+      <div><div class="kpi-label">Team</div><div class="mono" style="font-size:18px;font-weight:800;">${s.team.length}</div></div>
+      ${s.service?`<div><div class="kpi-label">Clients · ${M}</div><div class="mono" style="font-size:18px;font-weight:800;">${s.clients.length}</div></div>`:''}
+    </div>
+    ${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${head?'Change head':'Assign head'}</button>`:''}
+  </div>`;
+  const insights = `<div class="panel"><div class="panel-head"><div><h3>${esc(d)} · ${monthLabel(s.month)}</h3><div class="sub">This month against last month</div></div></div><div class="panel-body">${deptInsightsHTML(s)}</div></div>`;
+  const teamPanel = `<div class="panel">
+    <div class="panel-head"><div><h3>Team</h3><div class="sub">${s.team.length} people · open client work${showToday?" and today's attendance":""}</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Person</th>${showToday?'<th>Today</th>':''}<th class="num">Open tasks</th><th class="num">Overdue</th>${s.service?'<th class="num">Clients</th>':''}</tr></thead><tbody>${s.team.map(e=>{ const st = attLabel(e.id); return `<tr>
+      <td>${personCell(e)}${e.name===head?' '+pill('Head','blue'):''}</td>
+      ${showToday?`<td>${st?pill(st, statusKind(st)):pill('Not marked','neutral')}</td>`:''}
+      <td class="num mono">${e.openTasks||'—'}</td><td class="num mono ${e.overdue?'neg':'faint'}">${e.overdue||'—'}</td>${s.service?`<td class="num mono">${e.clients||'—'}</td>`:''}
+    </tr>`; }).join('') || `<tr><td colspan="5"><div class="empty">No one in this department.</div></td></tr>`}</tbody></table></div>
+  </div>`;
+  const clientsPanel = s.service ? `<div class="panel">
+    <div class="panel-head"><div><h3>Clients</h3><div class="sub">${s.clients.length} active client${s.clients.length===1?'':'s'} taking ${esc(d.toLowerCase())}</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Account manager</th><th class="num">Open tasks</th></tr></thead><tbody>${s.clients.map(c=>`<tr class="row-click" ${(clientById(c.id)?`onclick="goToClient('${c.id}')"`:'')}>
+      <td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${esc(c.accountManager||'—')}</td><td class="num mono">${c.openTasks||'—'}</td></tr>`).join('') || `<tr><td colspan="3"><div class="empty">No active clients.</div></td></tr>`}</tbody></table></div>
+  </div>` : '';
+  const rev = s.revenue;
+  const revenuePanel = rev ? `<div class="panel">
+    <div class="panel-head"><div><h3>Revenue · ${monthLabel(s.month)}</h3><div class="sub">${esc(d)}'s share of every invoice, split by its line items</div></div></div>
+    <div class="panel-body"><div class="kpi-grid" style="margin:0;">
+      <div class="kpi-card"><div class="kpi-label">Billed</div><div class="kpi-value mono">${inr(rev.billed)}</div><div class="kpi-sub">invoiced this month</div></div>
+      <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
+      <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
+    </div></div></div>` : '';
+  return `${header}${insights}${revenuePanel}${clientsPanel}${teamPanel}`;
+}
+
 /* ===================== NAV MODEL ===================== */
 const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
@@ -2153,6 +2281,10 @@ const MODULES = [
     {id:"complaints", label:"Complaints", icon:"i-megaphone"},
   ]},
   {id:"calendar", label:"Calendar", icon:"i-calendar"},
+  {id:"departments", label:"Departments", icon:"i-building", sub:[
+    {id:"overview", label:"Overview", icon:"i-trend"},
+    ...DEPARTMENTS.map(d=>({id:deptSlug(d), label:d, icon:"i-users", when:()=>canSeeDeptPage(d)})),
+  ]},
   {id:"hr", label:"HR", icon:"i-users", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"directory", label:"Directory", icon:"i-users"},
@@ -2194,7 +2326,7 @@ const MODULES = [
     {id:"reports", label:"Reports", icon:"i-file"},
   ]},
 ];
-let nav = {module:"dashboard", sub:{workspace:"overview", calendar:"main", hr:"overview", marketing:"overview", clients:"overview", accounts:"overview"}, detail:null};
+let nav = {module:"dashboard", sub:{workspace:"overview", calendar:"main", departments:"overview", hr:"overview", marketing:"overview", clients:"overview", accounts:"overview"}, detail:null};
 
 // An "HR Executive" (role containing "HR") only manages HR — hiring, attendance, leave, payroll,
 // advances, complaints, policies — so their sidebar shows nothing else. Their payroll work already
@@ -2257,11 +2389,19 @@ function accessRolesFromForm(f, existing){
   return [...new Set(["EMPLOYEE", ...(existing||[]).filter(r=>!managed.includes(r)), ...f.getAll("grantRole")])];
 }
 function visibleModules(){
-  const mods = visibleModulesBase();
-  if(!currentUser || mods.some(m=>m.id==='calendar')) return mods;
-  const cal = MODULES.find(m=>m.id==='calendar');
-  const i = mods.findIndex(m=>m.id==='workspace');
-  return i>=0 ? [...mods.slice(0,i+1), cal, ...mods.slice(i+1)] : [cal, ...mods];
+  let mods = visibleModulesBase();
+  if(!currentUser) return mods;
+  const place = (id)=>{
+    if(mods.some(m=>m.id===id)) return;
+    const mod = MODULES.find(m=>m.id===id);
+    const after = [...mods].reverse().find(m=>m.id==='calendar' || m.id==='workspace');
+    const i = after ? mods.indexOf(after) : -1;
+    mods = i>=0 ? [...mods.slice(0,i+1), mod, ...mods.slice(i+1)] : [mod, ...mods];
+  };
+  place('calendar');
+  // Departments: leadership and department heads only; each department's tab shows for those who may open it.
+  if(deptsVisibleTo().length) place('departments'); else mods = mods.filter(m=>m.id!=='departments');
+  return mods.map(m=> (m.sub && m.sub.some(s=>s.when)) ? {...m, sub:m.sub.filter(s=>!s.when || s.when())} : m);
 }
 function visibleModulesBase(){
   // Real stored roles drive the sidebar (Admin = everything; otherwise the union of the modules
@@ -2335,7 +2475,8 @@ const TAB_REFRESH = {
 };
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
-  const jobs = TAB_REFRESH[mid+"/"+sid];
+  let jobs = TAB_REFRESH[mid+"/"+sid];
+  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadDeptSummary(deptFromSlug(sid))] : null);
   if(!jobs) return;
   Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
 }
@@ -2435,6 +2576,10 @@ const TOPBAR_TITLES = {
 function renderTopbar(){
   let h, sub;
   if(nav.module==="dashboard"){ [h,sub] = TOPBAR_TITLES.dashboard; }
+  else if(nav.module==="departments"){
+    const d = deptFromSlug(nav.sub.departments);
+    [h,sub] = d ? [d, deptHeadOf(d) ? "Head: "+deptHeadOf(d) : "No head assigned"] : ["Departments", isLeadershipRole(currentUser) ? "Every department in one place" : "Your department"];
+  }
   else{
     const s = nav.sub[nav.module];
     // Falls back to the raw tab id instead of throwing on a missing entry — this exact gap (a tab
@@ -2528,6 +2673,7 @@ function render(){
   renderTopbar();
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
   else if(nav.module==="calendar") root.innerHTML = calendarView();
+  else if(nav.module==="departments") root.innerHTML = nav.sub.departments==="overview" ? deptsOverview() : deptPage(deptFromSlug(nav.sub.departments));
   else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
@@ -7335,6 +7481,7 @@ Auth.init().then(async (authUser) => {
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
+  crmContentJobs.push(loadDeptHeads().catch(err=>console.error("Department heads failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
   await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
