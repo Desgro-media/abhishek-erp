@@ -108,6 +108,9 @@ export const departmentSummary: RequestHandler = asyncHandler(async (req, res) =
     svc && money ? revenueFor(dept, prev) : Promise.resolve(null),
   ]);
 
+  // Client feedback for the department this month and last — the ratings table, the feedback list and the insight tiles.
+  const [fbNow, fbPrev] = svc ? await Promise.all([month, prev].map((m) => prisma.clientFeedback.findMany({ where: { dept, month: m }, include: { client: { select: { id: true, name: true } } }, orderBy: { date: "desc" } }))) : [[], []];
+  const avgOf = (r: { rating: number }[]) => (r.length ? Math.round((r.reduce((s, f) => s + f.rating, 0) / r.length) * 100) / 100 : null);
   const today = new Date().toISOString().slice(0, 10);
   const byPerson = (name: string) => tasks.filter((t) => t.assignedTo === name);
   const openFor = (clientId: string) => tasks.filter((t) => t.clientId === clientId).length;
@@ -117,10 +120,11 @@ export const departmentSummary: RequestHandler = asyncHandler(async (req, res) =
       const t = byPerson(e.name);
       return { id: e.employeeCode, name: e.name, role: e.role, openTasks: t.length, overdue: t.filter((x) => x.dueAt.toISOString().slice(0, 10) < today).length, clients: new Set(t.map((x) => x.clientId)).size };
     }),
-    clients: clients.map((c) => ({ id: c.id, name: c.name, accountManager: c.accountManager ?? "", openTasks: openFor(c.id) })),
+    clients: clients.map((c) => ({ id: c.id, name: c.name, accountManager: c.accountManager ?? "", openTasks: openFor(c.id), rating: fbNow.find((f) => f.clientId === c.id)?.rating ?? null })),
+    feedback: fbNow.map((f) => ({ id: f.id, client: f.client.name, clientId: f.clientId, rating: f.rating, comment: f.comment, via: f.via, by: f.by, date: f.date.toISOString().slice(0, 10) })),
     insights: {
-      now: { clients: clients.length, team: team.length, ...(rev ? { paid: rev.collected } : {}) },
-      prev: { clients: prevClients.length, team: prevTeam.length, ...(prevRev ? { paid: prevRev.collected } : {}) },
+      now: { clients: clients.length, team: team.length, rating: avgOf(fbNow), feedbacks: fbNow.length, ...(rev ? { paid: rev.collected } : {}) },
+      prev: { clients: prevClients.length, team: prevTeam.length, rating: avgOf(fbPrev), feedbacks: fbPrev.length, ...(prevRev ? { paid: prevRev.collected } : {}) },
     },
     revenue: rev,
   });

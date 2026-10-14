@@ -8,6 +8,7 @@ import * as quotes from "../controllers/crm/quotes.controller";
 import * as tasks from "../controllers/crm/tasks.controller";
 import * as collab from "../controllers/crm/clientCollab.controller";
 import * as adMetrics from "../controllers/crm/clientAdMetrics.controller";
+import * as clientFeedback from "../controllers/crm/clientFeedback.controller";
 
 const router = Router();
 
@@ -24,6 +25,10 @@ router.get("/clients", requireClientsUser, clients.listClients);
 router.get("/clients/:id", requireClientsUser, clients.getClient);
 router.get("/tasks", requireClientsUser, tasks.listTasks);
 router.get("/clients/:id/lead-advances", requireClientsUser, leads.getClientLeadAdvances);
+// Client satisfaction feedback — who may read/share/log is decided inside each handler (account manager, leadership, heads).
+router.get("/clients/:clientId/feedback", clientFeedback.getClientFeedback);
+router.post("/clients/:clientId/feedback", clientFeedback.logClientFeedback);
+router.post("/clients/:clientId/feedback-link", clientFeedback.upsertFeedbackLink);
 
 // Client collaboration data (ad access, brief, brand assets, meetings) — row-scoped to the one client in
 // the URL inside each handler, so it's open to anyone with Clients access, reads and writes alike.

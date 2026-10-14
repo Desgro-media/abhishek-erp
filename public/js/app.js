@@ -2222,6 +2222,8 @@ function deptInsightsHTML(s){
     s.service ? {label:"Clients", now:a.clients, was:b.clients, fmt:x=>String(x)} : null,
     s.canSeeMoney && a.paid!=null ? {label:"Payments", now:a.paid, was:b.paid, fmt:shortInr, dfmt:shortInr, tip:`Payments received · ${inr(a.paid)} vs ${inr(b.paid)}`} : null,
     {label:"Team", now:a.team, was:b.team, fmt:x=>String(x), neutral:true},
+    s.service ? {label:"Rating", tip:"Average client satisfaction rating (1–5)", now:a.rating, was:b.rating, fmt:x=>x.toFixed(1)+" ★", dfmt:x=>x.toFixed(1), eps:0.05} : null,
+    s.service ? {label:"Feedbacks", now:a.feedbacks, was:b.feedbacks, fmt:x=>String(x)} : null,
   ].filter(Boolean);
   return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;">${tiles.map(t=>`
     <div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);min-width:0;" ${t.tip?`title="${esc(t.tip)}"`:''}>
@@ -2261,8 +2263,15 @@ function deptPage(d){
   </div>`;
   const clientsPanel = s.service ? `<div class="panel">
     <div class="panel-head"><div><h3>Clients</h3><div class="sub">${s.clients.length} active client${s.clients.length===1?'':'s'} taking ${esc(d.toLowerCase())}</div></div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Account manager</th><th class="num">Open tasks</th></tr></thead><tbody>${s.clients.map(c=>`<tr class="row-click" ${(clientById(c.id)?`onclick="goToClient('${c.id}')"`:'')}>
-      <td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${esc(c.accountManager||'—')}</td><td class="num mono">${c.openTasks||'—'}</td></tr>`).join('') || `<tr><td colspan="3"><div class="empty">No active clients.</div></td></tr>`}</tbody></table></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Rating · ${M}</th><th class="num">Open tasks</th><th></th></tr></thead><tbody>${s.clients.map(c=>`<tr class="row-click" ${(clientById(c.id)?`onclick="goToClient('${c.id}')"`:'')}>
+      <td><div style="font-weight:700;">${esc(c.name)}</div><div class="subtext">${esc(c.accountManager||'')}</div></td>
+      <td style="white-space:nowrap;">${c.rating!=null?`${starBarHTML(c.rating, 11)} <b class="mono">${c.rating}</b>`:'<span class="faint" style="font-size:11.5px;">not rated</span>'}</td>
+      <td class="num mono">${c.openTasks||'—'}</td>
+      <td class="num">${c.rating==null?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Ask</button>`:''}</td></tr>`).join('') || `<tr><td colspan="4"><div class="empty">No active clients.</div></td></tr>`}</tbody></table></div>
+  </div>` : '';
+  const feedbackPanel = s.service ? `<div class="panel">
+    <div class="panel-head"><div><h3>Client feedback · ${M}</h3><div class="sub">${s.feedback.length} rating${s.feedback.length===1?'':'s'}</div></div></div>
+    <div class="panel-body" style="display:flex;flex-direction:column;gap:10px;">${s.feedback.map(f=>`<div style="padding:10px 12px;border-radius:10px;background:var(--surface-sunk);"><div style="display:flex;justify-content:space-between;gap:8px;"><b style="font-size:12.5px;">${esc(f.client)}</b>${starBarHTML(f.rating, 11)}</div>${f.comment?`<div style="font-size:12.5px;margin-top:4px;line-height:1.5;">“${esc(f.comment)}”</div>`:''}<div class="subtext" style="margin-top:4px;">${fmtDateShort(f.date)} · ${esc(f.via)}</div></div>`).join('') || '<div class="empty">No feedback this month yet.</div>'}</div>
   </div>` : '';
   const rev = s.revenue;
   const revenuePanel = rev ? `<div class="panel">
@@ -2272,7 +2281,7 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${clientsPanel}${teamPanel}`;
+  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${teamPanel}`;
 }
 
 /* ===================== DEPARTMENT ACTION PLANS =====================
@@ -2759,6 +2768,108 @@ function metaAdsScorePanelHTML(){
   const t = d.targets;
   const foot = `<div style="display:flex;flex-direction:column;gap:8px;">${tilesHTML}<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>Targets: ROAS ${t.roas}x · CPL ${inr(t.cpl)} · lead → sale ${t.conv}%</span>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openScoreTargets()">Set targets</button>`:''}</div></div>`;
   return monthScorePanelHTML(`Meta Ads Score · ${monthLabel(d.month)}`, `Return, cost per lead, conversion, lead pace and daily tracking · vs ${P}${partial?` · ${a.days} days logged so far`:''}`, d.now, d.prev, P, foot);
+}
+
+/* ===================== CLIENT FEEDBACK =====================
+   One rating (1–5) per client, per service department, per month. The client gives it through a shareable link
+   (public/feedback.html — no sign-in); the account manager or leadership can also log what a client said on a call or
+   WhatsApp. It feeds each department's score and the Departments pages. A link stays open until 7 days after its month
+   ends, and making a new link for the same client and month replaces the old one. */
+let clientFeedbackData = {};   // clientId -> {feedback, link, canLog} | {forbidden:true}
+async function loadClientFeedback(id){
+  try{ clientFeedbackData[id] = await apiJson(`/api/crm/clients/${id}/feedback`); }
+  catch(err){ clientFeedbackData[id] = { forbidden:true }; }
+  if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
+}
+function starBarHTML(r, size){
+  size = size || 13; const pct = r==null ? 0 : r/5*100;
+  return `<span title="${r==null?'No rating':r.toFixed(1)+' / 5'}" style="position:relative;display:inline-block;font-size:${size}px;line-height:1;letter-spacing:1px;white-space:nowrap;"><span style="color:var(--line);">★★★★★</span><span style="position:absolute;left:0;top:0;width:${pct}%;overflow:hidden;color:var(--warn);">★★★★★</span></span>`;
+}
+const feedbackLinkUrl = l => `${location.origin}/feedback.html?t=${encodeURIComponent(l.token)}`;
+function feedbackLinkMessage(c, l){
+  return `Hi ${c.name} team,\n\nHow did we do this ${monthLabel(l.month).split(' ')[0]}? Please rate our ${l.depts.length>1?'services':l.depts[0].toLowerCase()+' work'} — it takes under a minute:\n${feedbackLinkUrl(l)}\n\nYour feedback goes straight to the team handling each service.\n— DesGro Media`;
+}
+// History + the Feedback link / Log feedback buttons, on the client's page.
+function clientFeedbackSectionHTML(c){
+  const d = clientFeedbackData[c.id];
+  if(!d || d.forbidden) return '';
+  const month = TODAY.slice(0,7);
+  const list = d.feedback;
+  const cur = list.filter(f=>f.month===month);
+  const avg = cur.length ? cur.reduce((s,f)=>s+f.rating,0)/cur.length : null;
+  return `<div class="section-label" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><span>Client feedback${avg!=null?` · ${monthLabel(month).split(' ')[0]} average ${avg.toFixed(1)} ★`:''}</span><span style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>${d.canLog?`<button class="btn btn-sm ghost" onclick="openClientFeedback('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log feedback</button>`:''}</span></div>
+  ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th>Service</th><th>Rating</th><th>Comment</th><th>Source</th></tr></thead><tbody>${list.slice(0,8).map(f=>`<tr><td class="muted" style="white-space:nowrap;">${monthLabel(f.month)}</td><td>${esc(f.dept)}</td><td style="white-space:nowrap;">${starBarHTML(f.rating, 12)} <b class="mono">${f.rating}</b></td><td class="muted">${f.comment?esc(f.comment):'—'}</td><td class="faint" style="font-size:11.5px;">${esc(f.via)}${f.by&&f.by!=="Client"&&!f.via.startsWith('Logged')?' · '+esc(f.by):''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">No feedback yet — send the client a feedback link.</div>`}`;
+}
+// Staff logging: what the client said this month, per service. Replaces any rating already logged for that service.
+function openClientFeedback(clientId){
+  const c = clientById(clientId), d = clientFeedbackData[clientId]; if(!c || !d || !d.canLog) return;
+  const month = TODAY.slice(0,7);
+  const depts = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s));
+  if(!depts.length){ toast("This client has no services to rate"); return; }
+  const stars = s => `<div style="display:flex;gap:6px;flex-wrap:wrap;">${[1,2,3,4,5].map(n=>`<label class="check-chip" style="min-width:44px;justify-content:center;"><input type="radio" name="r-${esc(s)}" value="${n}">${n} ★</label>`).join('')}<span class="faint" style="font-size:11px;align-self:center;">leave blank to skip</span></div>`;
+  showModal(`
+    <div class="modal-head"><h3>Log client feedback — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-client-feedback"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">What ${esc(c.name)} said this month — on a call, in a meeting or on WhatsApp. Replaces any rating already logged for that service this month.</div>
+      ${depts.map(s=>{ const ex = d.feedback.find(f=>f.dept===s && f.month===month); return `<fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;display:flex;flex-direction:column;gap:8px;">
+        <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(s)}${ex?` <span class="faint" style="font-weight:600;">· currently ${ex.rating} ★</span>`:''}</legend>
+        ${stars(s)}
+        <input class="field-input" name="c-${esc(s)}" placeholder="Anything to add? (optional)" value="${ex?esc(ex.comment):''}">
+      </fieldset>`; }).join('')}
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-client-feedback").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const ratings = depts.map(s=>({dept:s, rating:Number(f.get("r-"+s)), comment:(f.get("c-"+s)||"").trim()})).filter(x=>x.rating);
+    if(!ratings.length){ toast("Pick a rating for at least one service"); return; }
+    try{
+      await apiJson(`/api/crm/clients/${clientId}/feedback`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ ratings }) });
+      await loadClientFeedback(clientId);
+      if(nav.module==="departments") refreshTab("departments", nav.sub.departments);
+      toast("Feedback logged"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the feedback"); }
+  });
+}
+// The shareable link: pick the services, then copy / WhatsApp it.
+async function openClientFeedbackLink(clientId, regenerate, depts){
+  const c = clientById(clientId); if(!c) return;
+  let link;
+  try{
+    const r = await apiJson(`/api/crm/clients/${clientId}/feedback-link`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ regenerate: !!regenerate, ...(depts?{depts}:{}) }) });
+    link = r.link;
+  }catch(err){ toast(err.message || "Couldn't make the link"); return; }
+  const month = link.month;
+  const rated = {}; ((clientFeedbackData[clientId]||{}).feedback||[]).filter(f=>f.month===month).forEach(f=>{ rated[f.dept] = f.rating; });
+  const services = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s));
+  showModal(`
+    <div class="modal-head"><h3>Feedback link — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;"><div class="subtext" style="margin:0;max-width:380px;">The client opens it without signing in and rates each service for ${monthLabel(month)}. Open till ${fmtDate(link.closesOn)}.</div>${pill(link.open?'Open':'Closed', link.open?'pos':'neutral')}</div>
+      <div><label class="field-label">Services on this link</label>
+        <div style="display:flex;flex-direction:column;gap:6px;">${services.map(s=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;"><input type="checkbox" ${link.depts.includes(s)?'checked':''} onchange="toggleFeedbackLinkDept('${clientId}','${esc(s)}', this.checked)"><span style="flex:1;font-weight:600;font-size:13px;">${esc(s)}</span>${rated[s]?`<span style="font-size:12px;white-space:nowrap;">${starBarHTML(rated[s], 11)} <b class="mono">${rated[s]}</b> <span class="faint">rated</span></span>`:'<span class="faint" style="font-size:11.5px;">not rated yet</span>'}</label>`).join('')}</div></div>
+      <div><label class="field-label" for="cfl-input">Shareable link</label>
+        <div style="display:flex;gap:8px;"><input class="field-input mono" id="cfl-input" readonly value="${esc(feedbackLinkUrl(link))}" style="flex:1;min-width:0;font-size:12.5px;"><button type="button" class="btn btn-sm" onclick="copyApplyText('cfl-input','Link copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy</button></div></div>
+      <div><label class="field-label" for="cfl-msg">Ready-to-share message</label>
+        <textarea class="field-input" id="cfl-msg" rows="9" readonly style="resize:vertical;font-family:inherit;">${esc(feedbackLinkMessage(c, link))}</textarea>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-sm ghost" onclick="window.open('https://wa.me/?text='+encodeURIComponent(document.getElementById('cfl-msg').value),'_blank')">Share on WhatsApp</button>
+          <button type="button" class="btn btn-sm" onclick="copyApplyText('cfl-msg','Message copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy message</button>
+        </div></div>
+    </div>
+    <div class="modal-foot"><div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" class="btn ghost" onclick="window.open('${esc(feedbackLinkUrl(link))}&preview=1','_blank')">Preview form</button><button type="button" class="btn ghost" onclick="openClientFeedbackLink('${clientId}', true)" title="Makes a fresh link; the old one stops working">New link</button></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+  if(!clientFeedbackData[clientId]) loadClientFeedback(clientId);
+}
+async function toggleFeedbackLinkDept(clientId, dept, on){
+  const c = clientById(clientId);
+  // Read the current set from the open modal's checkboxes' source of truth: the server's link for this month.
+  const cur = (((clientFeedbackData[clientId]||{}).link)||null);
+  let depts;
+  try{ depts = (await apiJson(`/api/crm/clients/${clientId}/feedback-link`, { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}" })).link.depts; }catch(err){ toast(err.message || "Couldn't update the link"); return; }
+  depts = on ? [...new Set([...depts, dept])] : depts.filter(x=>x!==dept);
+  if(!depts.length){ toast("Keep at least one service on the link"); openClientFeedbackLink(clientId); return; }
+  depts.sort((a,b)=>c.services.indexOf(a)-c.services.indexOf(b));
+  openClientFeedbackLink(clientId, false, depts);
 }
 
 /* ===================== NAV MODEL ===================== */
@@ -5785,7 +5896,7 @@ function openLogMeeting(clientId){
   });
 }
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
-function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); }
+function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); loadClientFeedback(id); }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
 function clientDetailPage(id){
@@ -5830,6 +5941,7 @@ function clientDetailPage(id){
         <tbody>${cq.map(q=>`<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td>${hidePayment?'':`<td class="num mono">${quoteApprovedPaid(q)>0?inr(quoteApprovedPaid(q)):'<span class="faint">—</span>'}</td>`}<td>${pill(q.status,quoteStatusKind(q.status))}</td></tr>`).join("")}</tbody>
       </table></div>` : ''; })()}
       ${clientCollabHTML(c)}
+      ${clientFeedbackSectionHTML(c)}
       <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">Workflow<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;">${boardTasksFiltered.length} of ${boardTasks.length}${dateFilterSuffix(boardFilter)}</span></div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">

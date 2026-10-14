@@ -1,6 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { listOpenPositionsPublic, submitApplicationPublic, handleResumeUpload, listLeadServicesPublic, submitLeadPublic } from "../controllers/public.controller";
+import { listOpenPositionsPublic, submitApplicationPublic, handleResumeUpload, listLeadServicesPublic, submitLeadPublic, getClientFeedbackPublic, submitClientFeedbackPublic } from "../controllers/public.controller";
 
 const router = Router();
 
@@ -25,6 +25,12 @@ const leadRateLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many submissions from this address — please try again later." },
 });
+
+// Client feedback links: a client may rate a few services a month; reads are looser than writes.
+const feedbackReadLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please try again later." } });
+const feedbackWriteLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many submissions from this address — please try again later." } });
+router.get("/client-feedback/:token", feedbackReadLimiter, getClientFeedbackPublic);
+router.post("/client-feedback/:token", feedbackWriteLimiter, submitClientFeedbackPublic);
 
 router.get("/lead-services", listLeadServicesPublic);
 router.post("/lead", leadRateLimiter, submitLeadPublic);

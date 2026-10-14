@@ -1025,6 +1025,8 @@ model Client {
   adMetrics     ClientAdMetric[]
 
   @@map("clients")
+  feedback      ClientFeedback[]
+  feedbackLinks ClientFeedbackLink[]
 }
 
 enum LeadStatus {
@@ -1525,4 +1527,44 @@ model ScoreSettings {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("score_settings")
+}
+
+// One satisfaction rating (1-5) per client, per service department, per month. Given by the client through a feedback
+// link, or logged by the account manager / leadership for something the client said on a call or WhatsApp. Rating
+// the same service again in the same month replaces the earlier rating. Feeds each department's score.
+model ClientFeedback {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dept      String
+  // "YYYY-MM" the rating is for.
+  month     String
+  rating    Int
+  comment   String   @default("")
+  // "Feedback link" | "Logged by <staff name>"
+  via       String
+  // The client's own name if they gave one, else "Client", else the staff member who logged it.
+  by        String
+  date      DateTime @db.Date
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, dept, month])
+  @@index([month])
+  @@map("client_feedback")
+}
+
+// A shareable, no-login link for one client and month, listing the services to rate. A new link for the same client
+// and month replaces the old one. It stays open until 7 days after the month ends.
+model ClientFeedbackLink {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  depts     String[]
+  month     String
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, month])
+  @@map("client_feedback_links")
 }

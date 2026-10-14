@@ -7,8 +7,8 @@ import { SERVICE_DEPARTMENTS } from "./departmentAccess";
    Department (service departments)  Client growth 25 · Client satisfaction 30 · Feedback coverage 15 · Revenue 30
    Sales                             Target completion 45 · Lead conversion 30 · Meetings 25
    Meta Ads (our own ads)            ROAS 30 · Cost per lead 25 · Lead→sale 15 · Lead pace 15 · Daily tracking 15
-   Satisfaction/coverage need client feedback and Meetings needs the sales meeting log — those parts report "n/a"
-   until that data exists. */
+   Satisfaction/coverage come from client feedback (a rating of 1-5 per client, service and month); Meetings needs the
+   sales meeting log and reports "n/a" until that exists. */
 
 export interface Targets {
   deptRevenue: Record<string, number>;
@@ -72,14 +72,15 @@ export async function deptRevenueCollected(dept: string, month: string) {
 }
 export async function deptClientScore(dept: string, month: string, t: Targets): Promise<Score> {
   const prev = prevMonthOf(month), Ps = new Date(`${prev}-01T00:00:00Z`).toLocaleString("en-US", { month: "short", timeZone: "UTC" });
-  const [now, was, rev] = await Promise.all([liveClientCount(dept, month), liveClientCount(dept, prev), deptRevenueCollected(dept, month)]);
+  const [now, was, rev, fb] = await Promise.all([liveClientCount(dept, month), liveClientCount(dept, prev), deptRevenueCollected(dept, month), prisma.clientFeedback.findMany({ where: { dept, month }, select: { rating: true } })]);
+  const avg = fb.length ? fb.reduce((s, f) => s + f.rating, 0) / fb.length : null;
   const goal = was * (1 + t.deptClientGrowth / 100);
   const growthV = now || was ? (was ? Math.min(1, now / goal) : 1) : null;
   const target = t.deptRevenue[dept] ?? 0, share = elapsedShare(month), due = target * share;
   const parts: Part[] = [
     { key: "growth", label: "Client growth", w: 25, v: growthV, detail: now || was ? `${now} client${now === 1 ? "" : "s"} vs ${was} in ${Ps}${now > was ? ` · +${now - was}` : now < was ? ` · lost ${was - now}` : " · no change"} · target +${t.deptClientGrowth}%` : "no clients either month" },
-    { key: "satisfaction", label: "Client satisfaction", w: 30, v: null, detail: "no client feedback yet" },
-    { key: "feedback", label: "Feedback coverage", w: 15, v: null, detail: now ? `0 of ${now} clients gave feedback` : "no clients this month" },
+    { key: "satisfaction", label: "Client satisfaction", w: 30, v: avg == null ? null : (avg - 1) / 4, detail: fb.length ? `${avg!.toFixed(1)} ★ average from ${fb.length} client${fb.length === 1 ? "" : "s"}` : "no client feedback yet" },
+    { key: "feedback", label: "Feedback coverage", w: 15, v: now ? Math.min(1, fb.length / now) : null, detail: now ? `${fb.length} of ${now} clients gave feedback` : "no clients this month" },
     { key: "revenue", label: "Department revenue", w: 30, v: due ? Math.min(1, rev / due) : null, detail: !target ? "no revenue target set" : `${shortInr(rev)} received of ${shortInr(target)} target${share < 1 ? ` · ${Math.round(share * 100)}% of the month gone` : ""}` },
   ];
   return { score: weightedScore(parts), parts, month };
