@@ -787,6 +787,7 @@ function leadCardHTML(l){
     <div class="card-foot"><span class="assignee">${l.leadOwner?`<span class="mini-avatar sm">${initials(l.leadOwner)}</span>${esc(l.leadOwner)}`:pill('Open','warn')}</span><span class="due">${fmtDateShort(l.createdDate)}</span></div>
     ${l.paidTotal>0 ? `<div style="font-size:11.5px;color:var(--ink-soft);"><b class="mono" style="color:var(--ink);">${inr(l.paidTotal)}</b> paid${l.convertedClientId?'':` · <span class="faint">${inr(Math.max(0,leadConversionThreshold-l.paidTotal))} more auto-converts</span>`}</div>` : ''}
     ${(!l.convertedClientId && canWorkLead(l)) ? `<div class="card-move">${leadStageControl(l)}<button type="button" class="card-edit" title="Edit lead" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>
+    ${(!l.convertedClientId && canWorkLead(l) && isSalesRole(currentUser)) ? `<button type="button" class="btn btn-sm ghost" style="justify-content:center;" onclick="openLogSalesMeeting('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-calendar"/></svg>Log meeting</button>` : ''}
     <div style="display:flex;gap:6px;">${stage!=='Lost'?`<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openRecordLeadPayment('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Payment</button>`:''}<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openConvertLead('${l.id}')">Convert</button></div>` : ''}
     ${l.convertedClientId ? `<button type="button" class="btn btn-sm ghost" style="justify-content:center;" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : ''}
     ${claimable ? `<button type="button" class="btn btn-sm primary" style="justify-content:center;" onclick="assignLeadToMe('${l.id}')">Assign to me</button>` : ''}
@@ -1800,11 +1801,1390 @@ async function loadFinanceModule(){
   // this just avoids firing requests the server would 403 anyway.
 }
 
+/* ===================== CALENDAR =====================
+   One company calendar: client tasks (drag to reschedule), events & meetings (HR/Admin add them), holidays,
+   leave & WFH, birthdays/anniversaries and content due dates — each a layer that can be switched off. Month
+   view, plus a Team week with a Company row and one row per person. Leave shows what the signed-in user's
+   data already allows (HR/Admin see everyone; others see their own). */
+const EVENT_KINDS = {"Meeting":"blue", "Company event":"pos", "Deadline":"neg", "Other":"neutral"};
+let companyEvents = [];
+async function loadCompanyEvents(){ companyEvents = (await apiJson("/api/calendar/events")).events; }
+const CAL_LAYERS = [
+  {k:"tasks", label:"Client tasks", sw:"var(--ink-faint)"},
+  {k:"events", label:"Events & meetings", sw:"var(--blue)"},
+  {k:"programs", label:"HR programs", sw:"var(--pos)"},
+  {k:"holidays", label:"Holidays", sw:"var(--neg)"},
+  {k:"leave", label:"Leave & WFH", sw:"var(--ink-soft)"},
+  {k:"people", label:"Birthdays & anniversaries", sw:"var(--warn)"},
+  {k:"content", label:"Content", sw:"var(--ink)"},
+];
+let calLayersOff = new Set();
+function toggleCalLayer(k){ if(calLayersOff.has(k)) calLayersOff.delete(k); else calLayersOff.add(k); render(); }
+function calOn(k){ return !calLayersOff.has(k); }
+function addDays(ds, n){ const d = new Date(ds+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+function isPlanWorkingDay(ds){ return new Date(ds+"T00:00:00").getDay()!==hrPolicy.weeklyOff && !isHolidayDate(ds); }
+function activeEmployees(){ return employees.filter(e=>e.employmentStatus!=="Left" && e.employmentStatus!=="Terminated" && e.employmentStatus!=="Resigned"); }
+// The server only lets HR/Admin write events and holidays; the UI mirrors that so nobody sees buttons that would 403.
+function calManagesAll(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser) || isLeadershipRole(currentUser)); }
+function canEditCalendar(){ return calManagesAll() || isDeptHead(currentUser); }
+// Holidays change working days for everyone, so they stay with HR/Admin (the server enforces this too).
+function canManageHolidays(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser)); }
+// A department head can change only the events they added; HR/Admin/leadership any.
+function canEditEvent(ev){ return canEditCalendar() && (!ev || calManagesAll() || ev.createdBy===currentUser.name); }
+// Moving a task needs the same access as editing it (Clients/Sales/Admin).
+function canMoveCalTasks(){ return !!currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'||r==='CLIENTS')); }
+
+let taskCalView = "month";
+let taskCalMonth = TODAY.slice(0,7);
+let taskCalWeekStart = addDays(TODAY, -new Date(TODAY+"T00:00:00").getDay());
+let taskCalPerson = null;
+let taskCalClient = "All";
+let taskCalHideDone = false;
+let taskCalSelected = TODAY;
+function taskCalPersonValue(){
+  if(taskCalPerson!=null) return taskCalPerson;
+  if(!currentUser) return "All";
+  return isLeadershipRole(currentUser) ? "All" : currentUser.name;
+}
+function setTaskCal(k, v){
+  if(k==="view") taskCalView = v;
+  else if(k==="person") taskCalPerson = v;
+  else if(k==="client") taskCalClient = v;
+  else if(k==="hideDone") taskCalHideDone = !!v;
+  else if(k==="select") taskCalSelected = v;
+  render();
+}
+function shiftTaskCal(delta){
+  if(taskCalView==="month"){ const [y,m] = taskCalMonth.split("-").map(Number); taskCalMonth = new Date(Date.UTC(y, m-1+delta, 1)).toISOString().slice(0,7); }
+  else taskCalWeekStart = addDays(taskCalWeekStart, 7*delta);
+  render();
+}
+function taskCalToday(){ taskCalMonth = TODAY.slice(0,7); taskCalWeekStart = addDays(TODAY, -new Date(TODAY+"T00:00:00").getDay()); taskCalSelected = TODAY; render(); }
+function taskCalTasks(){
+  const person = taskCalPersonValue();
+  return clientTasks.filter(t=>t.due
+    && (person==="All" || t.assignedTo===person)
+    && (taskCalClient==="All" || t.clientId===taskCalClient)
+    && (!taskCalHideDone || t.status!=="Done"));
+}
+function taskCalChipClass(t){
+  if(t.status==="Done") return "done";
+  if(t.due<TODAY) return "overdue";
+  return t.status==="In Progress" ? "progress" : t.status==="Review" ? "review" : "todo";
+}
+function clientShortName(c){ const w = c ? c.name.split(" ") : []; return w.slice(0, w[0] && w[0].length<=3 ? 2 : 1).join(" "); }
+function taskCalChip(t, showWho, showClient){
+  const c = clientById(t.clientId);
+  const who = initials(t.assignedTo);
+  const label = `${showWho?who+" · ":""}${showClient&&c?clientShortName(c)+" · ":""}${t.title}`;
+  const tip = `${t.title} — ${c?c.name:""} · ${t.assignedTo} · ${t.status}${t.status!=="Done"&&t.due<TODAY?" · overdue":""}`;
+  const canMove = canMoveCalTasks();
+  return `<span class="tcal-chip ${taskCalChipClass(t)}" title="${esc(tip)}" ${canMove?`draggable="true" ondragstart="taskCalDragStart(event,'${t.id}')"`:''} onclick="event.stopPropagation();openEditTask('${t.id}')">${esc(label)}</span>`;
+}
+let taskCalDragId = null;
+function taskCalDragStart(e, id){ taskCalDragId = id; e.dataTransfer.effectAllowed = "move"; e.stopPropagation(); }
+function taskCalDragOver(e){ e.preventDefault(); e.currentTarget.classList.add("drop-hover"); }
+function taskCalDragLeave(e){ e.currentTarget.classList.remove("drop-hover"); }
+// Reschedule (and in Team week, hand over when dropped on another person's row).
+function taskCalDrop(e, date, person){
+  e.preventDefault(); e.currentTarget.classList.remove("drop-hover");
+  const t = clientTasks.find(x=>x.id===taskCalDragId); taskCalDragId = null;
+  if(!t || !canMoveCalTasks()) return;
+  moveTaskOnCalendar(t, date, person);
+}
+async function moveTaskOnCalendar(t, date, person){
+  const body = {}; const changes = [];
+  if(t.due!==date){ body.dueAt = date; changes.push("moved to "+fmtDateShort(date)); }
+  if(person && t.assignedTo!==person){ body.assignedTo = person; changes.push("assigned to "+person); }
+  if(!changes.length) return;
+  try{
+    await apiJson(`/api/crm/tasks/${t.id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    if(body.dueAt) t.due = body.dueAt;
+    if(body.assignedTo) t.assignedTo = body.assignedTo;
+    toast(t.title+" "+changes.join(", "));
+  }catch(err){ toast(err.message || "Couldn't move the task"); }
+  render();
+}
+function taskCalFilterBar(){
+  const people = [...new Set(activeEmployees().map(e=>e.name))].sort();
+  const p = taskCalPersonValue();
+  const me = currentUser ? currentUser.name : null;
+  const title = taskCalView==="month" ? monthLabel(taskCalMonth) : `${fmtDateShort(taskCalWeekStart)} – ${fmtDateShort(addDays(taskCalWeekStart,6))}`;
+  const clientOpts = (typeof liveClients==="function" ? liveClients() : clients);
+  return `
+  <div class="toolbar" style="flex-wrap:wrap;gap:10px;">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-sm ghost" onclick="shiftTaskCal(-1)" title="Previous"><svg class="icon" style="width:12px;height:12px"><use href="#i-chevron-left"/></svg></button>
+      <div style="font-weight:800;font-size:14px;min-width:150px;text-align:center;">${title}</div>
+      <button class="btn btn-sm ghost" onclick="shiftTaskCal(1)" title="Next"><svg class="icon" style="width:12px;height:12px;transform:rotate(180deg)"><use href="#i-chevron-left"/></svg></button>
+      <button class="btn btn-sm ghost" onclick="taskCalToday()">Today</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <div class="filter-group"><span class="filter-label">Staff</span><select class="select-sm" onchange="setTaskCal('person', this.value)">
+        <option value="All" ${p==="All"?'selected':''}>Everyone</option>
+        ${me?`<option value="${esc(me)}" ${p===me?'selected':''}>Me (${esc(me)})</option>`:''}
+        ${people.filter(n=>n!==me).map(n=>`<option value="${esc(n)}" ${p===n?'selected':''}>${esc(n)}</option>`).join('')}
+      </select></div>
+      <div class="filter-group"><span class="filter-label">Client</span><select class="select-sm" onchange="setTaskCal('client', this.value)"><option value="All">All clients</option>${clientOpts.map(c=>`<option value="${c.id}" ${taskCalClient===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <label class="check-chip" style="padding:5px 9px;"><input type="checkbox" ${taskCalHideDone?'checked':''} onchange="setTaskCal('hideDone', this.checked)">Hide done</label>
+      <div style="display:flex;gap:4px;"><button class="btn btn-sm ${taskCalView==='month'?'primary':'ghost'}" onclick="setTaskCal('view','month')">Month</button><button class="btn btn-sm ${taskCalView==='team'?'primary':'ghost'}" onclick="setTaskCal('view','team')">Team week</button></div>
+    </div>
+  </div>`;
+}
+const TASK_STATUS_KIND = {"To Do":"neutral","In Progress":"blue","Review":"warn","Done":"pos"};
+function taskCalAgendaHTML(date, tasks){
+  const list = tasks.filter(t=>t.due===date).sort((a,b)=>a.assignedTo.localeCompare(b.assignedTo));
+  return `
+  <div class="panel">
+    <div class="panel-head"><div><h3>Tasks due</h3><div class="sub">${list.length} task${list.length===1?'':'s'}</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Task</th><th>Client</th><th>Assigned to</th><th>Status</th><th></th></tr></thead><tbody>${list.map(t=>{ const c=clientById(t.clientId); return `<tr>
+      <td style="font-weight:700;">${esc(t.title)}${t.status!=="Done"&&t.due<TODAY?' '+pill('Overdue','neg'):''}</td>
+      <td class="muted">${c?esc(c.name):'—'}</td>
+      <td><span class="assignee"><span class="mini-avatar sm">${initials(t.assignedTo)}</span>${esc(t.assignedTo)}</span></td>
+      <td>${pill(t.status, TASK_STATUS_KIND[t.status]||'neutral')}</td>
+      <td class="num"><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openEditTask('${t.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${c?`<button class="btn btn-sm ghost" onclick="goToClient('${t.clientId}')">Open client</button>`:''}</div></td>
+    </tr>`; }).join('')}</tbody></table></div>
+  </div>`;
+}
+// Everything except client tasks for one date, in display order.
+function calItemsOn(ds){
+  const out = [], p = taskCalPersonValue();
+  const personOk = name => p==="All" || name===p;
+  if(calOn("holidays")) hrPolicy.holidays.filter(h=>h.date===ds).forEach(h=>out.push({kind:"Holiday", label:h.name, tip:"Holiday · "+h.name, cls:"holiday"}));
+  if(calOn("events")) companyEvents.filter(e=>e.date===ds).forEach(e=>{ const k = EVENT_KINDS[e.kind]||"neutral";
+    out.push({kind:e.kind, label:(e.time?e.time+" ":"")+e.title, tip:`${e.kind} · ${e.title}${e.time?" · "+e.time:""}${e.venue?" · "+e.venue:""}`, style:k==="neutral"?"background:var(--surface-sunk);color:var(--ink);":`background:var(--${k}-soft);color:var(--${k});`, onclick:`openCompanyEvent('${e.id}')`, sub:[e.time, e.venue].filter(Boolean).join(" · ")}); });
+  if(calOn("programs")) calendarPrograms.filter(pr=>pr.date===ds).forEach(pr=>{ const k = PROGRAM_TYPE_KIND[pr.type]; out.push({kind:pr.type, label:(pr.time?pr.time+" ":"")+pr.title, tip:`${pr.type} · ${pr.title} · ${pr.status}`, style:`background:var(--${k}-soft);color:var(--${k});`, onclick:canManagePrograms()?`setSub('hr','programs')`:"", sub:[pr.time, pr.mode, pr.venue].filter(Boolean).join(" · ")}); });
+  if(calOn("people")) activeEmployees().forEach(e=>{
+    if(e.dob && e.dob.slice(5)===ds.slice(5)) out.push({kind:"Birthday", label:"🎂 "+e.name.split(" ")[0], tip:e.name+"'s birthday", cls:"people", sub:e.name});
+    if(e.joined && e.joined.slice(5)===ds.slice(5) && e.joined.slice(0,4)<ds.slice(0,4)){ const y = Number(ds.slice(0,4))-Number(e.joined.slice(0,4)); out.push({kind:"Work anniversary", label:"🎉 "+e.name.split(" ")[0]+" · "+y+"y", tip:`${e.name} · ${y}-year work anniversary`, cls:"people", sub:`${e.name} · ${y} year${y>1?"s":""}`}); }
+  });
+  if(calOn("leave")) leaveRequests.filter(l=>l.from<=ds && l.to>=ds && (l.status==="Approved" || (l.status==="Pending" && (canManageHolidays() || (currentUser && l.empId===currentUser.id))))).forEach(l=>{ const e = byId(l.empId); if(!e || !personOk(e.name)) return;
+    const wfh = l.type==="WFH" || /WFH/.test(l.type); out.push({kind:wfh?"WFH":"Leave", label:`${wfh?"WFH":"Off"} · ${e.name.split(" ")[0]}${l.status==="Pending"?" (pending)":""}`, tip:`${e.name} · ${wfh?"work from home":"leave"} · ${l.status}`, cls:"leave"+(l.status==="Pending"?" pending":""), sub:`${e.name} · ${l.status}`}); });
+  if(calOn("content")) (contentItems.length?contentItems:myContentItems).filter(c=>c.due===ds && personOk(c.assignee)).forEach(c=>out.push({kind:"Content", label:(c.stage==="Published"?"✓ ":"")+c.title, tip:`Content · ${c.title} · ${c.stage}${c.assignee?" · "+c.assignee:""}`, cls:"ci-content", sub:`${c.type} · ${c.stage}${c.assignee?" · "+c.assignee:""}`}));
+  return out;
+}
+function calItemChip(it){
+  return `<span class="cal-item ${it.cls||""}" style="${it.style||""}" title="${esc(it.tip)}" ${it.onclick?`onclick="event.stopPropagation();${it.onclick}"`:""}>${esc(it.label)}</span>`;
+}
+function calLayerBarHTML(){
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">${CAL_LAYERS.map(l=>`<button class="chip ${calOn(l.k)?"active":""}" style="display:inline-flex;align-items:center;gap:6px;" onclick="toggleCalLayer('${l.k}')" aria-pressed="${calOn(l.k)}"><span style="width:8px;height:8px;border-radius:50%;background:${l.sw};"></span>${l.label}</button>`).join("")}</div>`;
+}
+function calKpisHTML(days, tasks, rangeLabel){
+  const open = tasks.filter(t=>t.status!=="Done"), overdue = open.filter(t=>t.due<TODAY);
+  const evs = days.reduce((s,d)=>s+companyEvents.filter(e=>e.date===d).length+calendarPrograms.filter(p=>p.date===d).length, 0);
+  const hols = days.filter(d=>isHolidayDate(d));
+  const offToday = leaveRequests.filter(l=>l.status==="Approved" && !/WFH/.test(l.type) && l.from<=TODAY && l.to>=TODAY).length;
+  return `<div class="kpi-grid cols-5">
+    <div class="kpi-card"><div class="kpi-label">Tasks ${rangeLabel}</div><div class="kpi-value mono">${tasks.length}</div><div class="kpi-sub">${open.length} open</div></div>
+    <div class="kpi-card"><div class="kpi-label">Overdue tasks</div><div class="kpi-value mono ${overdue.length?"neg":""}">${overdue.length}</div><div class="kpi-sub">past due, not done</div></div>
+    <div class="kpi-card"><div class="kpi-label">Events</div><div class="kpi-value mono">${evs}</div><div class="kpi-sub">${rangeLabel}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Holidays</div><div class="kpi-value mono">${hols.length}</div><div class="kpi-sub">${hols.length?hols.map(d=>fmtDateShort(d)).join(", "):rangeLabel}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Off today</div><div class="kpi-value mono">${offToday}</div><div class="kpi-sub">on approved leave</div></div>
+  </div>`;
+}
+function calMonthHTML(){
+  const month = taskCalMonth;
+  const tasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due.slice(0,7)===month) : [];
+  const p = taskCalPersonValue(), showWho = p==="All";
+  const [y,m] = month.split("-").map(Number);
+  const daysIn = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const firstDow = new Date(`${month}-01T00:00:00`).getDay();
+  const days = Array.from({length:daysIn}, (_,i)=>`${month}-${String(i+1).padStart(2,"0")}`);
+  const cells = [];
+  for(let i=0;i<firstDow;i++) cells.push(`<div class="cal-day empty"></div>`);
+  days.forEach((ds,i)=>{
+    const dayTasks = tasks.filter(t=>t.due===ds).sort((a,b)=>(a.status==="Done")-(b.status==="Done"));
+    const items = calItemsOn(ds);
+    const hol = items.some(x=>x.cls==="holiday");
+    const all = [...items.map(calItemChip), ...dayTasks.map(t=>taskCalChip(t, showWho, true))];
+    cells.push(`<div class="cal-day ${!isPlanWorkingDay(ds)?"off":""} ${hol?"holiday":""} ${ds===TODAY?"today":""} ${ds===taskCalSelected?"selected":""}" style="min-height:112px;" onclick="setTaskCal('select','${ds}')" ondragover="taskCalDragOver(event)" ondragleave="taskCalDragLeave(event)" ondrop="taskCalDrop(event,'${ds}')">
+      <div style="display:flex;justify-content:space-between;align-items:center;"><span class="cal-daynum">${i+1}</span>${all.length?`<span class="faint" style="font-size:10px;font-weight:700;">${all.length}</span>`:""}</div>
+      ${all.slice(0,4).join("")}
+      ${all.length>4?`<span class="tcal-more">+${all.length-4} more</span>`:""}
+    </div>`);
+  });
+  const sel = taskCalSelected.slice(0,7)===month ? taskCalSelected : (TODAY.slice(0,7)===month ? TODAY : month+"-01");
+  return `
+  ${calKpisHTML(days, tasks, "this month")}
+  <div class="panel"><div class="modal-body">
+    <div class="cal-legend">
+      <span class="cal-legend-item"><b style="color:var(--ink);">Tasks:</b></span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--ink-faint);"></span>To Do</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--blue);"></span>In Progress</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--warn);"></span>Review</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--pos);"></span>Done</span>
+      <span class="cal-legend-item"><span class="dot" style="background:var(--neg);"></span>Overdue</span>
+      <span class="faint">· ${canMoveCalTasks()?"Drag a task to reschedule · ":""}click a day for everything on it · shaded = holiday or weekly off</span>
+    </div>
+    <div class="cal-weekdays">${WEEKDAY_NAMES.map(w=>`<div>${w.slice(0,3)}</div>`).join("")}</div>
+    <div class="cal-grid">${cells.join("")}</div>
+  </div></div>
+  ${calAgendaHTML(sel)}`;
+}
+// Team week: a "Company" row for everything that isn't a task, then one row per person's tasks.
+function calTeamHTML(){
+  const days = Array.from({length:7}, (_,i)=>addDays(taskCalWeekStart, i));
+  const tasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due>=days[0] && t.due<=days[6]) : [];
+  const p = taskCalPersonValue();
+  let rows = [];
+  if(calOn("tasks")) rows = p==="All" ? [...new Set(tasks.map(t=>t.assignedTo))].sort().map(n=>({key:n, label:n})) : [{key:p, label:p}];
+  const rowTasks = r => tasks.filter(t=>t.assignedTo===r.key);
+  const head = `<div class="tcal-head">Who</div>${days.map(d=>`<div class="tcal-head ${d===TODAY?"today":""}">${WEEKDAY_NAMES[new Date(d+"T00:00:00").getDay()].slice(0,3)} ${Number(d.slice(8))}</div>`).join("")}`;
+  const company = `<div class="tcal-person"><span style="font-weight:800;">Company</span><span class="faint" style="font-size:11px;font-weight:600;">events, leave, holidays</span></div>
+    ${days.map(d=>`<div class="tcal-cell ${!isPlanWorkingDay(d)?"off":""} ${d===TODAY?"today":""}">${calItemsOn(d).map(calItemChip).join("")}</div>`).join("")}`;
+  const people = rows.map(r=>{ const rt = rowTasks(r), open = rt.filter(t=>t.status!=="Done").length; return `
+    <div class="tcal-person"><span class="assignee"><span class="mini-avatar sm">${initials(r.label)}</span>${esc(r.label)}</span><span class="faint" style="font-size:11px;font-weight:600;">${rt.length} task${rt.length===1?"":"s"} · ${open} open</span></div>
+    ${days.map(d=>`<div class="tcal-cell ${!isPlanWorkingDay(d)?"off":""} ${d===TODAY?"today":""}" ondragover="taskCalDragOver(event)" ondragleave="taskCalDragLeave(event)" ondrop="taskCalDrop(event,'${d}','${esc(r.key)}')">${rt.filter(t=>t.due===d).map(t=>taskCalChip(t, false, true)).join("")}</div>`).join("")}`; }).join("");
+  return `
+  ${calKpisHTML(days, tasks, "this week")}
+  <div class="panel"><div class="modal-body">
+    ${canMoveCalTasks()?`<div class="faint" style="font-size:12px;">Drag a task to another day to reschedule it, or onto someone else's row to hand it to them.</div>`:""}
+    <div style="overflow-x:auto;"><div class="tcal-week">${head}${company}${people}</div></div>
+    ${calOn("tasks") && !rows.length ? `<div class="empty">No client tasks due this week${p!=="All"?" for this filter":""}.</div>` : ""}
+  </div></div>`;
+}
+function calAgendaHTML(date){
+  const items = calItemsOn(date);
+  const dayTasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due===date) : [];
+  const hol = hrPolicy.holidays.find(h=>h.date===date);
+  const btns = [
+    canEditCalendar() ? `<button class="btn btn-sm primary" onclick="openCompanyEvent(null,'${date}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add event</button>` : "",
+    canManageHolidays() ? (hol ? `<button class="btn btn-sm ghost" onclick="removeHoliday('${date}')">Remove holiday</button>` : `<button class="btn btn-sm ghost" onclick="openMarkHoliday('${date}')">Add holiday</button>`) : "",
+  ].join("");
+  return `
+  <div class="panel">
+    <div class="panel-head" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;"><div><h3>${fmtDate(date)}${date===TODAY?" · Today":""}</h3><div class="sub">${items.length} event${items.length===1?"":"s"} & updates · ${dayTasks.length} task${dayTasks.length===1?"":"s"}${!isPlanWorkingDay(date)?" · non-working day":""}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${btns}</div></div>
+    ${items.length ? `<div class="panel-body" style="display:flex;flex-direction:column;gap:0;padding-top:4px;padding-bottom:4px;">${items.map(it=>`<div style="display:grid;grid-template-columns:130px minmax(0,1fr) auto;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);">
+      <div style="display:flex;"><span class="cal-item ${it.cls||""}" style="${it.style||""};display:inline-block;width:auto;max-width:100%;cursor:default;">${esc(it.kind)}</span></div>
+      <div style="min-width:0;"><div style="font-weight:700;font-size:13px;">${esc(it.label.replace(/^(🎂|🎉|✓) /u,""))}</div>${it.sub?`<div class="subtext">${esc(it.sub)}</div>`:""}</div>
+      ${it.onclick?`<button class="btn btn-sm ghost" onclick="${it.onclick}">Open</button>`:"<span></span>"}
+    </div>`).join("")}</div>` : (dayTasks.length ? "" : `<div class="empty">Nothing on this day.</div>`)}
+  </div>
+  ${dayTasks.length ? taskCalAgendaHTML(date, taskCalTasks()) : ""}`;
+}
+function calendarView(){
+  if(!currentUser) return "";
+  const undated = 0;
+  return `
+  ${taskCalFilterBar()}
+  <div class="panel" style="padding:12px 16px;"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="filter-label">Show</span>${calLayerBarHTML()}</div></div>
+  ${taskCalView==="month" ? calMonthHTML() : calTeamHTML()}`;
+}
+function openCompanyEvent(id, date){
+  const ev = id ? companyEvents.find(x=>x.id===id) : null;
+  if(id && !ev) return;
+  if(ev && !canEditEvent(ev)){
+    showModal(`
+      <div class="modal-head"><h3>${esc(ev.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+      <div class="modal-body">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${pill(ev.kind, EVENT_KINDS[ev.kind]||"neutral")}<span style="font-size:13px;">${fmtDate(ev.date)}${ev.time?" · "+esc(ev.time):""}${ev.venue?" · "+esc(ev.venue):""}</span></div>
+        ${ev.notes?`<div style="font-size:13px;line-height:1.55;">${esc(ev.notes)}</div>`:""}
+        <div class="subtext">For ${ev.audience.includes("All")?"everyone":esc(ev.audience.join(", "))} · added by ${esc(ev.createdBy)}</div>
+      </div>
+      <div class="modal-foot"><div></div><button class="btn ghost" onclick="closeModal()">Close</button></div>`);
+    return;
+  }
+  if(!canEditEvent(ev)) return;
+  const aud = ev ? ev.audience : ["All"];
+  showModal(`
+    <div class="modal-head"><h3>${ev?"Edit event":"Add event"}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-company-event"><div class="modal-body">
+      <div><label class="field-label" for="ev-title">Title</label><input class="field-input" id="ev-title" name="title" required value="${esc(ev?ev.title:"")}" placeholder="e.g. Monthly all-hands"></div>
+      <div class="field-row cols-3">
+        <div><label class="field-label" for="ev-date">Date</label><input class="field-input" type="date" id="ev-date" name="date" required value="${ev?ev.date:(date||TODAY)}"></div>
+        <div><label class="field-label" for="ev-time">Time (optional)</label><input class="field-input" type="time" id="ev-time" name="time" value="${ev?ev.time:""}"></div>
+        <div><label class="field-label" for="ev-kind">Type</label><select class="field-input" id="ev-kind" name="kind">${Object.keys(EVENT_KINDS).map(k=>`<option ${ev&&ev.kind===k?"selected":""}>${k}</option>`).join("")}</select></div>
+      </div>
+      <div><label class="field-label" for="ev-where">Where (optional)</label><input class="field-input" id="ev-where" name="venue" value="${esc(ev?ev.venue:"")}" placeholder="Conference room, Google Meet link…"></div>
+      <div><label class="field-label">Who's it for</label><div class="check-row">
+        <label class="check-chip"><input type="checkbox" name="audience" value="All" ${aud.includes("All")?"checked":""}>Everyone</label>
+        ${DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="audience" value="${esc(d)}" ${!aud.includes("All")&&aud.includes(d)?"checked":""}>${esc(d)}</label>`).join("")}
+      </div></div>
+      <div><label class="field-label" for="ev-notes">Notes (optional)</label><textarea class="field-input" id="ev-notes" name="notes" rows="2">${esc(ev?ev.notes:"")}</textarea></div>
+    </div>
+    <div class="modal-foot"><div>${ev?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="deleteCompanyEvent('${ev.id}')">Delete</button>`:""}</div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${ev?"Save":"Add event"}</button></div></div>
+    </form>`);
+  document.getElementById("f-company-event").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    let audience = f.getAll("audience"); if(!audience.length || audience.includes("All")) audience = ["All"];
+    const data = {title:(f.get("title")||"").trim(), date:f.get("date"), time:f.get("time")||"", kind:f.get("kind"), venue:(f.get("venue")||"").trim(), audience, notes:(f.get("notes")||"").trim()};
+    try{
+      await apiJson(ev?`/api/calendar/events/${ev.id}`:"/api/calendar/events", { method:ev?"PUT":"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(data) });
+      await loadCompanyEvents();
+      taskCalSelected = data.date; taskCalMonth = data.date.slice(0,7);
+      toast(ev?"Event updated":"Added to the calendar"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the event"); }
+  });
+}
+async function deleteCompanyEvent(id){
+  if(!canEditCalendar()) return;
+  if(!confirm("Delete this event?")) return;
+  try{ await Auth.apiFetch(`/api/calendar/events/${id}`, { method:"DELETE" }); await loadCompanyEvents(); toast("Event removed"); closeModal(); render(); }
+  catch(err){ toast("Couldn't delete the event"); }
+}
+function openMarkHoliday(date){
+  if(!canManageHolidays()) return;
+  showModal(`
+    <div class="modal-head"><h3>Add holiday</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-mark-holiday"><div class="modal-body">
+      <div class="field-row">
+        <div><label class="field-label" for="mh-date">Date</label><input class="field-input" type="date" id="mh-date" name="date" required value="${date||TODAY}"></div>
+        <div><label class="field-label" for="mh-name">Holiday name</label><input class="field-input" id="mh-name" name="name" required placeholder="e.g. Diwali"></div>
+      </div>
+      <div class="subtext">Holidays count as non-working days everywhere — attendance, leave and payroll. Only HR and Admin can add them.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Add holiday</button></div></div>
+    </form>`);
+  document.getElementById("f-mark-holiday").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target), d = f.get("date"), name = (f.get("name")||"").trim(); if(!d || !name) return;
+    try{
+      await apiJson("/api/hr/policy/holidays", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ date:d, name }) });
+      await loadPolicy(); taskCalSelected = d; taskCalMonth = d.slice(0,7);
+      toast("Holiday added"); closeModal(); render();
+    }catch(err){ toast(err.message || "A holiday is already set for that date"); }
+  });
+}
+
+/* ===================== DEPARTMENTS =====================
+   Overview: one tile per department. Each department then has its own page: head, team, clients and
+   revenue in one place. Leadership sees every department; a department head sees their own. Figures come
+   from /api/departments (computed server-side, so a head doesn't need Clients or Finance access). Score,
+   client feedback and the action plan attach to this page in later packages. */
+let deptHeads = {};            // dept -> head's name | null
+let deptHeadSince = {};        // dept -> IST date the current head was assigned
+let deptOverviewTiles = [];
+let deptSummaries = {};        // dept -> last loaded /summary
+async function loadDeptHeads(){ const r = await apiJson("/api/departments/heads"); deptHeads = r.heads; deptHeadSince = r.since || {}; }
+async function loadDeptOverview(){ deptOverviewTiles = (await apiJson("/api/departments/overview")).tiles; }
+async function loadDeptSummary(d){ deptSummaries[d] = await apiJson(`/api/departments/${encodeURIComponent(d)}/summary`); }
+function deptSlug(d){ return d.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
+function deptFromSlug(sl){ return DEPARTMENTS.find(d=>deptSlug(d)===sl) || null; }
+function deptHeadOf(d){ return deptHeads[d] || null; }
+function headDeptOf(name){ return DEPARTMENTS.find(d=>deptHeads[d]===name) || null; }
+function isDeptHead(u){ return !!(u && headDeptOf(u.name)); }
+function canSeeDeptPage(d){ return !!currentUser && (isLeadershipRole(currentUser) || headDeptOf(currentUser.name)===d); }
+function deptsVisibleTo(){ return DEPARTMENTS.filter(canSeeDeptPage); }
+function prevMonth(m){ const [y,mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo-2, 1)).toISOString().slice(0,7); }
+function shortInr(n){ n = Math.round(n||0); return n>=100000 ? '₹'+(n/100000).toFixed(n>=1000000?1:2).replace(/\.?0+$/,'')+'L' : n>=1000 ? '₹'+(n/1000).toFixed(n>=10000?0:1).replace(/\.0$/,'')+'K' : '₹'+n; }
+// "▲3 vs Sep" style change marker; `neutral` for figures where up/down isn't good or bad.
+function deltaHTML(now, was, opts){
+  opts = opts || {};
+  if(now==null || was==null) return '';
+  const d = now-was; if(Math.abs(d) < (opts.eps||0.5)) return `<span class="faint">no change</span>`;
+  const good = opts.neutral ? null : d>0;
+  const col = good==null ? 'var(--ink-soft)' : good ? 'var(--pos)' : 'var(--neg)';
+  return `<b style="color:${col};">${d>0?'▲':'▼'}${opts.fmt?opts.fmt(Math.abs(d)):Math.abs(Math.round(d*10)/10)}</b>`;
+}
+function openAssignDeptHead(dept){
+  if(!isLeadershipRole(currentUser)) return;
+  const cur = deptHeadOf(dept);
+  const people = employees.filter(e=>e.employmentStatus!=="Left").sort((a,b)=>(b.dept===dept)-(a.dept===dept) || a.name.localeCompare(b.name));
+  showModal(`
+    <div class="modal-head"><h3>${esc(dept)} — head</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-dept-head"><div class="modal-body">
+      <div><label class="field-label">Who heads ${esc(dept)}?</label><select class="field-input" name="employeeId"><option value="">— No head —</option>${people.map(e=>`<option value="${esc(e._dbId)}" ${e.name===cur?"selected":""}>${esc(e.name)} · ${esc(e.dept)}${e.dept===dept?"":" (other dept)"}</option>`).join("")}</select></div>
+      <div class="subtext">The head sees this department's page under Departments and can add calendar events. Only leadership can change this.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-dept-head").addEventListener("submit", async ev=>{
+    ev.preventDefault();
+    const id = new FormData(ev.target).get("employeeId") || null;
+    try{
+      await apiJson(`/api/departments/${encodeURIComponent(dept)}/head`, { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId:id }) });
+      await Promise.all([loadDeptHeads(), loadDeptOverview(), loadDeptSummary(dept).catch(()=>{})]);
+      toast(id?"Head updated":"Head cleared"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't update the head"); }
+  });
+}
+function deptTile(d){
+  const t = deptOverviewTiles.find(x=>x.dept===d) || {};
+  const head = deptHeadOf(d);
+  return `<div class="panel row-click" style="padding:16px;display:flex;flex-direction:column;gap:10px;" onclick="setSub('departments','${deptSlug(d)}')">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;"><div><div style="font-weight:800;font-size:14px;">${esc(d)}</div><div class="subtext">${head?'Head: '+esc(head):'No head assigned'}</div></div>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openAssignDeptHead('${esc(d)}')">${head?'Change':'Assign head'}</button>`:''}</div>
+    ${(()=>{ const sc = deptScoreOf(d); if(!sc) return ''; const diff = sc.now.score!=null && sc.prev.score!=null ? sc.now.score-sc.prev.score : null; return `<div style="display:flex;align-items:baseline;gap:8px;"><span class="mono" style="font-size:26px;font-weight:800;color:${scoreTone(sc.now.score==null?null:sc.now.score/100)};">${sc.now.score==null?'—':sc.now.score}</span><span style="font-size:11.5px;">${diff==null?'':`<b style="color:${diff>=0?'var(--pos)':'var(--neg)'};">${diff>=0?'▲':'▼'}${Math.abs(diff)}</b> <span class="faint">vs ${monthLabel(prevMonth(deptScores.month)).slice(0,3)}</span>`}</span>${scoreGradePill(sc.now.score)}</div>`; })()}
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);">
+      <span><b class="mono" style="color:var(--ink);">${t.people==null?'—':t.people}</b> people</span>
+      ${t.clients!=null?`<span><b class="mono" style="color:var(--ink);">${t.clients}</b> clients</span>`:''}
+    </div>
+  </div>`;
+}
+function deptsOverview(){
+  const list = deptsVisibleTo();
+  return `
+  ${isLeadershipRole(currentUser)?deptScoresPanelHTML():''}
+  <div>
+    <div style="margin-bottom:12px;"><h3 style="margin:0;font-size:15px;">${isLeadershipRole(currentUser)?'All departments':'Your department'}</h3><div class="subtext" style="font-size:12px;">Open a department for its team, clients and revenue</div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;">${list.map(deptTile).join('') || '<div class="empty">No departments to show.</div>'}</div>
+  </div>`;
+}
+function deptInsightsHTML(s){
+  const a = s.insights.now, b = s.insights.prev, P = monthLabel(prevMonth(s.month)).slice(0,3);
+  const tiles = [
+    s.service ? {label:"Clients", now:a.clients, was:b.clients, fmt:x=>String(x)} : null,
+    s.canSeeMoney && a.paid!=null ? {label:"Payments", now:a.paid, was:b.paid, fmt:shortInr, dfmt:shortInr, tip:`Payments received · ${inr(a.paid)} vs ${inr(b.paid)}`} : null,
+    {label:"Team", now:a.team, was:b.team, fmt:x=>String(x), neutral:true},
+    s.service ? {label:"Rating", tip:"Average client satisfaction rating (1–5)", now:a.rating, was:b.rating, fmt:x=>x.toFixed(1)+" ★", dfmt:x=>x.toFixed(1), eps:0.05} : null,
+    s.service ? {label:"Feedbacks", now:a.feedbacks, was:b.feedbacks, fmt:x=>String(x)} : null,
+  ].filter(Boolean);
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;">${tiles.map(t=>`
+    <div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);min-width:0;" ${t.tip?`title="${esc(t.tip)}"`:''}>
+      <div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);">${t.label}</div>
+      <div class="mono" style="font-size:15px;font-weight:800;margin-top:2px;">${t.fmt(t.now)}</div>
+      <div style="font-size:11px;margin-top:1px;">${deltaHTML(t.now, t.was, {neutral:t.neutral, fmt:t.dfmt, eps:t.label==="Payments"?1:0.5})} <span class="faint">vs ${P}</span></div>
+    </div>`).join("")}</div>`;
+}
+function deptPage(d){
+  if(!d || !canSeeDeptPage(d)) return `<div class="empty">You don't have access to this department.</div>`;
+  const s = deptSummaries[d];
+  if(!s) return `<div class="empty">Loading ${esc(d)}…</div>`;
+  const M = monthLabel(s.month).split(' ')[0], head = s.head;
+  const ps = head ? planScore(d, s.month) : null, psP = head ? planScore(d, prevMonth(s.month)) : null;
+  const attLabel = id => { const a = attendanceToday[id]; return a ? attendanceLabel(a.status) : null; };
+  const showToday = s.team.some(e=>attendanceToday[e.id]);
+  const header = `<div class="panel" style="padding:16px 18px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between;">
+    <div style="display:flex;align-items:center;gap:12px;"><div class="mini-avatar" style="width:40px;height:40px;font-size:13px;">${head?initials(head):'—'}</div><div><div class="kpi-label">Department head</div><div style="font-weight:800;font-size:14px;">${head?esc(head):'Not assigned'}</div></div></div>
+    <div style="display:flex;gap:22px;flex-wrap:wrap;">
+      <div><div class="kpi-label">Team</div><div class="mono" style="font-size:18px;font-weight:800;">${s.team.length}</div></div>
+      ${s.service?`<div><div class="kpi-label">Clients · ${M}</div><div class="mono" style="font-size:18px;font-weight:800;">${s.clients.length}</div></div>`:''}
+      ${ps&&ps.score!=null?`<div><div class="kpi-label">Action plan score</div><div class="mono" style="font-size:18px;font-weight:800;">${ps.score}${psP&&psP.score!=null?` <span style="font-size:11px;">${deltaHTML(ps.score, psP.score)}</span>`:''}</div></div>`:''}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${head && isLeadershipRole(currentUser) ? `<button class="btn btn-sm ghost" onclick="setSub('workspace','plans')">Action plans</button>` : (head && currentUser.name===head ? `<button class="btn btn-sm ghost" onclick="setSub('workspace','plan')">My action plan</button>` : '')}
+      ${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${head?'Change head':'Assign head'}</button>`:''}
+    </div>
+  </div>`;
+  const insights = `<div class="panel"><div class="panel-head"><div><h3>${esc(d)} · ${monthLabel(s.month)}</h3><div class="sub">This month against last month</div></div></div><div class="panel-body">${deptInsightsHTML(s)}</div></div>`;
+  const teamPanel = `<div class="panel">
+    <div class="panel-head"><div><h3>Team</h3><div class="sub">${s.team.length} people · open client work${showToday?" and today's attendance":""}</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Person</th>${showToday?'<th>Today</th>':''}<th class="num">Open tasks</th><th class="num">Overdue</th>${s.service?'<th class="num">Clients</th>':''}</tr></thead><tbody>${s.team.map(e=>{ const st = attLabel(e.id); return `<tr>
+      <td>${personCell(e)}${e.name===head?' '+pill('Head','blue'):''}</td>
+      ${showToday?`<td>${st?pill(st, statusKind(st)):pill('Not marked','neutral')}</td>`:''}
+      <td class="num mono">${e.openTasks||'—'}</td><td class="num mono ${e.overdue?'neg':'faint'}">${e.overdue||'—'}</td>${s.service?`<td class="num mono">${e.clients||'—'}</td>`:''}
+    </tr>`; }).join('') || `<tr><td colspan="5"><div class="empty">No one in this department.</div></td></tr>`}</tbody></table></div>
+  </div>`;
+  const clientsPanel = s.service ? `<div class="panel">
+    <div class="panel-head"><div><h3>Clients</h3><div class="sub">${s.clients.length} active client${s.clients.length===1?'':'s'} taking ${esc(d.toLowerCase())}</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Rating · ${M}</th><th class="num">Open tasks</th><th></th></tr></thead><tbody>${s.clients.map(c=>`<tr class="row-click" ${(clientById(c.id)?`onclick="goToClient('${c.id}')"`:'')}>
+      <td><div style="font-weight:700;">${esc(c.name)}</div><div class="subtext">${esc(c.accountManager||'')}</div></td>
+      <td style="white-space:nowrap;">${c.rating!=null?`${starBarHTML(c.rating, 11)} <b class="mono">${c.rating}</b>`:'<span class="faint" style="font-size:11.5px;">not rated</span>'}</td>
+      <td class="num mono">${c.openTasks||'—'}</td>
+      <td class="num">${c.rating==null?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Ask</button>`:''}</td></tr>`).join('') || `<tr><td colspan="4"><div class="empty">No active clients.</div></td></tr>`}</tbody></table></div>
+  </div>` : '';
+  const feedbackPanel = s.service ? `<div class="panel">
+    <div class="panel-head"><div><h3>Client feedback · ${M}</h3><div class="sub">${s.feedback.length} rating${s.feedback.length===1?'':'s'}</div></div></div>
+    <div class="panel-body" style="display:flex;flex-direction:column;gap:10px;">${s.feedback.map(f=>`<div style="padding:10px 12px;border-radius:10px;background:var(--surface-sunk);"><div style="display:flex;justify-content:space-between;gap:8px;"><b style="font-size:12.5px;">${esc(f.client)}</b>${starBarHTML(f.rating, 11)}</div>${f.comment?`<div style="font-size:12.5px;margin-top:4px;line-height:1.5;">“${esc(f.comment)}”</div>`:''}<div class="subtext" style="margin-top:4px;">${fmtDateShort(f.date)} · ${esc(f.via)}</div></div>`).join('') || '<div class="empty">No feedback this month yet.</div>'}</div>
+  </div>` : '';
+  const rev = s.revenue;
+  const revenuePanel = rev ? `<div class="panel">
+    <div class="panel-head"><div><h3>Revenue · ${monthLabel(s.month)}</h3><div class="sub">${esc(d)}'s share of every invoice, split by its line items</div></div></div>
+    <div class="panel-body"><div class="kpi-grid" style="margin:0;">
+      <div class="kpi-card"><div class="kpi-label">Billed</div><div class="kpi-value mono">${inr(rev.billed)}</div><div class="kpi-sub">invoiced this month</div></div>
+      <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
+      <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
+    </div></div></div>` : '';
+  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${teamPanel}`;
+}
+
+/* ===================== DEPARTMENT ACTION PLANS =====================
+   Each department head files a plan every working day: a one-line focus, their research notes, and items tagged
+   Improve / Optimise / Introduce (a new service). Unfinished items carry over when they start the next day's plan.
+   Leadership reads everything under My Workspace → Dept Action Plans and only steps in when needed — a comment, an
+   item added to a head's plan, or an answer to a "Needs your input" question the head raised. Plans are stored
+   server-side (/api/action-plans); a head only ever sees their own department's. Tracking for a department starts the
+   day its current head was assigned, so nobody is marked down for days before they had the job. */
+const PLAN_ITEM_TYPES = ["Improve","Optimise","Introduce"];
+const PLAN_TYPE_KIND = {Improve:"blue", Optimise:"warn", Introduce:"pos"};
+const PLAN_TYPE_HINT = {Improve:"make an existing service better", Optimise:"same output, less time / cost", Introduce:"a new service or offer"};
+const PLAN_ITEM_STATUSES = ["Planned","In progress","Done","Dropped"];
+const PLAN_STATUS_KIND = {"Planned":"neutral","In progress":"blue","Done":"pos","Dropped":"neg"};
+let actionPlans = [];
+async function loadActionPlans(){ actionPlans = (await apiJson("/api/action-plans")).plans; }
+function canSeePlans(u){ return !!u && isLeadershipRole(u); }
+function planTrackStart(dept){ return (deptHeadSince[dept]) || TODAY; }
+function dateRange(a, b){ const out = []; for(let d=a; d<=b; d=addDays(d,1)) out.push(d); return out; }
+function monthLastDay(m){ const [y,mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo, 0)).toISOString().slice(0,10); }
+// Past working days (newest first) whose plan was due — today isn't included, it's still open.
+function pastPlanDays(n, dept){ const out=[]; const from = planTrackStart(dept); let d=addDays(TODAY,-1); while(out.length<n && d>=from){ if(isPlanWorkingDay(d)) out.push(d); d=addDays(d,-1); } return out; }
+function planFor(dept, date){ return actionPlans.find(p=>p.dept===dept && p.date===date); }
+function plansOf(dept){ return actionPlans.filter(p=>p.dept===dept).sort((a,b)=>b.date.localeCompare(a.date)); }
+function latestPlanBefore(dept, date){ return plansOf(dept).find(p=>p.date<date) || null; }
+function openNeedsInput(){ return actionPlans.filter(p=>p.needsInput && !p.needsInput.resolved).sort((a,b)=>b.date.localeCompare(a.date)); }
+function planCompliance(dept, n){
+  const days = pastPlanDays(n||14, dept);
+  const missed = deptHeads[dept] ? days.filter(d=>!planFor(dept,d)) : [];
+  return {days, missed, filed: days.length-missed.length, today: !!planFor(dept, TODAY)};
+}
+// Action plan score for the month, out of 100:
+//   60% — filing: plans filed ÷ working days they were due (from the 1st, or tracking start, to yesterday;
+//          today counts only once it's filed, so a morning without a plan yet isn't a penalty)
+//   40% — follow-through: items finished ÷ items taken on this month (an item is tracked by title across
+//          days, using its latest status; Dropped items don't count either way)
+function planScore(dept, month){
+  month = month || TODAY.slice(0,7);
+  if(!deptHeads[dept]) return {score:null, filed:0, due:0, done:0, taken:0, introduced:0, filing:null, follow:null};
+  const start = [month+"-01", planTrackStart(dept)].sort().pop();
+  const end = [addDays(TODAY,-1), monthLastDay(month)].sort()[0];
+  const due = start>end ? [] : dateRange(start, end).filter(isPlanWorkingDay);
+  if(month===TODAY.slice(0,7) && planFor(dept,TODAY)) due.push(TODAY);
+  const filed = due.filter(d=>planFor(dept,d)).length;
+  const plans = actionPlans.filter(p=>p.dept===dept && p.date.slice(0,7)===month).sort((a,b)=>a.date.localeCompare(b.date));
+  const latest = {};
+  plans.forEach(p=>p.items.forEach(it=>{ latest[it.title.trim().toLowerCase()] = it; }));
+  const items = Object.values(latest).filter(it=>it.status!=="Dropped");
+  const done = items.filter(it=>it.status==="Done").length;
+  const filing = due.length ? filed/due.length : null;
+  const follow = items.length ? done/items.length : null;
+  const score = filing==null ? null : Math.round(100*(0.6*filing + 0.4*(follow==null?0:follow)));
+  return {score, filed, due:due.length, done, taken:items.length, introduced:items.filter(it=>it.type==="Introduce").length, filing, follow};
+}
+function planScoreKind(s){ return s==null ? "neutral" : s>=85 ? "pos" : s>=65 ? "warn" : "neg"; }
+function planScoreLabel(s){ return s==null ? "No data" : s>=85 ? "Strong" : s>=65 ? "Fair" : "Weak"; }
+function myPlanPending(){ const d = currentUser ? headDeptOf(currentUser.name) : null; return d && isPlanWorkingDay(TODAY) && !planFor(d, TODAY) ? 1 : 0; }
+function canEditPlan(p){ return !!(currentUser && p && deptHeads[p.dept]===currentUser.name && p.date===TODAY); }
+async function planApi(method, path, body, okMsg){
+  try{
+    await apiJson("/api/action-plans"+path, { method, headers:{"Content-Type":"application/json"}, body: body?JSON.stringify(body):undefined });
+    await loadActionPlans();
+    if(okMsg) toast(okMsg);
+    return true;
+  }catch(err){ toast(err.message || "Couldn't save"); return false; }
+}
+function planItemsHTML(p, editable){
+  if(!p.items.length) return `<div class="empty" style="padding:10px 0;">No items yet.</div>`;
+  return `<div style="display:flex;flex-direction:column;gap:6px;">${p.items.map(it=>`
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;${it.status==='Done'||it.status==='Dropped'?'opacity:.72;':''}">
+      <span class="pill ${PLAN_TYPE_KIND[it.type]}" style="flex:none;">${it.type}</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:700;${it.status==='Dropped'?'text-decoration:line-through;':''}">${esc(it.title)}</div>
+        ${it.detail?`<div class="subtext" style="font-size:12px;">${esc(it.detail)}</div>`:''}
+        ${(it.carriedFrom||it.addedBy)?`<div class="subtext">${it.carriedFrom?'Carried over from '+fmtDateShort(it.carriedFrom):''}${it.carriedFrom&&it.addedBy?' · ':''}${it.addedBy?'Added by '+esc(it.addedBy):''}</div>`:''}
+      </div>
+      ${editable
+        ? `<select class="select-sm" style="flex:none;padding:4px 6px;font-size:11.5px;" onchange="setPlanItemStatus('${p.id}','${it.id}',this.value)">${PLAN_ITEM_STATUSES.map(s=>`<option ${s===it.status?'selected':''}>${s}</option>`).join('')}</select>
+           <button type="button" class="card-edit" title="Edit item" onclick="openPlanItem('${p.id}','${it.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>`
+        : pill(it.status, PLAN_STATUS_KIND[it.status])}
+    </div>`).join('')}</div>`;
+}
+function planCommentsHTML(p){
+  if(!p.comments.length) return '';
+  return `<div style="display:flex;flex-direction:column;gap:6px;margin-top:2px;">${p.comments.map(c=>`
+    <div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);font-size:12.5px;"><b>${esc(c.by)}</b> <span class="faint" style="font-size:11px;">${fmtDateShort(c.date)}</span><div style="margin-top:2px;">${esc(c.text)}</div></div>`).join('')}</div>`;
+}
+// One plan, full detail. mode: "head" (their own, editable today) or "lead" (leadership — comment / add item).
+function planCardHTML(p, mode){
+  const editable = mode==="head" && canEditPlan(p);
+  const ni = p.needsInput;
+  return `
+  <div class="panel" style="${ni&&!ni.resolved?'border-color:var(--warn);':''}">
+    <div class="panel-head">
+      <div><h3>${mode==="lead"?esc(p.dept):fmtDate(p.date)}</h3><div class="sub">${mode==="lead"?esc(p.head||'')+' · ':''}Filed ${fmtDateShort(p.date)}${p.submittedAt?' at '+p.submittedAt:''} · ${p.items.length} item${p.items.length===1?'':'s'}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+        ${editable?`<button class="btn btn-sm ghost" onclick="openPlanEdit('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit focus</button><button class="btn btn-sm ghost" onclick="openPlanNeedsInput('${p.id}')">${ni&&!ni.resolved?'Edit question':'Ask leadership'}</button><button class="btn btn-sm primary" onclick="openPlanItem('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add item</button>`:''}
+        ${mode==="lead"?`<button class="btn btn-sm ghost" onclick="openPlanItem('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add to their plan</button><button class="btn btn-sm ${ni&&!ni.resolved?'primary':'ghost'}" onclick="openPlanComment('${p.id}')">${ni&&!ni.resolved?'Answer':'Comment'}</button>`:''}
+      </div>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:14px;font-weight:700;">${esc(p.focus)}</div>
+      ${p.research?`<div style="font-size:12.5px;color:var(--ink-soft);"><b style="color:var(--ink);">Research:</b> ${esc(p.research)}</div>`:''}
+      ${ni?`<div class="banner" style="${ni.resolved?'':'background:var(--warn-soft);color:var(--ink);'}"><svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg><div><b>${ni.resolved?'Answered':'Needs your input'}:</b> ${esc(ni.question)}</div></div>`:''}
+      ${planItemsHTML(p, editable)}
+      ${planCommentsHTML(p)}
+      ${mode==="head" && p.comments.length ? `<div><button class="btn btn-sm ghost" onclick="openPlanComment('${p.id}')">Reply</button></div>` : ''}
+    </div>
+  </div>`;
+}
+// Last-n working days as a strip of filed / missed / today marks.
+function planStripHTML(dept, n){
+  const days = pastPlanDays(n, dept).slice().reverse();
+  const marks = days.map(d=>{ const ok = !!planFor(dept,d); return `<span title="${fmtDate(d)} — ${ok?'filed':'missed'}" style="width:14px;height:14px;border-radius:4px;display:inline-block;background:${ok?'var(--pos)':'var(--neg-soft)'};border:1px solid ${ok?'var(--pos)':'var(--neg)'};"></span>`; });
+  if(isPlanWorkingDay(TODAY)) marks.push(`<span title="Today — ${planFor(dept,TODAY)?'filed':'not yet'}" style="width:14px;height:14px;border-radius:4px;display:inline-block;background:${planFor(dept,TODAY)?'var(--pos)':'transparent'};border:1px dashed var(--ink-faint);"></span>`);
+  return `<span style="display:inline-flex;gap:3px;align-items:center;">${marks.join('')}</span>`;
+}
+
+/* ---- Head's own page: My Workspace → My Action Plan ---- */
+function workspacePlan(){
+  const dept = currentUser ? headDeptOf(currentUser.name) : null;
+  if(!dept) return `<div class="empty">You're not set as a department head, so there's no action plan to file.</div>`;
+  const today = planFor(dept, TODAY);
+  const comp = planCompliance(dept, 10);
+  const history = plansOf(dept).filter(p=>p.date<TODAY).slice(0,10);
+  const weekItems = plansOf(dept).filter(p=>p.date>=addDays(TODAY,-6)).flatMap(p=>p.items);
+  const doneThisWeek = new Set(weekItems.filter(i=>i.status==='Done').map(i=>i.title)).size;
+  const last = latestPlanBefore(dept, TODAY);
+  const carry = last ? last.items.filter(i=>i.status==='Planned'||i.status==='In progress') : [];
+  const sc = planScore(dept);
+  return `
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">${monthLabel(TODAY.slice(0,7)).split(' ')[0]} Score</div><div class="kpi-value mono ${sc.score==null?'':planScoreKind(sc.score)}">${sc.score==null?'—':sc.score}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 100</span></div><div class="kpi-sub">60% filing (${sc.filed}/${sc.due} days) · 40% follow-through (${sc.done}/${sc.taken} done)</div></div>
+    <div class="kpi-card"><div class="kpi-label">Plans Filed</div><div class="kpi-value mono ${comp.missed.length?'warn':''}">${comp.filed} / ${comp.days.length}</div><div class="kpi-sub">last ${comp.days.length} working days · ${planStripHTML(dept,10)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Done This Week</div><div class="kpi-value mono pos">${doneThisWeek}</div><div class="kpi-sub">items completed</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Today</div><div class="kpi-value" style="font-size:17px;">${today?'Filed':(isPlanWorkingDay(TODAY)?'Not filed yet':'Day off')}</div><div class="kpi-sub">${today?'at '+today.submittedAt:'due today'}</div></div>
+  </div>
+  ${today ? planCardHTML(today, "head") : `
+  <div class="panel" style="border-color:var(--neg);">
+    <div class="panel-head"><div><h3>Today's action plan isn't in yet</h3><div class="sub">What will you research, improve, optimise or introduce in ${esc(dept)} today?${carry.length?` ${carry.length} unfinished item${carry.length>1?'s':''} from ${fmtDateShort(last.date)} will carry over.`:''}</div></div>
+      <button class="btn primary" onclick="openStartPlan()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Start today's plan</button></div>
+  </div>`}
+  <div class="section-label" style="margin:6px 2px;">Previous plans</div>
+  ${history.length ? history.map(p=>planCardHTML(p,"head")).join('') : `<div class="empty">No earlier plans yet.</div>`}`;
+}
+function openStartPlan(){
+  const dept = currentUser ? headDeptOf(currentUser.name) : null;
+  if(!dept || planFor(dept, TODAY)) return;
+  const last = latestPlanBefore(dept, TODAY);
+  const carry = last ? last.items.filter(i=>i.status==='Planned'||i.status==='In progress') : [];
+  showModal(`
+    <div class="modal-head"><h3>Today's action plan — ${esc(dept)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-start-plan"><div class="modal-body">
+      <div><label class="field-label">Today's focus</label><input class="field-input" name="focus" required placeholder="One line — e.g. Price and pilot the brand audit add-on"></div>
+      <div><label class="field-label">Research notes</label><textarea class="field-input" name="research" rows="3" placeholder="What you looked into — competitors, pricing, tools, numbers, links"></textarea></div>
+      ${carry.length?`<div><label class="field-label">Carry over from ${fmtDateShort(last.date)}</label><div style="display:flex;flex-direction:column;gap:6px;">${carry.map(i=>`<label class="check-chip" style="justify-content:flex-start;"><input type="checkbox" name="carry" value="${i.id}" checked><span class="pill ${PLAN_TYPE_KIND[i.type]}">${i.type}</span> ${esc(i.title)} <span class="faint">· ${i.status}</span></label>`).join('')}</div></div>`:''}
+      <div class="section-label" style="margin-top:4px;">New item${carry.length?' (optional)':''}</div>
+      <div class="field-row">
+        <div><label class="field-label">Type</label><select class="field-input" name="type">${PLAN_ITEM_TYPES.map(t=>`<option value="${t}">${t} — ${PLAN_TYPE_HINT[t]}</option>`).join('')}</select></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${PLAN_ITEM_STATUSES.slice(0,2).map(s=>`<option>${s}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label">What</label><input class="field-input" name="title" ${carry.length?'':'required'} placeholder="e.g. Website maintenance retainer"></div>
+      <div><label class="field-label">Detail</label><input class="field-input" name="detail" placeholder="Optional"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">File today's plan</button></div></div>
+    </form>`);
+  document.getElementById("f-start-plan").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const keep = f.getAll("carry");
+    const items = carry.filter(i=>keep.includes(i.id)).map(i=>({type:i.type, title:i.title, detail:i.detail, status:i.status, carriedFrom:last.date}));
+    const title = (f.get("title")||"").trim();
+    if(title) items.push({type:f.get("type"), title, detail:(f.get("detail")||"").trim(), status:f.get("status")});
+    if(!items.length){ toast("Add at least one item"); return; }
+    if(await planApi("POST", "", { focus:f.get("focus"), research:(f.get("research")||"").trim(), items }, "Today's plan filed")){ closeModal(); render(); }
+  });
+}
+function planById(id){ return actionPlans.find(p=>p.id===id); }
+async function setPlanItemStatus(planId, itemId, status){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  await planApi("PATCH", `/${planId}/items/${itemId}`, { status });
+  render();
+}
+// Add / edit an item. The head edits today's plan; leadership can add an item to any head's plan.
+function openPlanItem(planId, itemId){
+  const p = planById(planId); if(!p) return;
+  const lead = canSeePlans(currentUser) && !canEditPlan(p);
+  if(!canEditPlan(p) && !lead) return;
+  const it = itemId ? p.items.find(i=>i.id===itemId) : null;
+  if(it && !canEditPlan(p)) return;
+  showModal(`
+    <div class="modal-head"><h3>${it?'Edit item':(lead?'Add to '+esc(p.head||p.dept)+"'s plan":'Add item')}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-item"><div class="modal-body">
+      <div class="field-row">
+        <div><label class="field-label">Type</label><select class="field-input" name="type">${PLAN_ITEM_TYPES.map(t=>`<option value="${t}" ${it&&it.type===t?'selected':''}>${t} — ${PLAN_TYPE_HINT[t]}</option>`).join('')}</select></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${PLAN_ITEM_STATUSES.map(s=>`<option ${it&&it.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label">What</label><input class="field-input" name="title" required value="${esc(it?it.title:'')}"></div>
+      <div><label class="field-label">Detail</label><textarea class="field-input" name="detail" rows="2">${esc(it?it.detail:'')}</textarea></div>
+    </div>
+    <div class="modal-foot"><div>${it?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="removePlanItem('${p.id}','${it.id}')">Remove</button>`:''}</div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${it?'Save':'Add'}</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-item").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const data = {type:f.get("type"), status:f.get("status"), title:f.get("title"), detail:(f.get("detail")||"").trim()};
+    const ok = it ? await planApi("PATCH", `/${p.id}/items/${it.id}`, data, "Item updated") : await planApi("POST", `/${p.id}/items`, data, lead?"Added to "+(p.head||p.dept)+"'s plan":"Item added");
+    if(ok){ closeModal(); render(); }
+  });
+}
+async function removePlanItem(planId, itemId){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  if(await planApi("DELETE", `/${planId}/items/${itemId}`)){ closeModal(); render(); }
+}
+function openPlanEdit(planId){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  showModal(`
+    <div class="modal-head"><h3>Edit today's focus</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-edit"><div class="modal-body">
+      <div><label class="field-label">Today's focus</label><input class="field-input" name="focus" required value="${esc(p.focus)}"></div>
+      <div><label class="field-label">Research notes</label><textarea class="field-input" name="research" rows="4">${esc(p.research)}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-edit").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    if(await planApi("PATCH", `/${p.id}`, { focus:f.get("focus"), research:(f.get("research")||"").trim() }, "Plan updated")){ closeModal(); render(); }
+  });
+}
+// The head's way to pull leadership in — only when they actually need a decision.
+function openPlanNeedsInput(planId){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  const q = p.needsInput && !p.needsInput.resolved ? p.needsInput.question : '';
+  showModal(`
+    <div class="modal-head"><h3>Ask leadership</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-ask"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">Only for decisions you can't make yourself — it goes to the top of Dept Action Plans until it's answered.</div>
+      <div><label class="field-label">What do you need decided?</label><textarea class="field-input" name="question" rows="3" placeholder="Leave empty to withdraw the question">${esc(q)}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-ask").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const question = (f.get("question")||"").trim();
+    if(await planApi("PATCH", `/${p.id}`, { needsQuestion: question||null }, question?"Sent to Dept Action Plans":"Question withdrawn")){ closeModal(); render(); }
+  });
+}
+// Comment / answer. Leadership answering an open question marks it answered (unless they untick it);
+// the head can reply on their own plan's thread.
+function openPlanComment(planId){
+  const p = planById(planId); if(!p) return;
+  const lead = canSeePlans(currentUser);
+  const isHead = currentUser && deptHeads[p.dept]===currentUser.name;
+  if(!lead && !isHead) return;
+  const openQ = p.needsInput && !p.needsInput.resolved;
+  showModal(`
+    <div class="modal-head"><h3>${lead&&openQ?'Answer':'Comment'} — ${esc(p.dept)}, ${fmtDateShort(p.date)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-comment"><div class="modal-body">
+      ${openQ?`<div class="banner" style="background:var(--warn-soft);color:var(--ink);"><div><b>${esc(p.head||'')} asked:</b> ${esc(p.needsInput.question)}</div></div>`:''}
+      <div><label class="field-label">Your ${lead&&openQ?'answer':'comment'}</label><textarea class="field-input" name="text" rows="3" required></textarea></div>
+      ${lead&&openQ?`<label class="check-chip" style="align-self:flex-start;"><input type="checkbox" name="resolve" value="1" checked>This answers their question</label>`:''}
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Post</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-comment").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    if(await planApi("POST", `/${p.id}/comments`, { text:f.get("text"), resolve: !!(lead && openQ && f.get("resolve")) }, "Posted")){ closeModal(); render(); }
+  });
+}
+
+/* ---- Leadership: My Workspace → Dept Action Plans ---- */
+let planHistoryDept = "All";
+function setPlanHistoryDept(v){ planHistoryDept = v; render(); }
+function plansToday(){
+  if(!canSeePlans(currentUser)) return `<div class="empty">Only Leadership can see every department's action plans.</div>`;
+  const headed = DEPARTMENTS.filter(d=>deptHeads[d]);
+  const filed = headed.filter(d=>planFor(d,TODAY));
+  const questions = openNeedsInput();
+  const week = actionPlans.filter(p=>p.date>=addDays(TODAY,-6));
+  const uniq = (items)=>new Set(items.map(i=>i.dept+'|'+i.title)).size;
+  const weekItems = week.flatMap(p=>p.items.map(i=>({...i, dept:p.dept})));
+  const doneWeek = uniq(weekItems.filter(i=>i.status==='Done'));
+  const introduce = uniq(weekItems.filter(i=>i.type==='Introduce' && i.status!=='Dropped'));
+  return `
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">Filed Today</div><div class="kpi-value mono ${filed.length<headed.length?'warn':'pos'}">${filed.length}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${headed.length}</span></div><div class="kpi-sub">${headed.filter(d=>!planFor(d,TODAY)).map(d=>esc(deptHeads[d])).join(', ')||'all heads filed'}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Needs Your Input</div><div class="kpi-value mono ${questions.length?'warn':''}">${questions.length}</div><div class="kpi-sub">${questions.length?'questions waiting on you':'nothing waiting'}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Done This Week</div><div class="kpi-value mono pos">${doneWeek}</div><div class="kpi-sub">items across departments</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">New Services in Progress</div><div class="kpi-value mono">${introduce}</div><div class="kpi-sub">"Introduce" items this week</div></div>
+  </div>
+  ${questions.length ? `
+  <div class="panel" style="border-color:var(--warn);">
+    <div class="panel-head"><div><h3>Needs your input</h3><div class="sub">The only things heads have asked you to decide</div></div></div>
+    <div class="panel-body">${questions.map(p=>`<div class="feed-item" style="align-items:center;"><div class="feed-dot" style="background:var(--warn);"></div><div style="flex:1;"><div class="feed-text"><strong>${esc(p.head||'')}</strong> · ${esc(p.dept)}</div><div style="font-size:13px;margin-top:2px;">${esc(p.needsInput.question)}</div><div class="feed-time">${fmtDateShort(p.date)} · ${esc(p.focus)}</div></div><button class="btn btn-sm primary" style="flex:none;" onclick="openPlanComment('${p.id}')">Answer</button></div>`).join('')}</div>
+  </div>` : ''}
+  <div class="panel">
+    <div class="panel-head"><div><h3>Filing record</h3><div class="sub">Last 10 working days since the head was assigned · green = filed, red = missed, dashed = today</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Department</th><th>Head</th><th>Record</th><th class="num">Filed</th><th class="num">${monthLabel(TODAY.slice(0,7)).split(' ')[0]} score</th><th>Today</th><th></th></tr></thead>
+      <tbody>${DEPARTMENTS.map(d=>{ const c = planCompliance(d,10); const sc = planScore(d); return `<tr>
+        <td style="font-weight:700;">${esc(d)}</td>
+        <td>${deptHeads[d]?esc(deptHeads[d]):pill('No head','warn')}</td>
+        <td>${deptHeads[d]?planStripHTML(d,10):'<span class="faint">—</span>'}</td>
+        <td class="num mono" style="${c.missed.length?'color:var(--neg);font-weight:700;':''}">${deptHeads[d]?c.filed+' / '+c.days.length:'—'}</td>
+        <td class="num">${deptHeads[d]&&sc.score!=null?`<span class="mono" style="font-weight:800;">${sc.score}</span> ${pill(planScoreLabel(sc.score),planScoreKind(sc.score))}`:'<span class="faint">—</span>'}</td>
+        <td>${!deptHeads[d]?'—':c.today?pill('Filed '+planFor(d,TODAY).submittedAt,'pos'):pill('Not filed','neg')}</td>
+        <td class="num"><button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${deptHeads[d]?'Change head':'Assign head'}</button></td>
+      </tr>`; }).join('')}</tbody>
+    </table></div>
+  </div>
+  <div class="section-label" style="margin:6px 2px;">Today's plans · ${fmtDate(TODAY)}</div>
+  ${filed.length ? `<div class="grid-2" style="align-items:start;">${filed.map(d=>planCardHTML(planFor(d,TODAY),"lead")).join('')}</div>` : `<div class="empty">No plans filed yet today.</div>`}`;
+}
+function plansHistory(){
+  if(!canSeePlans(currentUser)) return `<div class="empty">Only Leadership can see every department's action plans.</div>`;
+  const list = actionPlans.filter(p=>p.date<TODAY && (planHistoryDept==='All' || p.dept===planHistoryDept)).sort((a,b)=>b.date.localeCompare(a.date) || a.dept.localeCompare(b.dept));
+  const byDate = [...new Set(list.map(p=>p.date))];
+  const missedRows = (planHistoryDept==='All'?DEPARTMENTS:[planHistoryDept]).filter(d=>deptHeads[d]).map(d=>({d, m:planCompliance(d,14).missed})).filter(x=>x.m.length);
+  return `
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Department</span><select class="select-sm" onchange="setPlanHistoryDept(this.value)"><option ${planHistoryDept==='All'?'selected':''}>All</option>${DEPARTMENTS.map(d=>`<option ${d===planHistoryDept?'selected':''}>${esc(d)}</option>`).join('')}</select></div></div>
+  ${missedRows.length?`<div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Missed plans (last 14 working days):</b> ${missedRows.map(x=>`${esc(x.d)} — ${x.m.map(fmtDateShort).join(', ')}`).join(' · ')}</div></div>`:''}
+  ${byDate.length ? byDate.map(date=>`
+    <div class="section-label" style="margin:6px 2px;">${fmtDate(date)}</div>
+    <div class="grid-2" style="align-items:start;">${list.filter(p=>p.date===date).map(p=>planCardHTML(p,"lead")).join('')}</div>`).join('') : `<div class="empty">No earlier plans for this department yet.</div>`}`;
+}
+let planTeamView = "today";
+function setPlanTeamView(v){ planTeamView = v; render(); }
+function workspacePlansTeam(){
+  if(!canSeePlans(currentUser)) return `<div class="empty">Only Leadership can see every department's action plans.</div>`;
+  return `
+  <div class="toolbar"><div style="display:flex;gap:6px;">
+    <button class="btn btn-sm ${planTeamView==='today'?'primary':'ghost'}" onclick="setPlanTeamView('today')">Today${openNeedsInput().length?` · ${openNeedsInput().length} need${openNeedsInput().length===1?'s':''} you`:''}</button>
+    <button class="btn btn-sm ${planTeamView==='history'?'primary':'ghost'}" onclick="setPlanTeamView('history')">History</button>
+  </div></div>
+  ${planTeamView==='history' ? plansHistory() : plansToday()}`;
+}
+// Small nudge at the top of a head's My Workspace when today's plan isn't filed.
+function planReminderHTML(){
+  if(!myPlanPending()) return '';
+  const dept = headDeptOf(currentUser.name);
+  return `<div class="banner" style="background:var(--neg-soft);color:var(--ink);align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg><div style="flex:1;"><b>Today's ${esc(dept)} action plan isn't filed yet.</b> What will you improve, optimise or introduce today?</div><button class="btn btn-sm primary" style="flex:none;" onclick="setSub('workspace','plan')">Open action plan</button></div>`;
+}
+
+/* ===================== MONTHLY SCORES =====================
+   Each score is out of 100 from weighted parts; a part with nothing to measure is left out and the rest re-weighted
+   (so a part that reads "n/a" costs nobody anything). They're computed on the server (/api/scores) so a department
+   head sees their own numbers without needing Finance or Clients access:
+     Department  Client growth 25 · Client satisfaction 30 · Feedback coverage 15 · Revenue 30
+     Sales       Target completion 45 · Lead conversion 30 · Meetings 25
+     Meta Ads    Return on ad spend 30 · Cost per lead 25 · Lead→sale 15 · Lead pace 15 · Daily tracking 15
+   Leadership sets the targets. Satisfaction/coverage fill in once client feedback exists; Meetings once sales meetings are logged. */
+let scoreTargets = null;
+let deptScores = null;      // {month, scores:{dept:{now,prev}}}
+let metaScoreData = null;   // {month, now, prev, totals, targets}
+async function loadDeptScores(){ const r = await apiJson("/api/scores/departments"); deptScores = r; scoreTargets = r.targets; }
+async function loadMetaScore(){ metaScoreData = await apiJson("/api/scores/meta-ads"); }
+function scoreGradePill(s){ return s==null ? pill('No data','neutral') : s>=85 ? pill('Strong','pos') : s>=65 ? pill('Fair','warn') : pill('Needs work','neg'); }
+function scoreTone(v){ return v==null ? 'var(--ink-faint)' : v>=0.85 ? 'var(--pos)' : v>=0.65 ? 'var(--warn)' : 'var(--neg)'; }
+function scoreRingHTML(score, size){
+  size = size || 112; const r = size/2-9, c = 2*Math.PI*r, v = score==null?0:Math.max(0,Math.min(100,score));
+  const color = score==null ? 'var(--ink-faint)' : score>=85 ? 'var(--pos)' : score>=65 ? 'var(--warn)' : 'var(--neg)';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex:none;">
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--surface-sunk)" stroke-width="10"/>
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${color}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${c*v/100} ${c}" transform="rotate(-90 ${size/2} ${size/2})"/>
+    <text x="50%" y="48%" text-anchor="middle" dominant-baseline="middle" style="font:800 28px Manrope,sans-serif;fill:var(--ink);">${score==null?'—':score}</text>
+    <text x="50%" y="70%" text-anchor="middle" style="font:700 10px Manrope,sans-serif;fill:var(--ink-faint);letter-spacing:.06em;">/ 100</text>
+  </svg>`;
+}
+// A score ring + its parts, each with its mark out of its weight and last month's mark. `extra` is HTML slotted above the ring.
+function monthScorePanelHTML(title, sub, sc, scPrev, P, extra){
+  const col = v => v==null ? 'var(--ink-faint)' : v>=0.85 ? 'var(--pos)' : v>=0.65 ? 'var(--warn)' : 'var(--neg)';
+  const delta = (a,b) => b==null ? '' : a==null ? '' : a===b ? `<span class="faint">same</span>` : `<span style="color:${a>b?'var(--pos)':'var(--neg)'};font-weight:700;">${a>b?'▲':'▼'} ${Math.abs(a-b)}</span>`;
+  return `
+  <div class="panel">
+    <div class="panel-head"><div><h3>${title}</h3><div class="sub">${sub}</div></div>${scoreGradePill(sc.score)}</div>
+    ${extra?`<div class="panel-body" style="padding-bottom:0;">${extra}</div>`:''}
+    <div class="modal-body" style="flex-direction:row;flex-wrap:wrap;align-items:center;gap:24px;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+        ${scoreRingHTML(sc.score, 128)}
+        <div style="font-size:12px;color:var(--ink-soft);">${scPrev.score==null?`${P}: no data`:`${P}: <b>${scPrev.score}</b> ${delta(sc.score, scPrev.score)}`}</div>
+      </div>
+      <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:9px;">
+        ${sc.parts.map(p=>{ const q = scPrev.parts.find(x=>x.key===p.key); const a = p.v==null?null:Math.round(p.v*p.w), b = (q&&q.v!=null)?Math.round(q.v*q.w):null; return `<div style="display:grid;grid-template-columns:150px 1fr 86px;gap:10px;align-items:center;font-size:12.5px;${p.v==null?'opacity:.55;':''}">
+          <div><b>${p.label}</b><div class="subtext">${esc(p.detail)}</div></div>
+          <div class="bar-track" style="height:8px;"><div class="bar-fill" style="width:${p.v==null?0:p.v*100}%;background:${col(p.v)};"></div></div>
+          <div style="text-align:right;"><div class="mono" style="font-weight:700;">${a==null?'n/a':a+'/'+p.w}</div><div style="font-size:10.5px;">${b==null?`<span class="faint">${P}: n/a</span>`:`${(a==null||a===b)?'':delta(a,b)+' '}<span class="faint">${P}: ${b}</span>`}</div></div>
+        </div>`; }).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+function deptScoreOf(d){ return deptScores && deptScores.scores[d] ? deptScores.scores[d] : null; }
+function deptScorePanel(d){
+  const sc = deptScoreOf(d); if(!sc) return '';
+  const month = deptScores.month, P = monthLabel(prevMonth(month)).split(' ')[0];
+  const t = deptScores.targets;
+  const foot = isLeadershipRole(currentUser) ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>${d==="Sales"?`Targets: ${shortInr(t.sales.revenue)} a month · ${t.sales.conversion}% conversion · ${t.sales.meetings} meetings`:`Targets: ${shortInr(t.deptRevenue[d]||0)} revenue a month · +${t.deptClientGrowth}% clients a month`}</span><button class="btn btn-sm ghost" onclick="openScoreTargets()">Set targets</button></div>` : '';
+  const title = d==="Sales" ? `Sales Score · ${monthLabel(month)}` : `${esc(d)} score · ${monthLabel(month)}`;
+  const sub = d==="Sales" ? `Target completion, lead conversion and meetings · vs ${P}` : `Client growth, client satisfaction, feedback coverage and revenue · vs ${P}`;
+  return monthScorePanelHTML(title, sub, sc.now, sc.prev, P, foot);
+}
+// Leadership's overview of every department's score.
+function deptScoresPanelHTML(){
+  if(!deptScores) return '';
+  const list = DEPARTMENTS.filter(d=>deptScoreOf(d));
+  if(!list.length) return '';
+  const P = monthLabel(prevMonth(deptScores.month)).slice(0,3);
+  return `<div class="panel">
+    <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><div><h3>Department scores · ${monthLabel(deptScores.month)}</h3><div class="sub">Out of 100 · open a department for the full breakdown</div></div>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openScoreTargets()">Set targets</button>`:''}</div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Department</th><th class="num">Score</th><th class="num">vs ${P}</th><th>Grade</th>${['Client growth','Satisfaction','Feedback','Revenue'].map(h=>`<th class="num">${h}</th>`).join('')}</tr></thead><tbody>${list.map(d=>{ const s = deptScoreOf(d), diff = s.now.score!=null && s.prev.score!=null ? s.now.score-s.prev.score : null; const pv = k => { const p = s.now.parts.find(x=>x.key===k); return p && p.v!=null ? Math.round(p.v*p.w)+'/'+p.w : 'n/a'; };
+      const keys = d==="Sales" ? ['target','conversion','meetings'] : ['growth','satisfaction','feedback','revenue'];
+      return `<tr class="row-click" onclick="setSub('departments','${deptSlug(d)}')"><td style="font-weight:700;">${esc(d)}</td><td class="num mono" style="font-weight:800;color:${scoreTone(s.now.score==null?null:s.now.score/100)};">${s.now.score==null?'—':s.now.score}</td><td class="num">${diff==null?'<span class="faint">—</span>':`<b style="color:${diff>=0?'var(--pos)':'var(--neg)'};">${diff>=0?'▲':'▼'}${Math.abs(diff)}</b>`}</td><td>${scoreGradePill(s.now.score)}</td>${d==="Sales"?`<td class="num mono faint" colspan="4" style="text-align:left;">Target ${pv('target')} · Conversion ${pv('conversion')} · Meetings ${pv('meetings')}</td>`:keys.map(k=>`<td class="num mono">${pv(k)}</td>`).join('')}</tr>`; }).join('')}</tbody></table></div>
+  </div>`;
+}
+// A head's own score card at the top of My Workspace → Overview.
+function myDeptScoreHTML(){
+  const d = currentUser ? headDeptOf(currentUser.name) : null;
+  const sc = d ? deptScoreOf(d) : null; if(!sc) return '';
+  const diff = sc.now.score!=null && sc.prev.score!=null ? sc.now.score-sc.prev.score : null;
+  return `<div class="panel" style="padding:14px 18px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;cursor:pointer;" onclick="setSub('departments','${deptSlug(d)}')">
+    ${scoreRingHTML(sc.now.score, 78)}
+    <div style="flex:1;min-width:200px;"><div class="kpi-label">${esc(d)} score · ${monthLabel(deptScores.month)}</div><div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${scoreGradePill(sc.now.score)}${diff==null?'':`<span style="font-size:12px;"><b style="color:${diff>=0?'var(--pos)':'var(--neg)'};">${diff>=0?'▲':'▼'}${Math.abs(diff)}</b> <span class="faint">vs ${monthLabel(prevMonth(deptScores.month)).slice(0,3)}</span></span>`}</div><div class="subtext" style="margin-top:4px;">Open the department for the breakdown</div></div>
+  </div>`;
+}
+// One modal for every target (leadership only).
+function openScoreTargets(){
+  if(!isLeadershipRole(currentUser) || !scoreTargets) return;
+  const t = scoreTargets;
+  showModal(`
+    <div class="modal-head"><h3>Score targets</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-score-targets"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">Scores measure each month against these. Changing them re-scores every month, past ones included.</div>
+      <div class="section-label">Department revenue received (₹ / month)</div>
+      <div class="field-row">${SERVICE_DEPARTMENTS.map(d=>`<div><label class="field-label">${esc(d)}</label><input class="field-input" type="number" min="0" step="5000" name="rev:${esc(d)}" value="${t.deptRevenue[d]||0}" required></div>`).join('')}</div>
+      <div><label class="field-label">Client growth target (% a month)</label><input class="field-input" type="number" min="0" max="100" step="1" name="growth" value="${t.deptClientGrowth}" required></div>
+      <div class="section-label">Sales</div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">Sales target (₹ / month)</label><input class="field-input" type="number" min="10000" step="10000" name="srev" value="${t.sales.revenue}" required></div>
+        <div><label class="field-label">Lead conversion (%)</label><input class="field-input" type="number" min="1" max="100" step="1" name="sconv" value="${t.sales.conversion}" required></div>
+        <div><label class="field-label">Meetings / month</label><input class="field-input" type="number" min="1" step="1" name="smeet" value="${t.sales.meetings}" required></div>
+      </div>
+      <div class="section-label">Meta Ads (our own)</div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">ROAS target (x)</label><input class="field-input" type="number" min="0.5" step="0.1" name="mroas" value="${t.meta.roas}" required></div>
+        <div><label class="field-label">Cost per lead (₹)</label><input class="field-input" type="number" min="1" step="10" name="mcpl" value="${t.meta.cpl}" required></div>
+        <div><label class="field-label">Lead → sale (%)</label><input class="field-input" type="number" min="0.5" step="0.5" name="mconv" value="${t.meta.conv}" required></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save targets</button></div></div>
+    </form>`);
+  document.getElementById("f-score-targets").addEventListener("submit", async ev=>{
+    ev.preventDefault(); const f = new FormData(ev.target);
+    const body = {
+      deptRevenue: Object.fromEntries(SERVICE_DEPARTMENTS.map(d=>[d, Number(f.get("rev:"+d))])),
+      deptClientGrowth: Number(f.get("growth")),
+      sales: { revenue:Number(f.get("srev")), conversion:Number(f.get("sconv")), meetings:Number(f.get("smeet")) },
+      meta: { roas:Number(f.get("mroas")), cpl:Number(f.get("mcpl")), conv:Number(f.get("mconv")) },
+    };
+    try{
+      await apiJson("/api/scores/targets", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      await Promise.all([loadDeptScores().catch(()=>{}), loadMetaScore().catch(()=>{})]);
+      toast("Targets saved"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the targets"); }
+  });
+}
+// Meta Ads tab: our own ads' month-vs-month tiles and score.
+function metaAdsScorePanelHTML(){
+  const d = metaScoreData; if(!d) return '';
+  const P = monthLabel(prevMonth(d.month)).split(' ')[0], Ps = P.slice(0,3);
+  const a = d.totals.now, b = d.totals.prev, partial = d.month===TODAY.slice(0,7);
+  const r = x => x.spend ? x.revenue/x.spend : null, c = x => x.leads ? x.spend/x.leads : null;
+  const tiles = [
+    {label:"Spend", now:a.spend, was:b.spend, fmt:shortInr, neutral:true, total:true},
+    {label:"Leads", now:a.leads, was:b.leads, fmt:String, total:true},
+    {label:"Cost per lead", now:c(a)==null?null:Math.round(c(a)), was:c(b)==null?null:Math.round(c(b)), fmt:inr, lower:true},
+    {label:"Sales", now:a.purchases, was:b.purchases, fmt:String, total:true},
+    {label:"Revenue", now:a.revenue, was:b.revenue, fmt:shortInr, total:true},
+    {label:"ROAS", now:r(a), was:r(b), fmt:x=>x.toFixed(1)+'x', eps:0.05},
+  ];
+  const tilesHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;">${tiles.map(x=>`<div style="padding:10px 12px;border-radius:8px;background:var(--surface-sunk);min-width:0;">
+    <div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);">${x.label}</div>
+    <div class="mono" style="font-size:17px;font-weight:800;margin-top:2px;">${x.now==null?'—':x.fmt(x.now)}</div>
+    <div style="font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${partial&&x.total?`<span class="faint">${Ps} full month ${x.was==null?'—':x.fmt(x.was)}</span>`:`${x.now!=null&&x.was!=null?deltaHTML(x.now, x.was, {neutral:x.neutral, fmt:v=>x.fmt(v), eps:x.eps})+' ':''}<span class="faint">${Ps} ${x.was==null?'—':x.fmt(x.was)}</span>`}</div>
+  </div>`).join('')}</div>`;
+  const t = d.targets;
+  const foot = `<div style="display:flex;flex-direction:column;gap:8px;">${tilesHTML}<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>Targets: ROAS ${t.roas}x · CPL ${inr(t.cpl)} · lead → sale ${t.conv}%</span>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openScoreTargets()">Set targets</button>`:''}</div></div>`;
+  return monthScorePanelHTML(`Meta Ads Score · ${monthLabel(d.month)}`, `Return, cost per lead, conversion, lead pace and daily tracking · vs ${P}${partial?` · ${a.days} days logged so far`:''}`, d.now, d.prev, P, foot);
+}
+
+/* ===================== CLIENT FEEDBACK =====================
+   One rating (1–5) per client, per service department, per month. The client gives it through a shareable link
+   (public/feedback.html — no sign-in); the account manager or leadership can also log what a client said on a call or
+   WhatsApp. It feeds each department's score and the Departments pages. A link stays open until 7 days after its month
+   ends, and making a new link for the same client and month replaces the old one. */
+let clientFeedbackData = {};   // clientId -> {feedback, link, canLog} | {forbidden:true}
+async function loadClientFeedback(id){
+  try{ clientFeedbackData[id] = await apiJson(`/api/crm/clients/${id}/feedback`); }
+  catch(err){ clientFeedbackData[id] = { forbidden:true }; }
+  if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
+}
+function starBarHTML(r, size){
+  size = size || 13; const pct = r==null ? 0 : r/5*100;
+  return `<span title="${r==null?'No rating':r.toFixed(1)+' / 5'}" style="position:relative;display:inline-block;font-size:${size}px;line-height:1;letter-spacing:1px;white-space:nowrap;"><span style="color:var(--line);">★★★★★</span><span style="position:absolute;left:0;top:0;width:${pct}%;overflow:hidden;color:var(--warn);">★★★★★</span></span>`;
+}
+const feedbackLinkUrl = l => `${location.origin}/feedback.html?t=${encodeURIComponent(l.token)}`;
+function feedbackLinkMessage(c, l){
+  return `Hi ${c.name} team,\n\nHow did we do this ${monthLabel(l.month).split(' ')[0]}? Please rate our ${l.depts.length>1?'services':l.depts[0].toLowerCase()+' work'} — it takes under a minute:\n${feedbackLinkUrl(l)}\n\nYour feedback goes straight to the team handling each service.\n— DesGro Media`;
+}
+// History + the Feedback link / Log feedback buttons, on the client's page.
+function clientFeedbackSectionHTML(c){
+  const d = clientFeedbackData[c.id];
+  if(!d || d.forbidden) return '';
+  const month = TODAY.slice(0,7);
+  const list = d.feedback;
+  const cur = list.filter(f=>f.month===month);
+  const avg = cur.length ? cur.reduce((s,f)=>s+f.rating,0)/cur.length : null;
+  return `<div class="section-label" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><span>Client feedback${avg!=null?` · ${monthLabel(month).split(' ')[0]} average ${avg.toFixed(1)} ★`:''}</span><span style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>${d.canLog?`<button class="btn btn-sm ghost" onclick="openClientFeedback('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log feedback</button>`:''}</span></div>
+  ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th>Service</th><th>Rating</th><th>Comment</th><th>Source</th></tr></thead><tbody>${list.slice(0,8).map(f=>`<tr><td class="muted" style="white-space:nowrap;">${monthLabel(f.month)}</td><td>${esc(f.dept)}</td><td style="white-space:nowrap;">${starBarHTML(f.rating, 12)} <b class="mono">${f.rating}</b></td><td class="muted">${f.comment?esc(f.comment):'—'}</td><td class="faint" style="font-size:11.5px;">${esc(f.via)}${f.by&&f.by!=="Client"&&!f.via.startsWith('Logged')?' · '+esc(f.by):''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">No feedback yet — send the client a feedback link.</div>`}`;
+}
+// Staff logging: what the client said this month, per service. Replaces any rating already logged for that service.
+function openClientFeedback(clientId){
+  const c = clientById(clientId), d = clientFeedbackData[clientId]; if(!c || !d || !d.canLog) return;
+  const month = TODAY.slice(0,7);
+  const depts = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s));
+  if(!depts.length){ toast("This client has no services to rate"); return; }
+  const stars = s => `<div style="display:flex;gap:6px;flex-wrap:wrap;">${[1,2,3,4,5].map(n=>`<label class="check-chip" style="min-width:44px;justify-content:center;"><input type="radio" name="r-${esc(s)}" value="${n}">${n} ★</label>`).join('')}<span class="faint" style="font-size:11px;align-self:center;">leave blank to skip</span></div>`;
+  showModal(`
+    <div class="modal-head"><h3>Log client feedback — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-client-feedback"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">What ${esc(c.name)} said this month — on a call, in a meeting or on WhatsApp. Replaces any rating already logged for that service this month.</div>
+      ${depts.map(s=>{ const ex = d.feedback.find(f=>f.dept===s && f.month===month); return `<fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;display:flex;flex-direction:column;gap:8px;">
+        <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(s)}${ex?` <span class="faint" style="font-weight:600;">· currently ${ex.rating} ★</span>`:''}</legend>
+        ${stars(s)}
+        <input class="field-input" name="c-${esc(s)}" placeholder="Anything to add? (optional)" value="${ex?esc(ex.comment):''}">
+      </fieldset>`; }).join('')}
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-client-feedback").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const ratings = depts.map(s=>({dept:s, rating:Number(f.get("r-"+s)), comment:(f.get("c-"+s)||"").trim()})).filter(x=>x.rating);
+    if(!ratings.length){ toast("Pick a rating for at least one service"); return; }
+    try{
+      await apiJson(`/api/crm/clients/${clientId}/feedback`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ ratings }) });
+      await loadClientFeedback(clientId);
+      if(nav.module==="departments") refreshTab("departments", nav.sub.departments);
+      toast("Feedback logged"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the feedback"); }
+  });
+}
+// The shareable link: pick the services, then copy / WhatsApp it.
+async function openClientFeedbackLink(clientId, regenerate, depts){
+  const c = clientById(clientId); if(!c) return;
+  let link;
+  try{
+    const r = await apiJson(`/api/crm/clients/${clientId}/feedback-link`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ regenerate: !!regenerate, ...(depts?{depts}:{}) }) });
+    link = r.link;
+  }catch(err){ toast(err.message || "Couldn't make the link"); return; }
+  const month = link.month;
+  const rated = {}; ((clientFeedbackData[clientId]||{}).feedback||[]).filter(f=>f.month===month).forEach(f=>{ rated[f.dept] = f.rating; });
+  const services = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s));
+  showModal(`
+    <div class="modal-head"><h3>Feedback link — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;"><div class="subtext" style="margin:0;max-width:380px;">The client opens it without signing in and rates each service for ${monthLabel(month)}. Open till ${fmtDate(link.closesOn)}.</div>${pill(link.open?'Open':'Closed', link.open?'pos':'neutral')}</div>
+      <div><label class="field-label">Services on this link</label>
+        <div style="display:flex;flex-direction:column;gap:6px;">${services.map(s=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;"><input type="checkbox" ${link.depts.includes(s)?'checked':''} onchange="toggleFeedbackLinkDept('${clientId}','${esc(s)}', this.checked)"><span style="flex:1;font-weight:600;font-size:13px;">${esc(s)}</span>${rated[s]?`<span style="font-size:12px;white-space:nowrap;">${starBarHTML(rated[s], 11)} <b class="mono">${rated[s]}</b> <span class="faint">rated</span></span>`:'<span class="faint" style="font-size:11.5px;">not rated yet</span>'}</label>`).join('')}</div></div>
+      <div><label class="field-label" for="cfl-input">Shareable link</label>
+        <div style="display:flex;gap:8px;"><input class="field-input mono" id="cfl-input" readonly value="${esc(feedbackLinkUrl(link))}" style="flex:1;min-width:0;font-size:12.5px;"><button type="button" class="btn btn-sm" onclick="copyApplyText('cfl-input','Link copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy</button></div></div>
+      <div><label class="field-label" for="cfl-msg">Ready-to-share message</label>
+        <textarea class="field-input" id="cfl-msg" rows="9" readonly style="resize:vertical;font-family:inherit;">${esc(feedbackLinkMessage(c, link))}</textarea>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-sm ghost" onclick="window.open('https://wa.me/?text='+encodeURIComponent(document.getElementById('cfl-msg').value),'_blank')">Share on WhatsApp</button>
+          <button type="button" class="btn btn-sm" onclick="copyApplyText('cfl-msg','Message copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy message</button>
+        </div></div>
+    </div>
+    <div class="modal-foot"><div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" class="btn ghost" onclick="window.open('${esc(feedbackLinkUrl(link))}&preview=1','_blank')">Preview form</button><button type="button" class="btn ghost" onclick="openClientFeedbackLink('${clientId}', true)" title="Makes a fresh link; the old one stops working">New link</button></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+  if(!clientFeedbackData[clientId]) loadClientFeedback(clientId);
+}
+async function toggleFeedbackLinkDept(clientId, dept, on){
+  const c = clientById(clientId);
+  // Read the current set from the open modal's checkboxes' source of truth: the server's link for this month.
+  const cur = (((clientFeedbackData[clientId]||{}).link)||null);
+  let depts;
+  try{ depts = (await apiJson(`/api/crm/clients/${clientId}/feedback-link`, { method:"POST", headers:{"Content-Type":"application/json"}, body:"{}" })).link.depts; }catch(err){ toast(err.message || "Couldn't update the link"); return; }
+  depts = on ? [...new Set([...depts, dept])] : depts.filter(x=>x!==dept);
+  if(!depts.length){ toast("Keep at least one service on the link"); openClientFeedbackLink(clientId); return; }
+  depts.sort((a,b)=>c.services.indexOf(a)-c.services.indexOf(b));
+  openClientFeedbackLink(clientId, false, depts);
+}
+
+/* ===================== HR PROGRAMS — team building, upskilling, training =====================
+   HR plans each month's programs under HR → Programs. A month is "covered" when it has at least one of each type.
+   Once a program has happened HR closes it out with who attended, what it cost and what came of it. Attendees (and
+   only they) are then asked to rate it — anonymously, once, for 14 days — in their My Workspace or from a link HR
+   shares. Staff see what they're invited to under "Coming up at DesGro"; programs also show on the Calendar. */
+const PROGRAM_TYPES = ["Team Building","Upskilling","Training"];
+const PROGRAM_TYPE_KIND = {"Team Building":"pos","Upskilling":"blue","Training":"warn"};
+const PROGRAM_TYPE_HINT = {"Team Building":"bonding, offsites, celebrations","Upskilling":"new skills for the market — tools, platforms, trends","Training":"how we do things here — process, quality, conduct"};
+const PROGRAM_STATUSES = ["Planned","Confirmed","Completed","Cancelled"];
+const PROGRAM_STATUS_KIND = {Planned:"neutral",Confirmed:"blue",Completed:"pos",Cancelled:"neg"};
+const PROGRAM_MODES = ["In office","Offsite","Online"];
+const FEEDBACK_WINDOW_DAYS = 14;
+let hrProgramMonth = TODAY.slice(0,7);
+let hrPrograms = [];
+let myProgramsData = { upcoming:[], feedbackDue:[] };
+let calendarPrograms = [];
+async function loadHrPrograms(){ try{ hrPrograms = (await apiJson("/api/hr/programs")).programs; }catch(err){ hrPrograms = []; } }
+async function loadMyPrograms(){ myProgramsData = await apiJson("/api/hr/programs/mine"); }
+async function loadCalendarPrograms(){ calendarPrograms = (await apiJson("/api/hr/programs/calendar")).programs; }
+function canManagePrograms(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser) || isLeadershipRole(currentUser)); }
+const programById = id => hrPrograms.find(p=>p.id===id);
+function programInvitees(p){ return employees.filter(e=>e.employmentStatus!=="Left" && (p.audience.includes("All") || p.audience.includes(e.dept))); }
+function programAudienceLabel(p){ return p.audience.includes("All") ? "All staff" : p.audience.length>2 ? p.audience.length+" departments" : p.audience.join(", "); }
+function programsInMonth(month){ return hrPrograms.filter(p=>p.date.slice(0,7)===month).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)); }
+function shiftHrProgramMonth(d){ const [y,m]=hrProgramMonth.split("-").map(Number); hrProgramMonth = new Date(Date.UTC(y,m-1+d,1)).toISOString().slice(0,7); render(); }
+function starsHTML(r){ if(r==null) return '<span class="faint">—</span>'; const full = Math.round(r); return `<span style="color:var(--warn);letter-spacing:1px;">${'★'.repeat(full)}<span style="color:var(--line);">${'★'.repeat(5-full)}</span></span>`; }
+const feedbackClosesOn = p => addDays(p.date, FEEDBACK_WINDOW_DAYS);
+const feedbackIsOpen = p => p.status==="Completed" && TODAY <= feedbackClosesOn(p);
+const programFeedbackLink = p => `${location.origin}/index.html#feedback/${p.id}`;
+async function programApi(method, path, body, okMsg){
+  try{
+    const r = await apiJson("/api/hr/programs"+path, { method, headers:{"Content-Type":"application/json"}, body: body?JSON.stringify(body):undefined });
+    if(okMsg) toast(okMsg);
+    return r || true;
+  }catch(err){ toast(err.message || "Couldn't save"); return null; }
+}
+const refreshPrograms = async ()=>{ await Promise.all([loadHrPrograms(), loadMyPrograms().catch(()=>{}), loadCalendarPrograms().catch(()=>{})]); };
+
+function hrProgramsView(){
+  const month = hrProgramMonth;
+  const list = programsInMonth(month);
+  const live = list.filter(p=>p.status!=="Cancelled");
+  const done = list.filter(p=>p.status==="Completed");
+  const budget = live.reduce((s,p)=>s+(p.budget||0),0), spent = live.reduce((s,p)=>s+(p.spent||0),0);
+  const attRate = done.length ? Math.round(done.reduce((s,p)=>s+(p.attendees.length/Math.max(1,programInvitees(p).length)),0)/done.length*100) : null;
+  const rated = done.filter(p=>p.rating!=null);
+  const avgRating = rated.length ? rated.reduce((s,p)=>s+p.rating,0)/rated.length : null;
+  const respAll = done.reduce((s,p)=>s+p.responses,0), attAll = done.reduce((s,p)=>s+p.attendees.length,0);
+  const covered = PROGRAM_TYPES.map(t=>({t, n:live.filter(p=>p.type===t).length}));
+  const manage = canManagePrograms();
+  const months = [-1,0,1,2,3,4].map(d=>{ const [y,m]=month.split("-").map(Number); return new Date(Date.UTC(y,m-1+d,1)).toISOString().slice(0,7); });
+  return `
+  <div class="toolbar">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <button class="btn btn-sm ghost" onclick="shiftHrProgramMonth(-1)">‹</button>
+      <div style="font-weight:800;font-size:14px;min-width:140px;text-align:center;">${monthLabel(month)}</div>
+      <button class="btn btn-sm ghost" onclick="shiftHrProgramMonth(1)">›</button>
+    </div>
+    ${manage?`<button class="btn primary" onclick="openProgram()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Plan a program</button>`:''}
+  </div>
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">Programs</div><div class="kpi-value mono">${live.length}</div><div class="kpi-sub">${done.length} completed${list.length-live.length?` · ${list.length-live.length} cancelled`:''}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Attendance</div><div class="kpi-value mono">${attRate==null?'—':attRate+'%'}</div><div class="kpi-sub">of invited, completed programs</div></div>
+    <div class="kpi-card"><div class="kpi-label">Feedback</div><div class="kpi-value mono">${avgRating==null?'—':avgRating.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div><div class="kpi-sub">from ${respAll} response${respAll===1?'':'s'}${attAll?' · '+Math.round(respAll/attAll*100)+'% replied':''}</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Budget</div><div class="kpi-value mono" style="font-size:19px;">${inr(budget)}</div><div class="kpi-sub">${inr(spent)} spent so far</div></div>
+  </div>
+  <div class="banner ${covered.every(c=>c.n)?'muted':''}" style="align-items:center;flex-wrap:wrap;">
+    <svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg>
+    <div style="flex:1;"><b>${monthLabel(month)} plan:</b> ${covered.every(c=>c.n)?'covers all three — team building, upskilling and training.':'missing '+covered.filter(c=>!c.n).map(c=>c.t.toLowerCase()).join(' and ')+'.'}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">${covered.map(c=>`<span class="pill ${c.n?PROGRAM_TYPE_KIND[c.t]:'neg'}">${c.t} · ${c.n}</span>`).join('')}</div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><div><h3>${monthLabel(month)} programs</h3><div class="sub">${list.length?'In date order':'Nothing planned yet'}</div></div></div>
+    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Program</th><th>Type</th><th>Audience</th><th class="num">Budget</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map(p=>{ const inv = programInvitees(p).length; return `<tr style="${p.status==='Cancelled'?'opacity:.6;':''}">
+        <td style="white-space:nowrap;"><div style="font-weight:700;">${fmtDateShort(p.date)}</div><div class="subtext">${WEEKDAY_NAMES[new Date(p.date+"T00:00:00").getDay()].slice(0,3)} · ${esc(p.time||'')}</div><div class="subtext">${esc(p.duration||'')}</div></td>
+        <td style="min-width:300px;"><div style="font-weight:700;">${esc(p.title)}</div><div class="subtext" style="color:var(--ink-soft);">${esc(p.mode)}${p.venue?' · '+esc(p.venue):''}${p.facilitator?' · with '+esc(p.facilitator):''}</div>${p.objective?`<div class="subtext" style="max-width:300px;white-space:normal;">${esc(p.objective)}</div>`:''}${p.status==='Completed'&&p.outcome?`<div class="subtext" style="max-width:300px;white-space:normal;color:var(--ink-soft);"><b>Outcome:</b> ${esc(p.outcome)}</div>`:''}</td>
+        <td>${pill(p.type, PROGRAM_TYPE_KIND[p.type])}</td>
+        <td class="muted" title="${esc(p.audience.includes('All')?'All staff':p.audience.join(', '))}">${esc(programAudienceLabel(p))}<div class="subtext">${p.status==='Completed'?`${p.attendees.length} of ${inv} attended${p.rating!=null?' · ★ '+p.rating.toFixed(1)+' ('+p.responses+')':''}`:`${inv} invited`}</div></td>
+        <td class="num mono">${p.budget?inr(p.budget):'—'}${p.status==='Completed'&&p.spent?`<div class="subtext">${inr(p.spent)} spent</div>`:''}</td>
+        <td>${pill(p.status, PROGRAM_STATUS_KIND[p.status])}</td>
+        <td class="num">${manage?`<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${p.status!=='Completed'&&p.status!=='Cancelled'&&p.date<=TODAY?`<button class="btn btn-sm primary" onclick="openCompleteProgram('${p.id}')">Close out</button>`:''}${p.status==='Completed'?`<button class="btn btn-sm ${feedbackIsOpen(p)?'':'ghost'}" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>`:''}<button class="btn btn-sm ghost" onclick="openProgram('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>`:''}</td>
+      </tr>`; }).join('')}
+    </tbody></table></div>` : `<div class="empty">No programs planned for ${monthLabel(month)}.${manage?' Plan at least one team building, one upskilling and one training session.':''}</div>`}
+  </div>
+  <div class="panel">
+    <div class="panel-head"><div><h3>Plan ahead</h3><div class="sub">Programs by month — click a month to open it</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th>${PROGRAM_TYPES.map(t=>`<th class="num">${t}</th>`).join('')}<th class="num">Budget</th><th>Covered</th></tr></thead><tbody>
+      ${months.map(mm=>{ const l = programsInMonth(mm).filter(p=>p.status!=="Cancelled"); const counts = PROGRAM_TYPES.map(t=>l.filter(p=>p.type===t).length); const ok = counts.every(n=>n>0); const b = l.reduce((s,p)=>s+(p.budget||0),0); return `<tr class="row-click" style="${mm===month?'background:var(--surface-sunk);':''}" onclick="hrProgramMonth='${mm}';render();">
+        <td style="font-weight:700;">${monthLabel(mm)}${mm===TODAY.slice(0,7)?' <span class="faint" style="font-weight:600;">· this month</span>':''}</td>
+        ${counts.map(n=>`<td class="num mono" style="${n?'':'color:var(--ink-faint);'}">${n||'—'}</td>`).join('')}
+        <td class="num mono">${b?inr(b):'—'}</td>
+        <td>${ok?pill('All three','pos'):pill(counts.filter(n=>n).length+' of 3','warn')}</td>
+      </tr>`; }).join('')}
+    </tbody></table></div>
+  </div>`;
+}
+function openProgram(id){
+  if(!canManagePrograms()) return;
+  const p = id ? programById(id) : null;
+  const aud = p ? p.audience : ["All"];
+  showModal(`
+    <div class="modal-head"><h3>${p?'Edit program':'Plan a program'}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-program"><div class="modal-body">
+      <div><label class="field-label">Title</label><input class="field-input" name="title" required value="${esc(p?p.title:'')}" placeholder="e.g. AI tools for content production"></div>
+      <div class="field-row">
+        <div><label class="field-label">Type</label><select class="field-input" name="type">${PROGRAM_TYPES.map(t=>`<option value="${t}" ${p&&p.type===t?'selected':''}>${t} — ${PROGRAM_TYPE_HINT[t]}</option>`).join('')}</select></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${PROGRAM_STATUSES.filter(s=>s!=='Completed'||(p&&p.status==='Completed')).map(s=>`<option ${p&&p.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" required value="${p?p.date:(hrProgramMonth===TODAY.slice(0,7)?TODAY:hrProgramMonth+'-01')}"></div>
+        <div><label class="field-label">Time</label><input class="field-input" type="time" name="time" value="${p?p.time:'15:00'}"></div>
+        <div><label class="field-label">Duration</label><input class="field-input" name="duration" value="${esc(p?p.duration:'2 hours')}"></div>
+      </div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">Mode</label><select class="field-input" name="mode">${PROGRAM_MODES.map(m=>`<option ${p&&p.mode===m?'selected':''}>${m}</option>`).join('')}</select></div>
+        <div><label class="field-label">Venue / link</label><input class="field-input" name="venue" value="${esc(p?p.venue:'')}" placeholder="Conference room"></div>
+        <div><label class="field-label">Facilitator</label><input class="field-input" name="facilitator" list="program-facilitators" value="${esc(p?p.facilitator:'')}" placeholder="Staff or external trainer"><datalist id="program-facilitators">${activeEmployees().map(e=>`<option value="${esc(e.name)}">`).join('')}</datalist></div>
+      </div>
+      <div><label class="field-label">Who's it for</label><div class="check-row">
+        <label class="check-chip"><input type="checkbox" name="audience" value="All" ${aud.includes("All")?'checked':''}>All staff</label>
+        ${DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="audience" value="${esc(d)}" ${!aud.includes("All")&&aud.includes(d)?'checked':''}>${esc(d)}</label>`).join('')}
+      </div></div>
+      <div><label class="field-label">Objective</label><input class="field-input" name="objective" value="${esc(p?p.objective:'')}" placeholder="What should people be able to do afterwards?"></div>
+      <div><label class="field-label">Budget (₹)</label><input class="field-input" type="number" min="0" step="500" name="budget" value="${p?p.budget||0:0}"></div>
+    </div>
+    <div class="modal-foot"><div>${p?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="deleteProgram('${p.id}')">Delete</button>`:''}</div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${p?'Save':'Add to plan'}</button></div></div>
+    </form>`);
+  document.getElementById("f-program").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    let audience = f.getAll("audience");
+    if(!audience.length || audience.includes("All")) audience = ["All"];
+    const data = {title:f.get("title"), type:f.get("type"), status:f.get("status"), date:f.get("date"), time:f.get("time")||"", duration:f.get("duration")||"", mode:f.get("mode"), venue:f.get("venue")||"", facilitator:f.get("facilitator")||"", audience, objective:f.get("objective")||"", budget:Number(f.get("budget"))||0};
+    const ok = p ? await programApi("PUT", `/${p.id}`, data, "Program updated") : await programApi("POST", "", data, "Added to the plan");
+    if(ok){ hrProgramMonth = data.date.slice(0,7); await refreshPrograms(); closeModal(); render(); }
+  });
+}
+async function deleteProgram(id){
+  if(!canManagePrograms() || !confirm("Delete this program? Its attendance and feedback go with it.")) return;
+  if(await programApi("DELETE", `/${id}`, null, "Program removed")){ await refreshPrograms(); closeModal(); render(); }
+}
+// Close out a program once it has happened: who came, what it cost, what came of it.
+function openCompleteProgram(id){
+  const p = programById(id);
+  if(!p || !canManagePrograms()) return;
+  const invited = programInvitees(p);
+  const presentIds = p.attendees.length ? p.attendees.map(a=>a.id) : invited.map(e=>e._dbId);
+  showModal(`
+    <div class="modal-head"><h3>Close out — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-program-done"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${fmtDate(p.date)} · ${esc(programAudienceLabel(p))} · ${invited.length} invited</div>
+      <div><label class="field-label">Who attended <span class="faint">(untick anyone who didn't)</span></label>
+        <div class="check-row" style="max-height:200px;overflow:auto;">${invited.map(e=>`<label class="check-chip"><input type="checkbox" name="att" value="${esc(e._dbId)}" ${presentIds.includes(e._dbId)?'checked':''}>${esc(e.name)}</label>`).join('')}</div></div>
+      <div><label class="field-label">Actual spend (₹)</label><input class="field-input" type="number" min="0" step="100" name="spent" value="${p.spent||0}"></div>
+      <div class="subtext">Once it's closed out, everyone ticked above is asked to rate it in their My Workspace — the program's rating comes from them.</div>
+      <div><label class="field-label">Outcome</label><textarea class="field-input" name="outcome" rows="2" placeholder="What came out of it — follow-ups, what to repeat or drop">${esc(p.outcome||'')}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Mark completed</button></div></div>
+    </form>`);
+  document.getElementById("f-program-done").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    if(await programApi("POST", `/${p.id}/complete`, {attendeeIds:f.getAll("att"), spent:Number(f.get("spent"))||0, outcome:(f.get("outcome")||"").trim()}, "Program closed out — share the feedback link")){
+      await refreshPrograms(); closeModal(); render(); openProgramFeedbackLink(p.id);
+    }
+  });
+}
+// An attendee's anonymous rating (or, with preview, HR looking at the form without saving anything).
+function openProgramFeedback(programId, preview){
+  const p = programById(programId) || myProgramsData.feedbackDue.find(x=>x.id===programId);
+  if(preview && !canManagePrograms()) preview = false;
+  if(!p || !currentUser) return;
+  const scale = (name, label, lo, hi) => `<div><label class="field-label">${label}</label><div style="display:flex;gap:6px;flex-wrap:wrap;">${[1,2,3,4,5].map(n=>`<label class="check-chip" style="min-width:44px;justify-content:center;"><input type="radio" name="${name}" value="${n}" ${n===4?'checked':''} required>${n}</label>`).join('')}<span class="faint" style="font-size:11px;align-self:center;">1 = ${lo} · 5 = ${hi}</span></div></div>`;
+  showModal(`
+    <div class="modal-head"><h3>How was it? — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-program-feedback"><div class="modal-body">
+      ${preview?`<div class="banner" style="background:var(--warn-soft);color:var(--ink);"><div><b>Preview.</b> This is what attendees see when they open the feedback link. Nothing you enter here is saved.</div></div>`:''}
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Anonymous — HR sees the ratings and comments, not who wrote them.</div></div>
+      ${scale("rating","Overall, how was this program?","poor","excellent")}
+      ${scale("useful", p.type==="Team Building" ? "Did it bring the team closer?" : "How useful is it for your work?", "not at all","very")}
+      <div><label class="field-label">Anything to keep, change or drop?</label><textarea class="field-input" name="comment" rows="3" placeholder="Optional"></textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;">${preview?`<button type="button" class="btn ghost" onclick="openProgramFeedbackLink('${p.id}')">Back to link</button>`:`<button type="button" class="btn ghost" onclick="closeModal()">Later</button>`}<button type="submit" class="btn primary">Send feedback</button></div></div>
+    </form>`);
+  document.getElementById("f-program-feedback").addEventListener("submit", async e=>{
+    e.preventDefault();
+    if(preview){ toast("Preview only — nothing saved"); openProgramFeedbackLink(p.id); return; }
+    const f = new FormData(e.target);
+    if(await programApi("POST", `/${p.id}/feedback`, {rating:Number(f.get("rating"))||4, useful:Number(f.get("useful"))||4, comment:(f.get("comment")||"").trim()}, "Thanks — feedback sent")){
+      await Promise.all([loadMyPrograms().catch(()=>{}), loadHrPrograms()]); closeModal(); render();
+    }
+  });
+}
+function programFeedbackMessage(p){
+  return `Hi team, thanks for joining "${p.title}" on ${fmtDate(p.date)}.\n\nPlease rate it here. It takes 20 seconds and it's anonymous:\n${programFeedbackLink(p)}\n\nOpen till ${fmtDate(feedbackClosesOn(p))}.`;
+}
+async function openProgramFeedbackLink(id){
+  const p = programById(id);
+  if(!p || !canManagePrograms()) return;
+  const n = p.attendees.length;
+  const state = p.status!=="Completed" ? {k:'warn', t:'Opens after close-out', d:`The link works once you close out the program and tick who attended — only they can rate it.`}
+    : feedbackIsOpen(p) ? {k:'pos', t:'Open till '+fmtDateShort(feedbackClosesOn(p)), d:`Anyone marked as attending can rate it once, up to ${FEEDBACK_WINDOW_DAYS} days after the program.`}
+    : {k:'neutral', t:'Closed '+fmtDateShort(feedbackClosesOn(p)), d:`Feedback closed ${FEEDBACK_WINDOW_DAYS} days after the program. The link now tells people it has closed.`};
+  showModal(`
+    <div class="modal-head"><h3>Feedback link — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+        <div style="min-width:0;"><div style="font-size:12.5px;color:var(--ink-soft);">${fmtDate(p.date)} · ${pill(p.type, PROGRAM_TYPE_KIND[p.type])}</div><div class="subtext" style="margin-top:4px;max-width:360px;">${state.d}</div></div>
+        ${pill(state.t, state.k)}
+      </div>
+      ${p.status==="Completed" ? `<div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="field-label" style="margin:0;">Responses</span><span><b class="mono">${p.responses}</b> <span class="faint">of ${n} attendees · ${n?Math.round(p.responses/n*100):0}%</span></span></div><div class="bar-track" style="height:8px;"><div class="bar-fill" style="width:${n?Math.min(100,p.responses/n*100):0}%;background:var(--blue);"></div></div><div class="subtext">${n-p.responses>0?`${n-p.responses} still to reply. They also see a reminder in their My Workspace.`:'Everyone has replied.'}</div></div>` : ''}
+      <div><label class="field-label" for="fb-link-input">Shareable link</label>
+        <div style="display:flex;gap:8px;"><input class="field-input mono" id="fb-link-input" readonly value="${esc(programFeedbackLink(p))}" style="flex:1;min-width:0;font-size:12.5px;"><button type="button" class="btn btn-sm" onclick="copyApplyText('fb-link-input','Link copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy</button></div></div>
+      <div><label class="field-label" for="fb-msg-textarea">Ready-to-share message</label>
+        <textarea class="field-input" id="fb-msg-textarea" rows="8" readonly style="resize:vertical;font-family:inherit;">${esc(programFeedbackMessage(p))}</textarea>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-sm ghost" onclick="window.open('https://wa.me/?text='+encodeURIComponent(document.getElementById('fb-msg-textarea').value),'_blank')">Share on WhatsApp</button>
+          <button type="button" class="btn btn-sm" onclick="copyApplyText('fb-msg-textarea','Message copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy message</button>
+        </div></div>
+    </div>
+    <div class="modal-foot"><div><button type="button" class="btn ghost" onclick="openProgramFeedback('${p.id}', true)">Preview form</button></div><div style="display:flex;gap:8px;">${p.status==="Completed"&&p.responses?`<button type="button" class="btn ghost" onclick="openProgramResponses('${p.id}')">See responses</button>`:''}${p.status!=="Completed"&&p.status!=="Cancelled"&&p.date<=TODAY?`<button type="button" class="btn primary" onclick="openCompleteProgram('${p.id}')">Close out</button>`:`<button type="button" class="btn ghost" onclick="closeModal()">Close</button>`}</div></div>`);
+}
+// What someone sees after opening a feedback link and signing in.
+async function openFeedbackFromLink(id){
+  try{ history.replaceState(null, '', location.pathname+location.search); }catch(e){}
+  if(!currentUser) return;
+  const note = (title, body) => showModal(`
+    <div class="modal-head"><h3>${title}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body"><div style="font-size:13px;line-height:1.55;">${body}</div></div>
+    <div class="modal-foot"><div></div><button type="button" class="btn primary" onclick="closeModal()">OK</button></div>`);
+  try{ await loadMyPrograms(); }catch(e){}
+  const due = myProgramsData.feedbackDue.find(x=>x.id===id);
+  if(due) return openProgramFeedback(id);
+  note("Nothing to rate here", "This feedback link isn't open for you — it may have closed (feedback stays open for 14 days), you may have rated it already, or HR didn't mark you as attending. Check with HR if you were there.");
+}
+// HR's view of a program's responses — distribution + comments, no names.
+async function openProgramResponses(programId){
+  const p = programById(programId); if(!p) return;
+  let r; try{ r = await apiJson(`/api/hr/programs/${programId}/responses`); }catch(err){ toast(err.message || "Couldn't load responses"); return; }
+  const max = Math.max(1, ...r.distribution.map(d=>d.count));
+  showModal(`
+    <div class="modal-head"><h3>Feedback — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="kpi-card"><div class="kpi-label">Overall</div><div class="kpi-value mono">${r.rating==null?'—':r.rating.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div><div class="kpi-sub">${starsHTML(r.rating)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">${p.type==="Team Building"?"Team bonding":"Usefulness"}</div><div class="kpi-value mono">${r.useful==null?'—':r.useful.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div></div>
+        <div class="kpi-card"><div class="kpi-label">Responses</div><div class="kpi-value mono">${r.responses}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${r.attendees}</span></div><div class="kpi-sub">${r.attendees?Math.round(r.responses/r.attendees*100):0}% of attendees</div></div>
+      </div>
+      <div class="barchart">${r.distribution.map(d=>`<div class="bar-row" style="grid-template-columns:60px 1fr 28px;"><div class="bar-label">${'★'.repeat(d.rating)}</div><div class="bar-track"><div class="bar-fill" style="width:${d.count/max*100}%;background:var(--warn);"></div></div><div class="bar-val">${d.count}</div></div>`).join('')}</div>
+      <div class="section-label">Comments</div>
+      ${r.comments.length ? r.comments.map(c=>`<div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);font-size:12.5px;">“${esc(c.text)}” <span class="faint" style="font-size:11px;">· ${c.rating}★</span></div>`).join('') : `<div class="empty" style="padding:10px;">No comments yet.</div>`}
+    </div>
+    <div class="modal-foot"><div><button type="button" class="btn ghost" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+}
+// Staff My Workspace: programs they attended and haven't rated.
+function feedbackDueHTML(){
+  const due = myProgramsData.feedbackDue;
+  if(!currentUser || !due.length) return '';
+  return `<div class="banner" style="background:var(--warn-soft);color:var(--ink);align-items:center;flex-wrap:wrap;"><svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg><div style="flex:1;min-width:220px;"><b>Rate ${due.length>1?due.length+' programs':'a program'} you attended</b> — 20 seconds, anonymous. Open for ${FEEDBACK_WINDOW_DAYS} days after each program.</div><div style="display:flex;gap:6px;flex-wrap:wrap;">${due.slice(0,2).map(p=>`<button class="btn btn-sm primary" onclick="openProgramFeedback('${p.id}')">${esc(p.title.length>26?p.title.slice(0,25)+'…':p.title)}</button>`).join('')}</div></div>`;
+}
+// Everyone's My Workspace: what's coming up that they're invited to.
+function upcomingProgramsHTML(){
+  const list = myProgramsData.upcoming.slice(0,3);
+  if(!currentUser || !list.length) return '';
+  return `
+  <div class="panel">
+    <div class="panel-head"><div><h3>Coming up at DesGro</h3><div class="sub">Team building, upskilling and training you're invited to</div></div></div>
+    <div class="panel-body">${list.map(p=>`<div class="feed-item"><div class="feed-dot" style="background:var(--${PROGRAM_TYPE_KIND[p.type]==='pos'?'pos':PROGRAM_TYPE_KIND[p.type]==='blue'?'blue':'warn'});"></div><div style="flex:1;"><div class="feed-text"><strong>${esc(p.title)}</strong> ${pill(p.type, PROGRAM_TYPE_KIND[p.type])}</div><div class="feed-time">${fmtDate(p.date)} · ${esc(p.time||'')} · ${esc(p.mode)}${p.venue?' · '+esc(p.venue):''}${p.facilitator?' · with '+esc(p.facilitator):''}</div></div></div>`).join('')}</div>
+  </div>`;
+}
+
+/* ---- Sales meetings: logged by the salesperson, counted in the Sales score ---- */
+function openLogSalesMeeting(leadId){
+  if(!currentUser) return;
+  const l = leadId ? leadById(leadId) : null;
+  const mine = marketingLeads.filter(x=>!x.convertedClientId && leadStage(x)!=="Lost" && canWorkLead(x));
+  showModal(`
+    <div class="modal-head"><h3>Log sales meeting</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-sales-meeting"><div class="modal-body">
+      <div><label class="field-label" for="sm-lead">With</label><select class="field-input" id="sm-lead" name="lead"><option value="">A prospect not in leads yet</option>${mine.map(x=>`<option value="${x.id}" ${l&&l.id===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>
+      <div><label class="field-label" for="sm-with">Prospect name (if not a lead)</label><input class="field-input" id="sm-with" name="with" placeholder="e.g. Kozhikode hospital group"></div>
+      <div class="field-row">
+        <div><label class="field-label" for="sm-date">Date</label><input class="field-input" type="date" id="sm-date" name="date" value="${TODAY}" max="${TODAY}" required></div>
+        <div><label class="field-label" for="sm-mode">How</label><select class="field-input" id="sm-mode" name="mode"><option>In person</option><option>Video</option><option>Call</option></select></div>
+      </div>
+      <div><label class="field-label" for="sm-notes">Notes (optional)</label><textarea class="field-input" id="sm-notes" name="notes" rows="2" placeholder="What was discussed, next step"></textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Log meeting</button></div></div>
+    </form>`);
+  document.getElementById("f-sales-meeting").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const lid = f.get("lead")||null, who = (f.get("with")||"").trim();
+    if(!lid && !who){ toast("Pick a lead or type who the meeting was with"); return; }
+    try{
+      await apiJson("/api/crm/sales-meetings", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ date:f.get("date"), mode:f.get("mode"), leadId:lid, withName:lid?"":who, notes:(f.get("notes")||"").trim() }) });
+      toast("Meeting logged"); closeModal();
+      if(deptScores) loadDeptScores().catch(()=>{});
+      render();
+    }catch(err){ toast(err.message || "Couldn't log the meeting"); }
+  });
+}
+
 /* ===================== NAV MODEL ===================== */
 const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
   {id:"workspace", label:"My Workspace", icon:"i-briefcase", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
+    {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
+    {id:"plans", label:"Dept Action Plans", icon:"i-target", when:()=>canSeePlans(currentUser), count:()=>openNeedsInput().length},
     {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
     {id:"attendance", label:"My Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
@@ -1813,12 +3193,18 @@ const MODULES = [
     {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
     {id:"complaints", label:"Complaints", icon:"i-megaphone"},
   ]},
+  {id:"calendar", label:"Calendar", icon:"i-calendar"},
+  {id:"departments", label:"Departments", icon:"i-building", sub:[
+    {id:"overview", label:"Overview", icon:"i-trend"},
+    ...DEPARTMENTS.map(d=>({id:deptSlug(d), label:d, icon:"i-users", when:()=>canSeeDeptPage(d)})),
+  ]},
   {id:"hr", label:"HR", icon:"i-users", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"directory", label:"Directory", icon:"i-users"},
     {id:"attendance", label:"Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave Requests", icon:"i-leave", count:()=>leaveRequests.filter(l=>l.status==="Pending").length},
     {id:"hiring", label:"Hiring", icon:"i-target", count:()=>openPositions.filter(p=>p.status==="Open").length},
+    {id:"programs", label:"Programs", icon:"i-users"},
     {id:"payroll", label:"Payroll", icon:"i-wallet"},
     {id:"advances", label:"Advance Salary", icon:"i-coins", count:()=>advances.filter(a=>a.status==="Pending").length},
     {id:"withdrawals", label:"Withdrawal Requests", icon:"i-wallet", count:()=>withdrawalRequests.filter(w=>w.status==="Pending").length},
@@ -1854,7 +3240,7 @@ const MODULES = [
     {id:"reports", label:"Reports", icon:"i-file"},
   ]},
 ];
-let nav = {module:"dashboard", sub:{workspace:"overview", hr:"overview", marketing:"overview", clients:"overview", accounts:"overview"}, detail:null};
+let nav = {module:"dashboard", sub:{workspace:"overview", calendar:"main", departments:"overview", hr:"overview", marketing:"overview", clients:"overview", accounts:"overview"}, detail:null};
 
 // An "HR Executive" (role containing "HR") only manages HR — hiring, attendance, leave, payroll,
 // advances, complaints, policies — so their sidebar shows nothing else. Their payroll work already
@@ -1888,6 +3274,7 @@ function isStaffRole(emp){ return !!emp && !isHRRole(emp) && !isLeadershipRole(e
 // in for the default (Staff-flavored) workspace sub-array by visibleModules() below.
 const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
+  {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
   {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
   {id:"attendance", label:"My Attendance", icon:"i-attendance"},
   {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
@@ -1917,13 +3304,28 @@ function accessRolesFromForm(f, existing){
   return [...new Set(["EMPLOYEE", ...(existing||[]).filter(r=>!managed.includes(r)), ...f.getAll("grantRole")])];
 }
 function visibleModules(){
+  let mods = visibleModulesBase();
+  if(!currentUser) return mods;
+  const place = (id)=>{
+    if(mods.some(m=>m.id===id)) return;
+    const mod = MODULES.find(m=>m.id===id);
+    const after = [...mods].reverse().find(m=>m.id==='calendar' || m.id==='workspace');
+    const i = after ? mods.indexOf(after) : -1;
+    mods = i>=0 ? [...mods.slice(0,i+1), mod, ...mods.slice(i+1)] : [mod, ...mods];
+  };
+  place('calendar');
+  // Departments: leadership and department heads only; each department's tab shows for those who may open it.
+  if(deptsVisibleTo().length) place('departments'); else mods = mods.filter(m=>m.id!=='departments');
+  return mods.map(m=> (m.sub && m.sub.some(s=>s.when)) ? {...m, sub:m.sub.filter(s=>!s.when || s.when())} : m);
+}
+function visibleModulesBase(){
   // Real stored roles drive the sidebar (Admin = everything; otherwise the union of the modules
   // granted, always with My Workspace) — not the job-title guessing the legacy branch below does.
   if(currentUser && Array.isArray(currentUser.roles) && currentUser.roles.length){
     if(currentUser.isAdmin) return MODULES;
     const r = currentUser.roles;
     const sales = r.includes('SALES') || r.includes('SALES_HEAD');
-    const show = { workspace:true, hr:r.includes('HR'), marketing:sales||r.includes('CONTENT'), clients:sales||r.includes('CLIENTS'), accounts:r.includes('FINANCE') };
+    const show = { workspace:true, calendar:true, hr:r.includes('HR'), marketing:sales||r.includes('CONTENT'), clients:sales||r.includes('CLIENTS'), accounts:r.includes('FINANCE') };
     return MODULES.filter(m=>show[m.id]).map(m=>{
       if(m.id==='workspace' && sales) return {...m, sub:SALES_WORKSPACE_SUB};
       if(m.id==='marketing' && !sales) return {...m, sub:m.sub.filter(s=>s.id==='content')};
@@ -1976,6 +3378,10 @@ function visibleModulesLegacy(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
+  "hr/programs":[loadHrPrograms],
+  "marketing/performance":[()=>loadMetaScore().catch(()=>{})],
+  "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
+  "calendar/main":[()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
@@ -1987,7 +3393,8 @@ const TAB_REFRESH = {
 };
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
-  const jobs = TAB_REFRESH[mid+"/"+sid];
+  let jobs = TAB_REFRESH[mid+"/"+sid];
+  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid))] : null);
   if(!jobs) return;
   Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
 }
@@ -2027,8 +3434,11 @@ function renderNav(){
 
 const TOPBAR_TITLES = {
   dashboard: ["Dashboard","Company overview · DesGro Media"],
+  calendar: { main:["Calendar", ()=>{ const p = taskCalPersonValue(); return "Tasks, events, holidays and leave · "+(p==="All"?"whole team":p); }] },
   workspace: {
     overview:["My Workspace", ()=>currentUser?currentUser.role+" · "+currentUser.name:"Your personal snapshot"],
+    plan:["My Action Plan", ()=>{ const d = currentUser?headDeptOf(currentUser.name):null; return d ? d+" · file today's plan" : ""; }],
+    plans:["Dept Action Plans", ()=>{ const h = DEPARTMENTS.filter(d=>deptHeads[d]); return h.filter(d=>planFor(d,TODAY)).length+" of "+h.length+" heads filed today"; }],
     tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+" open across your clients":""],
     attendance:["My Attendance","Your check-in status and this month's record"],
     leave:["Leave", ()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id).length+" request(s) on record":""],
@@ -2047,6 +3457,7 @@ const TOPBAR_TITLES = {
     attendance:["Attendance","Today · click a status to update it"],
     leave:["Leave Requests", ()=>leaveRequests.filter(l=>l.status==="Pending").length+" pending approval"],
     hiring:["Hiring", ()=>openPositions.filter(p=>p.status==="Open").length+" open positions"],
+    programs:["Programs", ()=>programsInMonth(hrProgramMonth).filter(p=>p.status!=="Cancelled").length+" planned in "+monthLabel(hrProgramMonth)],
     payroll:["Payroll", ()=>MONTH_LABEL[payroll.selectedMonth]+" · "+payrollMonthStatus(payroll.selectedMonth)],
     advances:["Advance Salary", ()=>inr(advances.filter(a=>a.status==="Recovering").reduce((s,a)=>s+a.balance,0))+" outstanding"],
     withdrawals:["Withdrawal Requests", ()=>withdrawalRequests.filter(w=>w.status==="Pending").length+" pending"],
@@ -2086,6 +3497,10 @@ const TOPBAR_TITLES = {
 function renderTopbar(){
   let h, sub;
   if(nav.module==="dashboard"){ [h,sub] = TOPBAR_TITLES.dashboard; }
+  else if(nav.module==="departments"){
+    const d = deptFromSlug(nav.sub.departments);
+    [h,sub] = d ? [d, deptHeadOf(d) ? "Head: "+deptHeadOf(d) : "No head assigned"] : ["Departments", isLeadershipRole(currentUser) ? "Every department in one place" : "Your department"];
+  }
   else{
     const s = nav.sub[nav.module];
     // Falls back to the raw tab id instead of throwing on a missing entry — this exact gap (a tab
@@ -2178,8 +3593,10 @@ function render(){
   }
   renderTopbar();
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
-  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
+  else if(nav.module==="calendar") root.innerHTML = calendarView();
+  else if(nav.module==="departments") root.innerHTML = nav.sub.departments==="overview" ? deptsOverview() : deptPage(deptFromSlug(nav.sub.departments));
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
+  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,programs:hrProgramsView,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
   else if(nav.module==="accounts") root.innerHTML = ({overview:acctOverview,invoices:acctInvoices,receipts:acctPaymentReceipts,requests:acctPaymentRequests,payroll:acctPayroll,payables:acctPayables,expenses:acctExpenses,banks:acctBanks,quotes:acctQuotes,commissions:acctCommissions,coa:acctChartOfAccounts,journal:acctJournal,reports:acctReports})[nav.sub.accounts]();
@@ -2395,6 +3812,10 @@ function workspaceOverview(){
   const present = monthPresentDays[currentUser.id] ?? mtdWorkingDays;
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
+  ${planReminderHTML()}
+  ${feedbackDueHTML()}
+  ${myDeptScoreHTML()}
+  ${upcomingProgramsHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-calendar"/></svg></div></div><div class="kpi-value mono">${present}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${mtdWorkingDays}</span></div><div class="kpi-sub">days present</div></div>
@@ -2420,6 +3841,10 @@ function workspaceOverviewSales(){
   const myRank = board.findIndex(r=>r.name===currentUser.name)+1;
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
+  ${planReminderHTML()}
+  ${feedbackDueHTML()}
+  ${myDeptScoreHTML()}
+  ${upcomingProgramsHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Commission Earned</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-percent"/></svg></div></div><div class="kpi-value mono" style="font-size:17px;">${inr(mine.earned)}</div><div class="kpi-sub">${mine.balance>0?inr(mine.balance)+' outstanding':'all settled'}</div></div>
@@ -4869,7 +6294,7 @@ function openLogMeeting(clientId){
   });
 }
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
-function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); }
+function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); loadClientFeedback(id); }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
 function clientDetailPage(id){
@@ -4914,6 +6339,7 @@ function clientDetailPage(id){
         <tbody>${cq.map(q=>`<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td>${hidePayment?'':`<td class="num mono">${quoteApprovedPaid(q)>0?inr(quoteApprovedPaid(q)):'<span class="faint">—</span>'}</td>`}<td>${pill(q.status,quoteStatusKind(q.status))}</td></tr>`).join("")}</tbody>
       </table></div>` : ''; })()}
       ${clientCollabHTML(c)}
+      ${clientFeedbackSectionHTML(c)}
       <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div style="display:flex;align-items:center;gap:8px;">Workflow<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;">${boardTasksFiltered.length} of ${boardTasks.length}${dateFilterSuffix(boardFilter)}</span></div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -5073,6 +6499,7 @@ function mktPerformance(){
     <svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg>
     <div><b>Our own Meta Ads.</b> Performance of DesGro Media's own Facebook/Instagram campaigns — lead generation for our services and Demand School enrollment. This is not client ad spend.</div>
   </div>
+  ${metaAdsScorePanelHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">Active Campaigns</div><div class="kpi-value mono">${activeCount}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${rows.length}</span></div></div>
     <div class="kpi-card"><div class="kpi-label">Total Spend</div><div class="kpi-value mono" style="font-size:20px;">${inr(totals.spend)}</div></div>
@@ -7069,6 +8496,10 @@ Auth.init().then(async (authUser) => {
   else if(roles.includes('CLIENTS')) crmContentJobs.push(Promise.all([loadClients(), loadTasks()]));
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
+  crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
+  crmContentJobs.push(loadMyPrograms().catch(err=>console.error("Programs failed to load", err)));
+  crmContentJobs.push(loadCalendarPrograms().catch(err=>console.error("Calendar programs failed to load", err)));
+  crmContentJobs.push(loadDeptHeads().then(()=>Promise.all([loadActionPlans(), loadDeptScores().catch(()=>{})])).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
   await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
@@ -7078,4 +8509,5 @@ Auth.init().then(async (authUser) => {
   nav.sub[nav.module] = (landingMod && landingMod.sub && landingMod.sub.length) ? landingMod.sub[0].id : (nav.sub[nav.module] || 'overview');
   document.getElementById('app-shell').hidden = false;
   render();
+  { const m = /^#feedback\/([\w-]+)$/i.exec(location.hash||''); if(m) openFeedbackFromLink(m[1]); }
 }).catch((err) => { console.error(err); /* Auth.init() already redirects to /login.html on failure */ });

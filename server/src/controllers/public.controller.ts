@@ -146,3 +146,40 @@ export const submitLeadPublic: RequestHandler = asyncHandler(async (req, res) =>
 
   res.status(201).json({ ok: true });
 });
+
+
+/* ---- Client feedback link (no sign-in) ----
+   A client opens the link they were sent, rates each service for the month, and the ratings land in client_feedback.
+   The token is the only credential: it names one client and month, lists the services, and expires 7 days after the
+   month ends. Only the client's name and the services are ever returned — never an id or anything about the account. */
+import { prisma as feedbackPrisma } from "../db/prisma";
+import { istMonth as _istMonth, linkClosesOn, linkIsOpen, saveRatings } from "../services/clientFeedback";
+
+const feedbackView = async (token: string) => {
+  const link = await feedbackPrisma.clientFeedbackLink.findUnique({ where: { token }, include: { client: { select: { name: true, services: true } } } });
+  if (!link) return null;
+  const existing = await feedbackPrisma.clientFeedback.findMany({ where: { clientId: link.clientId, month: link.month, dept: { in: link.depts } }, select: { dept: true, rating: true } });
+  return { link, view: { clientName: link.client.name, month: link.month, depts: link.depts.filter((d) => link.client.services.includes(d)), closesOn: linkClosesOn(link.month), open: linkIsOpen(link.month), rated: Object.fromEntries(existing.map((e) => [e.dept, e.rating])) } };
+};
+export const getClientFeedbackPublic: RequestHandler = async (req, res, next) => {
+  try {
+    const r = await feedbackView(String(req.params.token));
+    if (!r) return res.status(404).json({ error: "This link isn't valid — it may have been replaced by a newer one." });
+    res.json(r.view);
+  } catch (e) { next(e); }
+};
+export const submitClientFeedbackPublic: RequestHandler = async (req, res, next) => {
+  try {
+    const r = await feedbackView(String(req.params.token));
+    if (!r) return res.status(404).json({ error: "This link isn't valid — it may have been replaced by a newer one." });
+    if (!r.view.open) return res.status(410).json({ error: `Feedback for this month has closed.` });
+    const body = req.body as { ratings?: { dept?: unknown; rating?: unknown; comment?: unknown }[]; name?: unknown };
+    const ratings = (Array.isArray(body.ratings) ? body.ratings : [])
+      .map((x) => ({ dept: String(x.dept ?? ""), rating: Number(x.rating), comment: String(x.comment ?? "").trim().slice(0, 1000) }))
+      .filter((x) => r.view.depts.includes(x.dept) && Number.isInteger(x.rating) && x.rating >= 1 && x.rating <= 5);
+    if (!ratings.length) return res.status(400).json({ error: "Please pick a rating for at least one service." });
+    const name = String(body.name ?? "").trim().slice(0, 80);
+    await saveRatings(r.link.clientId, r.link.month, ratings, "Feedback link", name || "Client");
+    res.status(201).json({ ok: true, saved: ratings.length });
+  } catch (e) { next(e); }
+};

@@ -229,6 +229,9 @@ model Employee {
 
   @@index([dept])
   @@map("employees")
+  departmentHeads DepartmentHead[]
+  programAttendances HrProgramAttendee[]
+  programFeedback    HrProgramFeedback[]
 }
 
 // Append-only — a correction is a new row, not an edit to history. HR/Admin
@@ -1024,6 +1027,8 @@ model Client {
   adMetrics     ClientAdMetric[]
 
   @@map("clients")
+  feedback      ClientFeedback[]
+  feedbackLinks ClientFeedbackLink[]
 }
 
 enum LeadStatus {
@@ -1078,6 +1083,7 @@ model Lead {
   payments LeadPayment[]
 
   @@map("leads")
+  salesMeetings SalesMeeting[]
 }
 
 enum QuoteStatus {
@@ -1422,4 +1428,226 @@ model AdReminderRun {
   summary    Json?
 
   @@map("ad_reminder_runs")
+}
+
+// A company-wide calendar entry (meeting, deadline, event). `audience` is ["All"] or a list of departments; only
+// Admin/HR (and whoever created it) can add, edit or delete. Holidays are NOT stored here — they stay in `Holiday`.
+model CompanyEvent {
+  id        String   @id @default(uuid())
+  title     String
+  date      DateTime @db.Date
+  // "HH:MM" or empty — kept as text, it's a wall-clock label, not an instant.
+  time      String   @default("")
+  kind      String   @default("Meeting")
+  venue     String   @default("")
+  audience  String[]
+  notes     String   @default("")
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([date])
+  @@map("company_events")
+}
+
+// Who heads a department (files its daily action plan, sees its page under Departments, may add calendar events).
+// One head per department; a department with no row has no head. Deleting the employee just leaves it headless.
+model DepartmentHead {
+  id         String    @id @default(uuid())
+  dept       String    @unique
+  employeeId String?   @map("employee_id")
+  employee   Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  updatedBy  String    @map("updated_by")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("department_heads")
+}
+
+// A department head's daily action plan: a one-line focus, research notes and a running list of items
+// (Improve / Optimise / Introduce). One plan per department per day; unfinished items are carried into the next.
+// The head's name is stored as filed, so history survives a change of head.
+model ActionPlan {
+  id             String    @id @default(uuid())
+  dept           String
+  headName       String    @map("head_name")
+  date           DateTime  @db.Date
+  // "HH:MM" wall-clock time it was filed.
+  submittedAt    String    @map("submitted_at")
+  focus          String
+  research       String    @default("")
+  // A decision the head needs from leadership; null when nothing is pending.
+  needsQuestion  String?   @map("needs_question")
+  needsResolved  Boolean   @default(false) @map("needs_resolved")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  items    ActionPlanItem[]
+  comments ActionPlanComment[]
+
+  @@unique([dept, date])
+  @@index([date])
+  @@map("action_plans")
+}
+
+model ActionPlanItem {
+  id          String     @id @default(uuid())
+  planId      String     @map("plan_id")
+  plan        ActionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  seq         Int
+  // Improve | Optimise | Introduce
+  type        String
+  title       String
+  detail      String     @default("")
+  // Planned | In progress | Done | Dropped
+  status      String
+  carriedFrom DateTime?  @map("carried_from") @db.Date
+  // Set when leadership added the item to the head's plan.
+  addedBy     String?    @map("added_by")
+
+  @@index([planId])
+  @@map("action_plan_items")
+}
+
+model ActionPlanComment {
+  id        String     @id @default(uuid())
+  planId    String     @map("plan_id")
+  plan      ActionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  by        String
+  text      String
+  date      DateTime   @db.Date
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@index([planId])
+  @@map("action_plan_comments")
+}
+
+// Leadership-set targets the monthly scores are measured against. A single row (id = 1); a missing row means the
+// built-in defaults in services/scores.ts. Stored as JSON so adding a target later needs no migration.
+model ScoreSettings {
+  id        Int      @id
+  targets   Json
+  updatedBy String   @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("score_settings")
+}
+
+// One satisfaction rating (1-5) per client, per service department, per month. Given by the client through a feedback
+// link, or logged by the account manager / leadership for something the client said on a call or WhatsApp. Rating
+// the same service again in the same month replaces the earlier rating. Feeds each department's score.
+model ClientFeedback {
+  id        String   @id @default(uuid())
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dept      String
+  // "YYYY-MM" the rating is for.
+  month     String
+  rating    Int
+  comment   String   @default("")
+  // "Feedback link" | "Logged by <staff name>"
+  via       String
+  // The client's own name if they gave one, else "Client", else the staff member who logged it.
+  by        String
+  date      DateTime @db.Date
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, dept, month])
+  @@index([month])
+  @@map("client_feedback")
+}
+
+// A shareable, no-login link for one client and month, listing the services to rate. A new link for the same client
+// and month replaces the old one. It stays open until 7 days after the month ends.
+model ClientFeedbackLink {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  clientId  String   @map("client_id")
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  depts     String[]
+  month     String
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([clientId, month])
+  @@map("client_feedback_links")
+}
+
+// An HR program (team building, upskilling or training). HR plans them month by month, then closes each one out with who
+// attended, what it cost and what came of it. Attendees (and only they) can rate it for 14 days afterwards.
+model HrProgram {
+  id          String    @id @default(uuid())
+  title       String
+  // Team Building | Upskilling | Training
+  type        String
+  // Planned | Confirmed | Completed | Cancelled
+  status      String    @default("Planned")
+  date        DateTime  @db.Date
+  time        String    @default("")
+  duration    String    @default("")
+  // In office | Offsite | Online
+  mode        String    @default("In office")
+  venue       String    @default("")
+  facilitator String    @default("")
+  // ["All"] or a list of departments invited.
+  audience    String[]
+  objective   String    @default("")
+  budget      Decimal   @default(0) @db.Decimal(12, 2)
+  spent       Decimal   @default(0) @db.Decimal(12, 2)
+  outcome     String    @default("")
+  createdBy   String    @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  attendees HrProgramAttendee[]
+  feedback  HrProgramFeedback[]
+
+  @@index([date])
+  @@map("hr_programs")
+}
+
+model HrProgramAttendee {
+  programId  String    @map("program_id")
+  program    HrProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  employeeId String    @map("employee_id")
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@id([programId, employeeId])
+  @@map("hr_program_attendees")
+}
+
+// Anonymous to HR: the employee is kept only so each person can rate a program once; no API ever returns who wrote what.
+model HrProgramFeedback {
+  id         String    @id @default(uuid())
+  programId  String    @map("program_id")
+  program    HrProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  employeeId String    @map("employee_id")
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  rating     Int
+  useful     Int
+  comment    String    @default("")
+  date       DateTime  @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@unique([programId, employeeId])
+  @@map("hr_program_feedback")
+}
+
+// A sales meeting logged by a salesperson — with a lead, or with a prospect who isn't a lead yet. Feeds the Sales score's
+// "Meetings" part and the sales leaderboard.
+model SalesMeeting {
+  id        String   @id @default(uuid())
+  date      DateTime @db.Date
+  leadId    String?  @map("lead_id")
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  // The salesperson's name (matches Lead.leadOwner / Client.salesPerson).
+  by        String
+  // In person | Video | Call
+  mode      String
+  withName  String   @default("") @map("with_name")
+  notes     String   @default("")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([date])
+  @@index([by])
+  @@map("sales_meetings")
 }
