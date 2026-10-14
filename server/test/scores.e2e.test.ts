@@ -119,7 +119,7 @@ test("sales score: booked revenue of the team's clients against the target", asy
   const sales = (await call("GET", `/scores/departments?month=${M}`, tok.admin)).body.scores.Sales.now;
   assert.equal(sales.booked, 10000);
   assert.equal(Math.round(sales.parts.find((p: any) => p.key === "target").v * 100), 50, "₹10,000 of a ₹20,000 target");
-  assert.equal(sales.parts.find((p: any) => p.key === "meetings").v, null);
+  assert.equal(sales.parts.find((p: any) => p.key === "meetings").v, 0, "no meetings logged in that month yet");
 });
 
 test("meta ads score: from the daily numbers, Admin/Content only", async () => {

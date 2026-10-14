@@ -9,7 +9,9 @@ form.addEventListener("submit", async (e) => {
   submitBtn.textContent = "Signing in…";
   try {
     await Auth.login(document.getElementById("email").value.trim(), document.getElementById("password").value);
-    window.location.href = "/index.html";
+    let hash = "";
+    try { hash = sessionStorage.getItem("postLoginHash") || ""; sessionStorage.removeItem("postLoginHash"); } catch (_) {}
+    window.location.href = "/index.html" + hash;
   } catch (err) {
     errorBox.textContent = err.message || "Sign in failed";
     errorBox.classList.add("show");

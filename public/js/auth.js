@@ -38,6 +38,8 @@ window.Auth = (function () {
       await refresh();
       return user;
     } catch (e) {
+      // Remember a deep link (e.g. #feedback/<program>) across the sign-in, so it still opens afterwards.
+      try { if (/^#feedback\//i.test(location.hash)) sessionStorage.setItem("postLoginHash", location.hash); } catch (_) {}
       window.location.href = "/login.html";
       throw e;
     }

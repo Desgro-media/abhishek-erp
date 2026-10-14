@@ -787,6 +787,7 @@ function leadCardHTML(l){
     <div class="card-foot"><span class="assignee">${l.leadOwner?`<span class="mini-avatar sm">${initials(l.leadOwner)}</span>${esc(l.leadOwner)}`:pill('Open','warn')}</span><span class="due">${fmtDateShort(l.createdDate)}</span></div>
     ${l.paidTotal>0 ? `<div style="font-size:11.5px;color:var(--ink-soft);"><b class="mono" style="color:var(--ink);">${inr(l.paidTotal)}</b> paid${l.convertedClientId?'':` · <span class="faint">${inr(Math.max(0,leadConversionThreshold-l.paidTotal))} more auto-converts</span>`}</div>` : ''}
     ${(!l.convertedClientId && canWorkLead(l)) ? `<div class="card-move">${leadStageControl(l)}<button type="button" class="card-edit" title="Edit lead" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>
+    ${(!l.convertedClientId && canWorkLead(l) && isSalesRole(currentUser)) ? `<button type="button" class="btn btn-sm ghost" style="justify-content:center;" onclick="openLogSalesMeeting('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-calendar"/></svg>Log meeting</button>` : ''}
     <div style="display:flex;gap:6px;">${stage!=='Lost'?`<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openRecordLeadPayment('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Payment</button>`:''}<button type="button" class="btn btn-sm ghost" style="flex:1;justify-content:center;" onclick="openConvertLead('${l.id}')">Convert</button></div>` : ''}
     ${l.convertedClientId ? `<button type="button" class="btn btn-sm ghost" style="justify-content:center;" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : ''}
     ${claimable ? `<button type="button" class="btn btn-sm primary" style="justify-content:center;" onclick="assignLeadToMe('${l.id}')">Assign to me</button>` : ''}
@@ -1811,6 +1812,7 @@ async function loadCompanyEvents(){ companyEvents = (await apiJson("/api/calenda
 const CAL_LAYERS = [
   {k:"tasks", label:"Client tasks", sw:"var(--ink-faint)"},
   {k:"events", label:"Events & meetings", sw:"var(--blue)"},
+  {k:"programs", label:"HR programs", sw:"var(--pos)"},
   {k:"holidays", label:"Holidays", sw:"var(--neg)"},
   {k:"leave", label:"Leave & WFH", sw:"var(--ink-soft)"},
   {k:"people", label:"Birthdays & anniversaries", sw:"var(--warn)"},
@@ -1951,6 +1953,7 @@ function calItemsOn(ds){
   if(calOn("holidays")) hrPolicy.holidays.filter(h=>h.date===ds).forEach(h=>out.push({kind:"Holiday", label:h.name, tip:"Holiday · "+h.name, cls:"holiday"}));
   if(calOn("events")) companyEvents.filter(e=>e.date===ds).forEach(e=>{ const k = EVENT_KINDS[e.kind]||"neutral";
     out.push({kind:e.kind, label:(e.time?e.time+" ":"")+e.title, tip:`${e.kind} · ${e.title}${e.time?" · "+e.time:""}${e.venue?" · "+e.venue:""}`, style:k==="neutral"?"background:var(--surface-sunk);color:var(--ink);":`background:var(--${k}-soft);color:var(--${k});`, onclick:`openCompanyEvent('${e.id}')`, sub:[e.time, e.venue].filter(Boolean).join(" · ")}); });
+  if(calOn("programs")) calendarPrograms.filter(pr=>pr.date===ds).forEach(pr=>{ const k = PROGRAM_TYPE_KIND[pr.type]; out.push({kind:pr.type, label:(pr.time?pr.time+" ":"")+pr.title, tip:`${pr.type} · ${pr.title} · ${pr.status}`, style:`background:var(--${k}-soft);color:var(--${k});`, onclick:canManagePrograms()?`setSub('hr','programs')`:"", sub:[pr.time, pr.mode, pr.venue].filter(Boolean).join(" · ")}); });
   if(calOn("people")) activeEmployees().forEach(e=>{
     if(e.dob && e.dob.slice(5)===ds.slice(5)) out.push({kind:"Birthday", label:"🎂 "+e.name.split(" ")[0], tip:e.name+"'s birthday", cls:"people", sub:e.name});
     if(e.joined && e.joined.slice(5)===ds.slice(5) && e.joined.slice(0,4)<ds.slice(0,4)){ const y = Number(ds.slice(0,4))-Number(e.joined.slice(0,4)); out.push({kind:"Work anniversary", label:"🎉 "+e.name.split(" ")[0]+" · "+y+"y", tip:`${e.name} · ${y}-year work anniversary`, cls:"people", sub:`${e.name} · ${y} year${y>1?"s":""}`}); }
@@ -1968,7 +1971,7 @@ function calLayerBarHTML(){
 }
 function calKpisHTML(days, tasks, rangeLabel){
   const open = tasks.filter(t=>t.status!=="Done"), overdue = open.filter(t=>t.due<TODAY);
-  const evs = days.reduce((s,d)=>s+companyEvents.filter(e=>e.date===d).length, 0);
+  const evs = days.reduce((s,d)=>s+companyEvents.filter(e=>e.date===d).length+calendarPrograms.filter(p=>p.date===d).length, 0);
   const hols = days.filter(d=>isHolidayDate(d));
   const offToday = leaveRequests.filter(l=>l.status==="Approved" && !/WFH/.test(l.type) && l.from<=TODAY && l.to>=TODAY).length;
   return `<div class="kpi-grid cols-5">
@@ -2872,6 +2875,309 @@ async function toggleFeedbackLinkDept(clientId, dept, on){
   openClientFeedbackLink(clientId, false, depts);
 }
 
+/* ===================== HR PROGRAMS — team building, upskilling, training =====================
+   HR plans each month's programs under HR → Programs. A month is "covered" when it has at least one of each type.
+   Once a program has happened HR closes it out with who attended, what it cost and what came of it. Attendees (and
+   only they) are then asked to rate it — anonymously, once, for 14 days — in their My Workspace or from a link HR
+   shares. Staff see what they're invited to under "Coming up at DesGro"; programs also show on the Calendar. */
+const PROGRAM_TYPES = ["Team Building","Upskilling","Training"];
+const PROGRAM_TYPE_KIND = {"Team Building":"pos","Upskilling":"blue","Training":"warn"};
+const PROGRAM_TYPE_HINT = {"Team Building":"bonding, offsites, celebrations","Upskilling":"new skills for the market — tools, platforms, trends","Training":"how we do things here — process, quality, conduct"};
+const PROGRAM_STATUSES = ["Planned","Confirmed","Completed","Cancelled"];
+const PROGRAM_STATUS_KIND = {Planned:"neutral",Confirmed:"blue",Completed:"pos",Cancelled:"neg"};
+const PROGRAM_MODES = ["In office","Offsite","Online"];
+const FEEDBACK_WINDOW_DAYS = 14;
+let hrProgramMonth = TODAY.slice(0,7);
+let hrPrograms = [];
+let myProgramsData = { upcoming:[], feedbackDue:[] };
+let calendarPrograms = [];
+async function loadHrPrograms(){ try{ hrPrograms = (await apiJson("/api/hr/programs")).programs; }catch(err){ hrPrograms = []; } }
+async function loadMyPrograms(){ myProgramsData = await apiJson("/api/hr/programs/mine"); }
+async function loadCalendarPrograms(){ calendarPrograms = (await apiJson("/api/hr/programs/calendar")).programs; }
+function canManagePrograms(){ return !!currentUser && (currentUser.isAdmin || isHRRole(currentUser) || isLeadershipRole(currentUser)); }
+const programById = id => hrPrograms.find(p=>p.id===id);
+function programInvitees(p){ return employees.filter(e=>e.employmentStatus!=="Left" && (p.audience.includes("All") || p.audience.includes(e.dept))); }
+function programAudienceLabel(p){ return p.audience.includes("All") ? "All staff" : p.audience.length>2 ? p.audience.length+" departments" : p.audience.join(", "); }
+function programsInMonth(month){ return hrPrograms.filter(p=>p.date.slice(0,7)===month).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)); }
+function shiftHrProgramMonth(d){ const [y,m]=hrProgramMonth.split("-").map(Number); hrProgramMonth = new Date(Date.UTC(y,m-1+d,1)).toISOString().slice(0,7); render(); }
+function starsHTML(r){ if(r==null) return '<span class="faint">—</span>'; const full = Math.round(r); return `<span style="color:var(--warn);letter-spacing:1px;">${'★'.repeat(full)}<span style="color:var(--line);">${'★'.repeat(5-full)}</span></span>`; }
+const feedbackClosesOn = p => addDays(p.date, FEEDBACK_WINDOW_DAYS);
+const feedbackIsOpen = p => p.status==="Completed" && TODAY <= feedbackClosesOn(p);
+const programFeedbackLink = p => `${location.origin}/index.html#feedback/${p.id}`;
+async function programApi(method, path, body, okMsg){
+  try{
+    const r = await apiJson("/api/hr/programs"+path, { method, headers:{"Content-Type":"application/json"}, body: body?JSON.stringify(body):undefined });
+    if(okMsg) toast(okMsg);
+    return r || true;
+  }catch(err){ toast(err.message || "Couldn't save"); return null; }
+}
+const refreshPrograms = async ()=>{ await Promise.all([loadHrPrograms(), loadMyPrograms().catch(()=>{}), loadCalendarPrograms().catch(()=>{})]); };
+
+function hrProgramsView(){
+  const month = hrProgramMonth;
+  const list = programsInMonth(month);
+  const live = list.filter(p=>p.status!=="Cancelled");
+  const done = list.filter(p=>p.status==="Completed");
+  const budget = live.reduce((s,p)=>s+(p.budget||0),0), spent = live.reduce((s,p)=>s+(p.spent||0),0);
+  const attRate = done.length ? Math.round(done.reduce((s,p)=>s+(p.attendees.length/Math.max(1,programInvitees(p).length)),0)/done.length*100) : null;
+  const rated = done.filter(p=>p.rating!=null);
+  const avgRating = rated.length ? rated.reduce((s,p)=>s+p.rating,0)/rated.length : null;
+  const respAll = done.reduce((s,p)=>s+p.responses,0), attAll = done.reduce((s,p)=>s+p.attendees.length,0);
+  const covered = PROGRAM_TYPES.map(t=>({t, n:live.filter(p=>p.type===t).length}));
+  const manage = canManagePrograms();
+  const months = [-1,0,1,2,3,4].map(d=>{ const [y,m]=month.split("-").map(Number); return new Date(Date.UTC(y,m-1+d,1)).toISOString().slice(0,7); });
+  return `
+  <div class="toolbar">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <button class="btn btn-sm ghost" onclick="shiftHrProgramMonth(-1)">‹</button>
+      <div style="font-weight:800;font-size:14px;min-width:140px;text-align:center;">${monthLabel(month)}</div>
+      <button class="btn btn-sm ghost" onclick="shiftHrProgramMonth(1)">›</button>
+    </div>
+    ${manage?`<button class="btn primary" onclick="openProgram()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Plan a program</button>`:''}
+  </div>
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">Programs</div><div class="kpi-value mono">${live.length}</div><div class="kpi-sub">${done.length} completed${list.length-live.length?` · ${list.length-live.length} cancelled`:''}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Attendance</div><div class="kpi-value mono">${attRate==null?'—':attRate+'%'}</div><div class="kpi-sub">of invited, completed programs</div></div>
+    <div class="kpi-card"><div class="kpi-label">Feedback</div><div class="kpi-value mono">${avgRating==null?'—':avgRating.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div><div class="kpi-sub">from ${respAll} response${respAll===1?'':'s'}${attAll?' · '+Math.round(respAll/attAll*100)+'% replied':''}</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Budget</div><div class="kpi-value mono" style="font-size:19px;">${inr(budget)}</div><div class="kpi-sub">${inr(spent)} spent so far</div></div>
+  </div>
+  <div class="banner ${covered.every(c=>c.n)?'muted':''}" style="align-items:center;flex-wrap:wrap;">
+    <svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg>
+    <div style="flex:1;"><b>${monthLabel(month)} plan:</b> ${covered.every(c=>c.n)?'covers all three — team building, upskilling and training.':'missing '+covered.filter(c=>!c.n).map(c=>c.t.toLowerCase()).join(' and ')+'.'}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">${covered.map(c=>`<span class="pill ${c.n?PROGRAM_TYPE_KIND[c.t]:'neg'}">${c.t} · ${c.n}</span>`).join('')}</div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><div><h3>${monthLabel(month)} programs</h3><div class="sub">${list.length?'In date order':'Nothing planned yet'}</div></div></div>
+    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Program</th><th>Type</th><th>Audience</th><th class="num">Budget</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map(p=>{ const inv = programInvitees(p).length; return `<tr style="${p.status==='Cancelled'?'opacity:.6;':''}">
+        <td style="white-space:nowrap;"><div style="font-weight:700;">${fmtDateShort(p.date)}</div><div class="subtext">${WEEKDAY_NAMES[new Date(p.date+"T00:00:00").getDay()].slice(0,3)} · ${esc(p.time||'')}</div><div class="subtext">${esc(p.duration||'')}</div></td>
+        <td style="min-width:300px;"><div style="font-weight:700;">${esc(p.title)}</div><div class="subtext" style="color:var(--ink-soft);">${esc(p.mode)}${p.venue?' · '+esc(p.venue):''}${p.facilitator?' · with '+esc(p.facilitator):''}</div>${p.objective?`<div class="subtext" style="max-width:300px;white-space:normal;">${esc(p.objective)}</div>`:''}${p.status==='Completed'&&p.outcome?`<div class="subtext" style="max-width:300px;white-space:normal;color:var(--ink-soft);"><b>Outcome:</b> ${esc(p.outcome)}</div>`:''}</td>
+        <td>${pill(p.type, PROGRAM_TYPE_KIND[p.type])}</td>
+        <td class="muted" title="${esc(p.audience.includes('All')?'All staff':p.audience.join(', '))}">${esc(programAudienceLabel(p))}<div class="subtext">${p.status==='Completed'?`${p.attendees.length} of ${inv} attended${p.rating!=null?' · ★ '+p.rating.toFixed(1)+' ('+p.responses+')':''}`:`${inv} invited`}</div></td>
+        <td class="num mono">${p.budget?inr(p.budget):'—'}${p.status==='Completed'&&p.spent?`<div class="subtext">${inr(p.spent)} spent</div>`:''}</td>
+        <td>${pill(p.status, PROGRAM_STATUS_KIND[p.status])}</td>
+        <td class="num">${manage?`<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${p.status!=='Completed'&&p.status!=='Cancelled'&&p.date<=TODAY?`<button class="btn btn-sm primary" onclick="openCompleteProgram('${p.id}')">Close out</button>`:''}${p.status==='Completed'?`<button class="btn btn-sm ${feedbackIsOpen(p)?'':'ghost'}" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>`:''}<button class="btn btn-sm ghost" onclick="openProgram('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>`:''}</td>
+      </tr>`; }).join('')}
+    </tbody></table></div>` : `<div class="empty">No programs planned for ${monthLabel(month)}.${manage?' Plan at least one team building, one upskilling and one training session.':''}</div>`}
+  </div>
+  <div class="panel">
+    <div class="panel-head"><div><h3>Plan ahead</h3><div class="sub">Programs by month — click a month to open it</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th>${PROGRAM_TYPES.map(t=>`<th class="num">${t}</th>`).join('')}<th class="num">Budget</th><th>Covered</th></tr></thead><tbody>
+      ${months.map(mm=>{ const l = programsInMonth(mm).filter(p=>p.status!=="Cancelled"); const counts = PROGRAM_TYPES.map(t=>l.filter(p=>p.type===t).length); const ok = counts.every(n=>n>0); const b = l.reduce((s,p)=>s+(p.budget||0),0); return `<tr class="row-click" style="${mm===month?'background:var(--surface-sunk);':''}" onclick="hrProgramMonth='${mm}';render();">
+        <td style="font-weight:700;">${monthLabel(mm)}${mm===TODAY.slice(0,7)?' <span class="faint" style="font-weight:600;">· this month</span>':''}</td>
+        ${counts.map(n=>`<td class="num mono" style="${n?'':'color:var(--ink-faint);'}">${n||'—'}</td>`).join('')}
+        <td class="num mono">${b?inr(b):'—'}</td>
+        <td>${ok?pill('All three','pos'):pill(counts.filter(n=>n).length+' of 3','warn')}</td>
+      </tr>`; }).join('')}
+    </tbody></table></div>
+  </div>`;
+}
+function openProgram(id){
+  if(!canManagePrograms()) return;
+  const p = id ? programById(id) : null;
+  const aud = p ? p.audience : ["All"];
+  showModal(`
+    <div class="modal-head"><h3>${p?'Edit program':'Plan a program'}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-program"><div class="modal-body">
+      <div><label class="field-label">Title</label><input class="field-input" name="title" required value="${esc(p?p.title:'')}" placeholder="e.g. AI tools for content production"></div>
+      <div class="field-row">
+        <div><label class="field-label">Type</label><select class="field-input" name="type">${PROGRAM_TYPES.map(t=>`<option value="${t}" ${p&&p.type===t?'selected':''}>${t} — ${PROGRAM_TYPE_HINT[t]}</option>`).join('')}</select></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${PROGRAM_STATUSES.filter(s=>s!=='Completed'||(p&&p.status==='Completed')).map(s=>`<option ${p&&p.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" required value="${p?p.date:(hrProgramMonth===TODAY.slice(0,7)?TODAY:hrProgramMonth+'-01')}"></div>
+        <div><label class="field-label">Time</label><input class="field-input" type="time" name="time" value="${p?p.time:'15:00'}"></div>
+        <div><label class="field-label">Duration</label><input class="field-input" name="duration" value="${esc(p?p.duration:'2 hours')}"></div>
+      </div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">Mode</label><select class="field-input" name="mode">${PROGRAM_MODES.map(m=>`<option ${p&&p.mode===m?'selected':''}>${m}</option>`).join('')}</select></div>
+        <div><label class="field-label">Venue / link</label><input class="field-input" name="venue" value="${esc(p?p.venue:'')}" placeholder="Conference room"></div>
+        <div><label class="field-label">Facilitator</label><input class="field-input" name="facilitator" list="program-facilitators" value="${esc(p?p.facilitator:'')}" placeholder="Staff or external trainer"><datalist id="program-facilitators">${activeEmployees().map(e=>`<option value="${esc(e.name)}">`).join('')}</datalist></div>
+      </div>
+      <div><label class="field-label">Who's it for</label><div class="check-row">
+        <label class="check-chip"><input type="checkbox" name="audience" value="All" ${aud.includes("All")?'checked':''}>All staff</label>
+        ${DEPARTMENTS.map(d=>`<label class="check-chip"><input type="checkbox" name="audience" value="${esc(d)}" ${!aud.includes("All")&&aud.includes(d)?'checked':''}>${esc(d)}</label>`).join('')}
+      </div></div>
+      <div><label class="field-label">Objective</label><input class="field-input" name="objective" value="${esc(p?p.objective:'')}" placeholder="What should people be able to do afterwards?"></div>
+      <div><label class="field-label">Budget (₹)</label><input class="field-input" type="number" min="0" step="500" name="budget" value="${p?p.budget||0:0}"></div>
+    </div>
+    <div class="modal-foot"><div>${p?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="deleteProgram('${p.id}')">Delete</button>`:''}</div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${p?'Save':'Add to plan'}</button></div></div>
+    </form>`);
+  document.getElementById("f-program").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    let audience = f.getAll("audience");
+    if(!audience.length || audience.includes("All")) audience = ["All"];
+    const data = {title:f.get("title"), type:f.get("type"), status:f.get("status"), date:f.get("date"), time:f.get("time")||"", duration:f.get("duration")||"", mode:f.get("mode"), venue:f.get("venue")||"", facilitator:f.get("facilitator")||"", audience, objective:f.get("objective")||"", budget:Number(f.get("budget"))||0};
+    const ok = p ? await programApi("PUT", `/${p.id}`, data, "Program updated") : await programApi("POST", "", data, "Added to the plan");
+    if(ok){ hrProgramMonth = data.date.slice(0,7); await refreshPrograms(); closeModal(); render(); }
+  });
+}
+async function deleteProgram(id){
+  if(!canManagePrograms() || !confirm("Delete this program? Its attendance and feedback go with it.")) return;
+  if(await programApi("DELETE", `/${id}`, null, "Program removed")){ await refreshPrograms(); closeModal(); render(); }
+}
+// Close out a program once it has happened: who came, what it cost, what came of it.
+function openCompleteProgram(id){
+  const p = programById(id);
+  if(!p || !canManagePrograms()) return;
+  const invited = programInvitees(p);
+  const presentIds = p.attendees.length ? p.attendees.map(a=>a.id) : invited.map(e=>e._dbId);
+  showModal(`
+    <div class="modal-head"><h3>Close out — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-program-done"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${fmtDate(p.date)} · ${esc(programAudienceLabel(p))} · ${invited.length} invited</div>
+      <div><label class="field-label">Who attended <span class="faint">(untick anyone who didn't)</span></label>
+        <div class="check-row" style="max-height:200px;overflow:auto;">${invited.map(e=>`<label class="check-chip"><input type="checkbox" name="att" value="${esc(e._dbId)}" ${presentIds.includes(e._dbId)?'checked':''}>${esc(e.name)}</label>`).join('')}</div></div>
+      <div><label class="field-label">Actual spend (₹)</label><input class="field-input" type="number" min="0" step="100" name="spent" value="${p.spent||0}"></div>
+      <div class="subtext">Once it's closed out, everyone ticked above is asked to rate it in their My Workspace — the program's rating comes from them.</div>
+      <div><label class="field-label">Outcome</label><textarea class="field-input" name="outcome" rows="2" placeholder="What came out of it — follow-ups, what to repeat or drop">${esc(p.outcome||'')}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Mark completed</button></div></div>
+    </form>`);
+  document.getElementById("f-program-done").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    if(await programApi("POST", `/${p.id}/complete`, {attendeeIds:f.getAll("att"), spent:Number(f.get("spent"))||0, outcome:(f.get("outcome")||"").trim()}, "Program closed out — share the feedback link")){
+      await refreshPrograms(); closeModal(); render(); openProgramFeedbackLink(p.id);
+    }
+  });
+}
+// An attendee's anonymous rating (or, with preview, HR looking at the form without saving anything).
+function openProgramFeedback(programId, preview){
+  const p = programById(programId) || myProgramsData.feedbackDue.find(x=>x.id===programId);
+  if(preview && !canManagePrograms()) preview = false;
+  if(!p || !currentUser) return;
+  const scale = (name, label, lo, hi) => `<div><label class="field-label">${label}</label><div style="display:flex;gap:6px;flex-wrap:wrap;">${[1,2,3,4,5].map(n=>`<label class="check-chip" style="min-width:44px;justify-content:center;"><input type="radio" name="${name}" value="${n}" ${n===4?'checked':''} required>${n}</label>`).join('')}<span class="faint" style="font-size:11px;align-self:center;">1 = ${lo} · 5 = ${hi}</span></div></div>`;
+  showModal(`
+    <div class="modal-head"><h3>How was it? — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-program-feedback"><div class="modal-body">
+      ${preview?`<div class="banner" style="background:var(--warn-soft);color:var(--ink);"><div><b>Preview.</b> This is what attendees see when they open the feedback link. Nothing you enter here is saved.</div></div>`:''}
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Anonymous — HR sees the ratings and comments, not who wrote them.</div></div>
+      ${scale("rating","Overall, how was this program?","poor","excellent")}
+      ${scale("useful", p.type==="Team Building" ? "Did it bring the team closer?" : "How useful is it for your work?", "not at all","very")}
+      <div><label class="field-label">Anything to keep, change or drop?</label><textarea class="field-input" name="comment" rows="3" placeholder="Optional"></textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;">${preview?`<button type="button" class="btn ghost" onclick="openProgramFeedbackLink('${p.id}')">Back to link</button>`:`<button type="button" class="btn ghost" onclick="closeModal()">Later</button>`}<button type="submit" class="btn primary">Send feedback</button></div></div>
+    </form>`);
+  document.getElementById("f-program-feedback").addEventListener("submit", async e=>{
+    e.preventDefault();
+    if(preview){ toast("Preview only — nothing saved"); openProgramFeedbackLink(p.id); return; }
+    const f = new FormData(e.target);
+    if(await programApi("POST", `/${p.id}/feedback`, {rating:Number(f.get("rating"))||4, useful:Number(f.get("useful"))||4, comment:(f.get("comment")||"").trim()}, "Thanks — feedback sent")){
+      await Promise.all([loadMyPrograms().catch(()=>{}), loadHrPrograms()]); closeModal(); render();
+    }
+  });
+}
+function programFeedbackMessage(p){
+  return `Hi team, thanks for joining "${p.title}" on ${fmtDate(p.date)}.\n\nPlease rate it here. It takes 20 seconds and it's anonymous:\n${programFeedbackLink(p)}\n\nOpen till ${fmtDate(feedbackClosesOn(p))}.`;
+}
+async function openProgramFeedbackLink(id){
+  const p = programById(id);
+  if(!p || !canManagePrograms()) return;
+  const n = p.attendees.length;
+  const state = p.status!=="Completed" ? {k:'warn', t:'Opens after close-out', d:`The link works once you close out the program and tick who attended — only they can rate it.`}
+    : feedbackIsOpen(p) ? {k:'pos', t:'Open till '+fmtDateShort(feedbackClosesOn(p)), d:`Anyone marked as attending can rate it once, up to ${FEEDBACK_WINDOW_DAYS} days after the program.`}
+    : {k:'neutral', t:'Closed '+fmtDateShort(feedbackClosesOn(p)), d:`Feedback closed ${FEEDBACK_WINDOW_DAYS} days after the program. The link now tells people it has closed.`};
+  showModal(`
+    <div class="modal-head"><h3>Feedback link — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+        <div style="min-width:0;"><div style="font-size:12.5px;color:var(--ink-soft);">${fmtDate(p.date)} · ${pill(p.type, PROGRAM_TYPE_KIND[p.type])}</div><div class="subtext" style="margin-top:4px;max-width:360px;">${state.d}</div></div>
+        ${pill(state.t, state.k)}
+      </div>
+      ${p.status==="Completed" ? `<div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="field-label" style="margin:0;">Responses</span><span><b class="mono">${p.responses}</b> <span class="faint">of ${n} attendees · ${n?Math.round(p.responses/n*100):0}%</span></span></div><div class="bar-track" style="height:8px;"><div class="bar-fill" style="width:${n?Math.min(100,p.responses/n*100):0}%;background:var(--blue);"></div></div><div class="subtext">${n-p.responses>0?`${n-p.responses} still to reply. They also see a reminder in their My Workspace.`:'Everyone has replied.'}</div></div>` : ''}
+      <div><label class="field-label" for="fb-link-input">Shareable link</label>
+        <div style="display:flex;gap:8px;"><input class="field-input mono" id="fb-link-input" readonly value="${esc(programFeedbackLink(p))}" style="flex:1;min-width:0;font-size:12.5px;"><button type="button" class="btn btn-sm" onclick="copyApplyText('fb-link-input','Link copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy</button></div></div>
+      <div><label class="field-label" for="fb-msg-textarea">Ready-to-share message</label>
+        <textarea class="field-input" id="fb-msg-textarea" rows="8" readonly style="resize:vertical;font-family:inherit;">${esc(programFeedbackMessage(p))}</textarea>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-sm ghost" onclick="window.open('https://wa.me/?text='+encodeURIComponent(document.getElementById('fb-msg-textarea').value),'_blank')">Share on WhatsApp</button>
+          <button type="button" class="btn btn-sm" onclick="copyApplyText('fb-msg-textarea','Message copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy message</button>
+        </div></div>
+    </div>
+    <div class="modal-foot"><div><button type="button" class="btn ghost" onclick="openProgramFeedback('${p.id}', true)">Preview form</button></div><div style="display:flex;gap:8px;">${p.status==="Completed"&&p.responses?`<button type="button" class="btn ghost" onclick="openProgramResponses('${p.id}')">See responses</button>`:''}${p.status!=="Completed"&&p.status!=="Cancelled"&&p.date<=TODAY?`<button type="button" class="btn primary" onclick="openCompleteProgram('${p.id}')">Close out</button>`:`<button type="button" class="btn ghost" onclick="closeModal()">Close</button>`}</div></div>`);
+}
+// What someone sees after opening a feedback link and signing in.
+async function openFeedbackFromLink(id){
+  try{ history.replaceState(null, '', location.pathname+location.search); }catch(e){}
+  if(!currentUser) return;
+  const note = (title, body) => showModal(`
+    <div class="modal-head"><h3>${title}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body"><div style="font-size:13px;line-height:1.55;">${body}</div></div>
+    <div class="modal-foot"><div></div><button type="button" class="btn primary" onclick="closeModal()">OK</button></div>`);
+  try{ await loadMyPrograms(); }catch(e){}
+  const due = myProgramsData.feedbackDue.find(x=>x.id===id);
+  if(due) return openProgramFeedback(id);
+  note("Nothing to rate here", "This feedback link isn't open for you — it may have closed (feedback stays open for 14 days), you may have rated it already, or HR didn't mark you as attending. Check with HR if you were there.");
+}
+// HR's view of a program's responses — distribution + comments, no names.
+async function openProgramResponses(programId){
+  const p = programById(programId); if(!p) return;
+  let r; try{ r = await apiJson(`/api/hr/programs/${programId}/responses`); }catch(err){ toast(err.message || "Couldn't load responses"); return; }
+  const max = Math.max(1, ...r.distribution.map(d=>d.count));
+  showModal(`
+    <div class="modal-head"><h3>Feedback — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="kpi-card"><div class="kpi-label">Overall</div><div class="kpi-value mono">${r.rating==null?'—':r.rating.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div><div class="kpi-sub">${starsHTML(r.rating)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">${p.type==="Team Building"?"Team bonding":"Usefulness"}</div><div class="kpi-value mono">${r.useful==null?'—':r.useful.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div></div>
+        <div class="kpi-card"><div class="kpi-label">Responses</div><div class="kpi-value mono">${r.responses}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${r.attendees}</span></div><div class="kpi-sub">${r.attendees?Math.round(r.responses/r.attendees*100):0}% of attendees</div></div>
+      </div>
+      <div class="barchart">${r.distribution.map(d=>`<div class="bar-row" style="grid-template-columns:60px 1fr 28px;"><div class="bar-label">${'★'.repeat(d.rating)}</div><div class="bar-track"><div class="bar-fill" style="width:${d.count/max*100}%;background:var(--warn);"></div></div><div class="bar-val">${d.count}</div></div>`).join('')}</div>
+      <div class="section-label">Comments</div>
+      ${r.comments.length ? r.comments.map(c=>`<div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);font-size:12.5px;">“${esc(c.text)}” <span class="faint" style="font-size:11px;">· ${c.rating}★</span></div>`).join('') : `<div class="empty" style="padding:10px;">No comments yet.</div>`}
+    </div>
+    <div class="modal-foot"><div><button type="button" class="btn ghost" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+}
+// Staff My Workspace: programs they attended and haven't rated.
+function feedbackDueHTML(){
+  const due = myProgramsData.feedbackDue;
+  if(!currentUser || !due.length) return '';
+  return `<div class="banner" style="background:var(--warn-soft);color:var(--ink);align-items:center;flex-wrap:wrap;"><svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg><div style="flex:1;min-width:220px;"><b>Rate ${due.length>1?due.length+' programs':'a program'} you attended</b> — 20 seconds, anonymous. Open for ${FEEDBACK_WINDOW_DAYS} days after each program.</div><div style="display:flex;gap:6px;flex-wrap:wrap;">${due.slice(0,2).map(p=>`<button class="btn btn-sm primary" onclick="openProgramFeedback('${p.id}')">${esc(p.title.length>26?p.title.slice(0,25)+'…':p.title)}</button>`).join('')}</div></div>`;
+}
+// Everyone's My Workspace: what's coming up that they're invited to.
+function upcomingProgramsHTML(){
+  const list = myProgramsData.upcoming.slice(0,3);
+  if(!currentUser || !list.length) return '';
+  return `
+  <div class="panel">
+    <div class="panel-head"><div><h3>Coming up at DesGro</h3><div class="sub">Team building, upskilling and training you're invited to</div></div></div>
+    <div class="panel-body">${list.map(p=>`<div class="feed-item"><div class="feed-dot" style="background:var(--${PROGRAM_TYPE_KIND[p.type]==='pos'?'pos':PROGRAM_TYPE_KIND[p.type]==='blue'?'blue':'warn'});"></div><div style="flex:1;"><div class="feed-text"><strong>${esc(p.title)}</strong> ${pill(p.type, PROGRAM_TYPE_KIND[p.type])}</div><div class="feed-time">${fmtDate(p.date)} · ${esc(p.time||'')} · ${esc(p.mode)}${p.venue?' · '+esc(p.venue):''}${p.facilitator?' · with '+esc(p.facilitator):''}</div></div></div>`).join('')}</div>
+  </div>`;
+}
+
+/* ---- Sales meetings: logged by the salesperson, counted in the Sales score ---- */
+function openLogSalesMeeting(leadId){
+  if(!currentUser) return;
+  const l = leadId ? leadById(leadId) : null;
+  const mine = marketingLeads.filter(x=>!x.convertedClientId && leadStage(x)!=="Lost" && canWorkLead(x));
+  showModal(`
+    <div class="modal-head"><h3>Log sales meeting</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-sales-meeting"><div class="modal-body">
+      <div><label class="field-label" for="sm-lead">With</label><select class="field-input" id="sm-lead" name="lead"><option value="">A prospect not in leads yet</option>${mine.map(x=>`<option value="${x.id}" ${l&&l.id===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>
+      <div><label class="field-label" for="sm-with">Prospect name (if not a lead)</label><input class="field-input" id="sm-with" name="with" placeholder="e.g. Kozhikode hospital group"></div>
+      <div class="field-row">
+        <div><label class="field-label" for="sm-date">Date</label><input class="field-input" type="date" id="sm-date" name="date" value="${TODAY}" max="${TODAY}" required></div>
+        <div><label class="field-label" for="sm-mode">How</label><select class="field-input" id="sm-mode" name="mode"><option>In person</option><option>Video</option><option>Call</option></select></div>
+      </div>
+      <div><label class="field-label" for="sm-notes">Notes (optional)</label><textarea class="field-input" id="sm-notes" name="notes" rows="2" placeholder="What was discussed, next step"></textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Log meeting</button></div></div>
+    </form>`);
+  document.getElementById("f-sales-meeting").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const lid = f.get("lead")||null, who = (f.get("with")||"").trim();
+    if(!lid && !who){ toast("Pick a lead or type who the meeting was with"); return; }
+    try{
+      await apiJson("/api/crm/sales-meetings", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ date:f.get("date"), mode:f.get("mode"), leadId:lid, withName:lid?"":who, notes:(f.get("notes")||"").trim() }) });
+      toast("Meeting logged"); closeModal();
+      if(deptScores) loadDeptScores().catch(()=>{});
+      render();
+    }catch(err){ toast(err.message || "Couldn't log the meeting"); }
+  });
+}
+
 /* ===================== NAV MODEL ===================== */
 const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
@@ -2898,6 +3204,7 @@ const MODULES = [
     {id:"attendance", label:"Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave Requests", icon:"i-leave", count:()=>leaveRequests.filter(l=>l.status==="Pending").length},
     {id:"hiring", label:"Hiring", icon:"i-target", count:()=>openPositions.filter(p=>p.status==="Open").length},
+    {id:"programs", label:"Programs", icon:"i-users"},
     {id:"payroll", label:"Payroll", icon:"i-wallet"},
     {id:"advances", label:"Advance Salary", icon:"i-coins", count:()=>advances.filter(a=>a.status==="Pending").length},
     {id:"withdrawals", label:"Withdrawal Requests", icon:"i-wallet", count:()=>withdrawalRequests.filter(w=>w.status==="Pending").length},
@@ -3071,9 +3378,10 @@ function visibleModulesLegacy(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
+  "hr/programs":[loadHrPrograms],
   "marketing/performance":[()=>loadMetaScore().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
-  "calendar/main":[()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
+  "calendar/main":[()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
@@ -3149,6 +3457,7 @@ const TOPBAR_TITLES = {
     attendance:["Attendance","Today · click a status to update it"],
     leave:["Leave Requests", ()=>leaveRequests.filter(l=>l.status==="Pending").length+" pending approval"],
     hiring:["Hiring", ()=>openPositions.filter(p=>p.status==="Open").length+" open positions"],
+    programs:["Programs", ()=>programsInMonth(hrProgramMonth).filter(p=>p.status!=="Cancelled").length+" planned in "+monthLabel(hrProgramMonth)],
     payroll:["Payroll", ()=>MONTH_LABEL[payroll.selectedMonth]+" · "+payrollMonthStatus(payroll.selectedMonth)],
     advances:["Advance Salary", ()=>inr(advances.filter(a=>a.status==="Recovering").reduce((s,a)=>s+a.balance,0))+" outstanding"],
     withdrawals:["Withdrawal Requests", ()=>withdrawalRequests.filter(w=>w.status==="Pending").length+" pending"],
@@ -3287,7 +3596,7 @@ function render(){
   else if(nav.module==="calendar") root.innerHTML = calendarView();
   else if(nav.module==="departments") root.innerHTML = nav.sub.departments==="overview" ? deptsOverview() : deptPage(deptFromSlug(nav.sub.departments));
   else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
-  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
+  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,programs:hrProgramsView,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
   else if(nav.module==="accounts") root.innerHTML = ({overview:acctOverview,invoices:acctInvoices,receipts:acctPaymentReceipts,requests:acctPaymentRequests,payroll:acctPayroll,payables:acctPayables,expenses:acctExpenses,banks:acctBanks,quotes:acctQuotes,commissions:acctCommissions,coa:acctChartOfAccounts,journal:acctJournal,reports:acctReports})[nav.sub.accounts]();
@@ -3504,7 +3813,9 @@ function workspaceOverview(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${feedbackDueHTML()}
   ${myDeptScoreHTML()}
+  ${upcomingProgramsHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-calendar"/></svg></div></div><div class="kpi-value mono">${present}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${mtdWorkingDays}</span></div><div class="kpi-sub">days present</div></div>
@@ -3531,7 +3842,9 @@ function workspaceOverviewSales(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${feedbackDueHTML()}
   ${myDeptScoreHTML()}
+  ${upcomingProgramsHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Commission Earned</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-percent"/></svg></div></div><div class="kpi-value mono" style="font-size:17px;">${inr(mine.earned)}</div><div class="kpi-sub">${mine.balance>0?inr(mine.balance)+' outstanding':'all settled'}</div></div>
@@ -8099,6 +8412,8 @@ Auth.init().then(async (authUser) => {
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
+  crmContentJobs.push(loadMyPrograms().catch(err=>console.error("Programs failed to load", err)));
+  crmContentJobs.push(loadCalendarPrograms().catch(err=>console.error("Calendar programs failed to load", err)));
   crmContentJobs.push(loadDeptHeads().then(()=>Promise.all([loadActionPlans(), loadDeptScores().catch(()=>{})])).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
@@ -8109,4 +8424,5 @@ Auth.init().then(async (authUser) => {
   nav.sub[nav.module] = (landingMod && landingMod.sub && landingMod.sub.length) ? landingMod.sub[0].id : (nav.sub[nav.module] || 'overview');
   document.getElementById('app-shell').hidden = false;
   render();
+  { const m = /^#feedback\/([\w-]+)$/i.exec(location.hash||''); if(m) openFeedbackFromLink(m[1]); }
 }).catch((err) => { console.error(err); /* Auth.init() already redirects to /login.html on failure */ });

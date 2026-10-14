@@ -7,8 +7,8 @@ import { SERVICE_DEPARTMENTS } from "./departmentAccess";
    Department (service departments)  Client growth 25 · Client satisfaction 30 · Feedback coverage 15 · Revenue 30
    Sales                             Target completion 45 · Lead conversion 30 · Meetings 25
    Meta Ads (our own ads)            ROAS 30 · Cost per lead 25 · Lead→sale 15 · Lead pace 15 · Daily tracking 15
-   Satisfaction/coverage come from client feedback (a rating of 1-5 per client, service and month); Meetings needs the
-   sales meeting log and reports "n/a" until that exists. */
+   Satisfaction/coverage come from client feedback (a rating of 1-5 per client, service and month); Meetings counts the
+   sales meetings the team has logged. */
 
 export interface Targets {
   deptRevenue: Record<string, number>;
@@ -98,10 +98,12 @@ export async function salesScore(month: string, t: Targets): Promise<Score & { b
   const won = pool.filter((l) => l.convertedClientId).length;
   const rate = pool.length ? (won / pool.length) * 100 : null;
   const dueTarget = t.sales.revenue * share;
+  const meets = await prisma.salesMeeting.count({ where: { date: { gte: monthStart(month), lte: monthEnd(month) } } });
+  const meetTarget = t.sales.meetings * share;
   const parts: Part[] = [
     { key: "target", label: "Target completion", w: 45, v: dueTarget ? Math.min(1, booked / dueTarget) : null, detail: `${shortInr(booked)} of ${shortInr(t.sales.revenue)} (${Math.round((booked / t.sales.revenue) * 100)}%)${share < 1 ? ` · ${Math.round(share * 100)}% of the month gone` : ""}` },
     { key: "conversion", label: "Lead conversion", w: 30, v: rate == null ? null : Math.min(1, rate / t.sales.conversion), detail: pool.length ? `${won} of ${pool.length} leads (60 days) became clients · ${rate!.toFixed(0)}% · target ${t.sales.conversion}%` : "no leads in the last 60 days" },
-    { key: "meetings", label: "Meetings", w: 25, v: null, detail: "sales meetings aren't logged yet" },
+    { key: "meetings", label: "Meetings", w: 25, v: meetTarget ? Math.min(1, meets / meetTarget) : null, detail: `${meets} of ${t.sales.meetings} target${share < 1 ? ` · ${Math.round(meetTarget)} due by today` : ""}` },
   ];
   return { score: weightedScore(parts), parts, month, booked };
 }

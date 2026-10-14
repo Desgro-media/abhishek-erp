@@ -10,6 +10,7 @@ import * as hiring from "../controllers/hr/hiring.controller";
 import * as notices from "../controllers/hr/notices.controller";
 import * as policy from "../controllers/hr/policy.controller";
 import * as payroll from "../controllers/hr/payroll.controller";
+import * as programs from "../controllers/hr/programs.controller";
 
 const router = Router();
 
@@ -88,6 +89,18 @@ router.get("/payroll", requireHRAdminOrFinance, payroll.listPayrollForMonth);
 router.get("/payroll/mine", payroll.listMyPayroll); // own history only — pinned to the caller's employeeId
 router.get("/payroll/:employeeId/:month", payroll.getPayrollEntry); // self-or-HR
 router.post("/payroll/entries", requireHRAdmin, payroll.upsertPayrollEntry);
+
+// HR programs. Who may manage is decided inside the handlers (HR/Admin or leadership); everyone signed in can read
+// their own invitations and rate programs they attended.
+router.get("/programs", programs.listPrograms);
+router.get("/programs/mine", programs.myPrograms);
+router.get("/programs/calendar", programs.calendarPrograms);
+router.post("/programs", programs.createProgram);
+router.put("/programs/:id", programs.updateProgram);
+router.delete("/programs/:id", programs.deleteProgram);
+router.post("/programs/:id/complete", programs.completeProgram);
+router.post("/programs/:id/feedback", programs.submitFeedback);
+router.get("/programs/:id/responses", programs.programResponses);
 router.put("/payroll/:employeeId/:month/schedule", requireHRAdminOrFinance, payroll.setPayrollSchedule);
 router.post("/payroll/:employeeId/:month/payments", requireHRAdminOrFinance, payroll.recordPayrollPayment);
 
