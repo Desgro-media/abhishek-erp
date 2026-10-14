@@ -3178,6 +3178,57 @@ function openLogSalesMeeting(leadId){
   });
 }
 
+/* ===================== CLIENT REPORT LINK =====================
+   A Performance Marketing client's page can be shared as a no-login, read-only report (public/report.html): their ad
+   numbers month by month, the campaign brief and the meetings log — never invoices, payments, quotes, tasks, ad-account
+   access or who on our side logged anything. One permanent link per client; "New link" replaces it (the old one stops
+   working) and "Turn off" removes the report. */
+let clientReportLinks = {};   // clientId -> {token,createdBy,createdAt} | null (none) | undefined (not loaded)
+async function loadClientReportLink(id){
+  try{ clientReportLinks[id] = (await apiJson(`/api/crm/clients/${id}/report-link`)).link; }
+  catch(err){ clientReportLinks[id] = undefined; }
+  if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
+}
+const clientReportUrl = l => `${location.origin}/report.html?t=${encodeURIComponent(l.token)}`;
+function clientReportMessage(c, l){
+  return `Hi ${c.name} team,\n\nHere's your live campaign report — your ad numbers month by month, your campaign brief and our meetings:\n${clientReportUrl(l)}\n\nIt updates as we log your numbers.\n— DesGro Media`;
+}
+function clientReportSectionHTML(c){
+  if(!isPerformanceMarketingClient(c)) return '';
+  const l = clientReportLinks[c.id];
+  if(l===undefined) return '';
+  return collabHead('Client report', null, collabBtn(`openClientReportLink('${c.id}')`,'i-link', l?'Share link':'Create share link')) +
+    `<div class="subtext" style="margin:0 0 6px;">${l?`A read-only page your client can open without signing in — ad numbers, campaign brief and meetings. Link made ${fmtDateShort(l.createdAt)} by ${esc(l.createdBy)}.`:'Give the client a link to see their ad numbers, campaign brief and meetings in one page — no sign-in needed.'}</div>`;
+}
+async function openClientReportLink(clientId, regenerate){
+  const c = clientById(clientId); if(!c) return;
+  try{
+    const r = await apiJson(`/api/crm/clients/${clientId}/report-link`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ regenerate: !!regenerate }) });
+    clientReportLinks[clientId] = r.link;
+  }catch(err){ toast(err.message || "Couldn't make the link"); return; }
+  const l = clientReportLinks[clientId];
+  showModal(`
+    <div class="modal-head"><h3>Client report — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Anyone with this link can see ${esc(c.name)}'s <b>ad numbers</b> (by month and by day), <b>campaign brief</b> and <b>meetings log</b> — including the meeting notes. They can't see invoices, payments, quotes, tasks or ad-account details. The page updates as you log numbers.</div></div>
+      <div><label class="field-label" for="crl-input">Shareable link</label>
+        <div style="display:flex;gap:8px;"><input class="field-input mono" id="crl-input" readonly value="${esc(clientReportUrl(l))}" style="flex:1;min-width:0;font-size:12.5px;"><button type="button" class="btn btn-sm" onclick="copyApplyText('crl-input','Link copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy</button></div></div>
+      <div><label class="field-label" for="crl-msg">Ready-to-share message</label>
+        <textarea class="field-input" id="crl-msg" rows="7" readonly style="resize:vertical;font-family:inherit;">${esc(clientReportMessage(c, l))}</textarea>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-sm ghost" onclick="window.open('https://wa.me/?text='+encodeURIComponent(document.getElementById('crl-msg').value),'_blank')">Share on WhatsApp</button>
+          <button type="button" class="btn btn-sm" onclick="copyApplyText('crl-msg','Message copied')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Copy message</button>
+        </div></div>
+    </div>
+    <div class="modal-foot"><div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" class="btn ghost" onclick="window.open('${esc(clientReportUrl(l))}','_blank')">Preview report</button><button type="button" class="btn ghost" onclick="openClientReportLink('${clientId}', true)" title="Makes a fresh link; the old one stops working">New link</button><button type="button" class="btn ghost" style="color:var(--neg);" onclick="removeClientReportLink('${clientId}')">Turn off</button></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+  render();
+}
+async function removeClientReportLink(clientId){
+  if(!confirm("Turn off this report link? The client's current link stops working straight away.")) return;
+  try{ await Auth.apiFetch(`/api/crm/clients/${clientId}/report-link`, { method:"DELETE" }); clientReportLinks[clientId] = null; toast("Report link turned off"); closeModal(); render(); }
+  catch(err){ toast("Couldn't turn the link off"); }
+}
+
 /* ===================== NAV MODEL ===================== */
 const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
@@ -6077,7 +6128,7 @@ function clientCollabHTML(c){
   const d = clientCollab[c.id];
   if(!d) return collabHead('Client details') + `<div class="empty">Loading…</div>`;
   if(d.error) return collabHead('Client details') + `<div class="empty">${esc(d.error)}</div>`;
-  return brandAssetsSectionHTML(c, d) + (isPerformanceMarketingClient(c) ? adPerformanceSectionHTML(c, d) + adAccessSectionHTML(c, d) + campaignBriefSectionHTML(c, d) : '') + meetingsSectionHTML(c, d);
+  return brandAssetsSectionHTML(c, d) + (isPerformanceMarketingClient(c) ? clientReportSectionHTML(c) + adPerformanceSectionHTML(c, d) + adAccessSectionHTML(c, d) + campaignBriefSectionHTML(c, d) : '') + meetingsSectionHTML(c, d);
 }
 function brandAssetsSectionHTML(c, d){
   const assets = d.brandAssets || [];
@@ -6209,7 +6260,7 @@ function openLogMeeting(clientId){
   });
 }
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
-function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); loadClientFeedback(id); }
+function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); loadClientFeedback(id); { const c = clientById(id); if(c && isPerformanceMarketingClient(c)) loadClientReportLink(id); } }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
 function clientDetailPage(id){

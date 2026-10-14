@@ -1,5 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
+import { getClientReportPublic } from "../controllers/crm/clientReport.controller";
 import { listOpenPositionsPublic, submitApplicationPublic, handleResumeUpload, listLeadServicesPublic, submitLeadPublic, getClientFeedbackPublic, submitClientFeedbackPublic } from "../controllers/public.controller";
 
 const router = Router();
@@ -30,6 +31,7 @@ const leadRateLimiter = rateLimit({
 const feedbackReadLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests — please try again later." } });
 const feedbackWriteLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many submissions from this address — please try again later." } });
 router.get("/client-feedback/:token", feedbackReadLimiter, getClientFeedbackPublic);
+router.get("/client-report/:token", feedbackReadLimiter, getClientReportPublic);
 router.post("/client-feedback/:token", feedbackWriteLimiter, submitClientFeedbackPublic);
 
 router.get("/lead-services", listLeadServicesPublic);

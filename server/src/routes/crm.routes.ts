@@ -10,6 +10,7 @@ import * as collab from "../controllers/crm/clientCollab.controller";
 import * as adMetrics from "../controllers/crm/clientAdMetrics.controller";
 import * as clientFeedback from "../controllers/crm/clientFeedback.controller";
 import * as salesMeetings from "../controllers/crm/salesMeetings.controller";
+import * as clientReport from "../controllers/crm/clientReport.controller";
 
 const router = Router();
 
@@ -30,6 +31,10 @@ router.get("/clients/:id/lead-advances", requireClientsUser, leads.getClientLead
 router.get("/clients/:clientId/feedback", clientFeedback.getClientFeedback);
 router.post("/clients/:clientId/feedback", clientFeedback.logClientFeedback);
 router.post("/clients/:clientId/feedback-link", clientFeedback.upsertFeedbackLink);
+// Shareable read-only report for a Performance Marketing client (the public side lives in public.routes).
+router.get("/clients/:id/report-link", clientReport.getReportLink);
+router.post("/clients/:id/report-link", clientReport.makeReportLink);
+router.delete("/clients/:id/report-link", clientReport.removeReportLink);
 router.get("/sales-meetings", salesMeetings.listSalesMeetings);
 router.post("/sales-meetings", salesMeetings.logSalesMeeting);
 

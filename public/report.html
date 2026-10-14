@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your campaign report · DesGro Media</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* Same brand tokens as careers.html / index.html — a standalone page anyone with the link can open (no sign-in). */
+  :root{
+    --paper:#F6F4F3; --surface:#FFFFFF; --surface-sunk:#EFEBEA;
+    --ink:#1B1515; --ink-soft:#6B5F5D; --ink-faint:#9C908E; --line:#E3DDDC;
+    --brand:#EB2027; --brand-strong:#A8141A; --brand-soft:#FBE3E4;
+    --pos:#1F6B45; --pos-soft:#E4F1E9; --neg:#C31A20; --neg-soft:#FBE6E6; --warn:#A9781F; --warn-soft:#F3E9D3;
+    --shadow: 0 1px 2px rgba(20,16,16,.05), 0 8px 24px -12px rgba(20,16,16,.14);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#141010; --surface:#1D1717; --surface-sunk:#241D1D;
+      --ink:#EDE7E6; --ink-soft:#AB9F9D; --ink-faint:#786C6A; --line:#332B2A;
+      --brand:#FF4A50; --neg:#F0787C; --neg-soft:rgba(240,120,124,.14); --pos:#57B885; --pos-soft:rgba(87,184,133,.14); --warn:#D2A24C; --warn-soft:rgba(210,162,76,.14);
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 28px -14px rgba(0,0,0,.6);
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--ink);font-family:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;font-size:15px;line-height:1.55;}
+  .wrap{max-width:860px;margin:0 auto;padding:32px 16px 64px;}
+  .brand-bar{width:34px;height:6px;border-radius:2px;background:linear-gradient(90deg,var(--brand) 0%,#8C0F14 100%);margin-bottom:10px;}
+  .wordmark{font-weight:800;font-size:21px;letter-spacing:-.01em;margin-bottom:20px;}
+  .wordmark small{display:block;font-weight:600;font-size:10.5px;letter-spacing:.14em;color:var(--ink-faint);}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:22px 20px;}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);}
+  h1{font-size:22px;font-weight:800;margin:4px 0;letter-spacing:-.01em;}
+  .muted{color:var(--ink-soft);font-size:13.5px;line-height:1.5;}
+  fieldset{border:1px solid var(--line);border-radius:12px;padding:14px 16px 16px;margin:16px 0 0;}
+  legend{font-weight:800;font-size:14px;padding:0 6px;}
+  .stars{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin-top:6px;}
+  .star{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 4px;min-height:58px;border:1px solid var(--line);border-radius:10px;cursor:pointer;background:var(--surface);}
+  .star input{position:absolute;opacity:0;pointer-events:none;}
+  .star .s{font-size:15px;line-height:1;color:var(--warn);}
+  .star .l{font-size:11px;font-weight:700;}
+  .star:has(input:checked){background:var(--ink);color:var(--surface);border-color:var(--ink);}
+  .star:has(input:checked) .s{color:var(--warn-soft);}
+  .star:has(input:focus-visible){outline:2px solid var(--brand);outline-offset:2px;}
+  label.f{display:block;font-size:12.5px;font-weight:700;color:var(--ink-soft);margin:16px 0 5px;}
+  textarea,input[type=text]{font:inherit;width:100%;background:var(--surface-sunk);border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:var(--ink);}
+  textarea{margin-top:10px;resize:vertical;}
+  textarea:focus,input:focus{outline:2px solid var(--brand);outline-offset:1px;}
+  .btn{font:inherit;cursor:pointer;width:100%;margin-top:18px;padding:13px;border-radius:9px;border:1px solid var(--brand);background:var(--brand);color:#fff;font-weight:800;font-size:14px;}
+  .btn:disabled{opacity:.6;cursor:default;}
+  .err{background:var(--neg-soft);color:var(--neg);border-radius:8px;padding:10px 12px;font-size:13px;font-weight:600;margin-top:14px;}
+  .done{text-align:center;padding:26px 8px;}
+  .done .big{font-size:34px;line-height:1;margin-bottom:10px;color:var(--warn);}
+  .note{font-size:12px;color:var(--ink-faint);margin-top:6px;}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:16px;}
+  .kpi{background:var(--surface-sunk);border-radius:10px;padding:12px 14px;min-width:0;}
+  .kpi .l{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);}
+  .kpi .v{font-size:20px;font-weight:800;margin-top:2px;font-variant-numeric:tabular-nums;}
+  .kpi .d{font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
+  .up{color:var(--pos);font-weight:700;} .down{color:var(--neg);font-weight:700;}
+  select{font:inherit;background:var(--surface-sunk);border:1px solid var(--line);border-radius:8px;padding:8px 10px;color:var(--ink);}
+  table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;}
+  th{text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);padding:8px 10px;border-bottom:1px solid var(--line);}
+  th.n,td.n{text-align:right;}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);}
+  tr:last-child td{border-bottom:none;}
+  .tw{overflow-x:auto;}
+  .sec{margin-top:18px;} .sec h2{font-size:15px;margin:0 0 10px;}
+  .brief{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;}
+  .brief .l{font-size:11.5px;font-weight:700;color:var(--ink-faint);margin-bottom:3px;}
+  .mtg{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;}
+  .preview{background:var(--warn-soft);color:var(--ink);border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand-bar"></div>
+  <div class="wordmark">DESGRO<small>MEDIA</small></div>
+  <div id="root"><div class="panel muted">Loading…</div></div>
+</div>
+<script src="report.js"></script>
+</body>
+</html>
