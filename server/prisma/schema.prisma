@@ -1515,3 +1515,14 @@ model ActionPlanComment {
   @@index([planId])
   @@map("action_plan_comments")
 }
+
+// Leadership-set targets the monthly scores are measured against. A single row (id = 1); a missing row means the
+// built-in defaults in services/scores.ts. Stored as JSON so adding a target later needs no migration.
+model ScoreSettings {
+  id        Int      @id
+  targets   Json
+  updatedBy String   @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("score_settings")
+}

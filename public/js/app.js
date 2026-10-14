@@ -2200,6 +2200,7 @@ function deptTile(d){
   const head = deptHeadOf(d);
   return `<div class="panel row-click" style="padding:16px;display:flex;flex-direction:column;gap:10px;" onclick="setSub('departments','${deptSlug(d)}')">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;"><div><div style="font-weight:800;font-size:14px;">${esc(d)}</div><div class="subtext">${head?'Head: '+esc(head):'No head assigned'}</div></div>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openAssignDeptHead('${esc(d)}')">${head?'Change':'Assign head'}</button>`:''}</div>
+    ${(()=>{ const sc = deptScoreOf(d); if(!sc) return ''; const diff = sc.now.score!=null && sc.prev.score!=null ? sc.now.score-sc.prev.score : null; return `<div style="display:flex;align-items:baseline;gap:8px;"><span class="mono" style="font-size:26px;font-weight:800;color:${scoreTone(sc.now.score==null?null:sc.now.score/100)};">${sc.now.score==null?'—':sc.now.score}</span><span style="font-size:11.5px;">${diff==null?'':`<b style="color:${diff>=0?'var(--pos)':'var(--neg)'};">${diff>=0?'▲':'▼'}${Math.abs(diff)}</b> <span class="faint">vs ${monthLabel(prevMonth(deptScores.month)).slice(0,3)}</span>`}</span>${scoreGradePill(sc.now.score)}</div>`; })()}
     <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink-soft);">
       <span><b class="mono" style="color:var(--ink);">${t.people==null?'—':t.people}</b> people</span>
       ${t.clients!=null?`<span><b class="mono" style="color:var(--ink);">${t.clients}</b> clients</span>`:''}
@@ -2209,6 +2210,7 @@ function deptTile(d){
 function deptsOverview(){
   const list = deptsVisibleTo();
   return `
+  ${isLeadershipRole(currentUser)?deptScoresPanelHTML():''}
   <div>
     <div style="margin-bottom:12px;"><h3 style="margin:0;font-size:15px;">${isLeadershipRole(currentUser)?'All departments':'Your department'}</h3><div class="subtext" style="font-size:12px;">Open a department for its team, clients and revenue</div></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;">${list.map(deptTile).join('') || '<div class="empty">No departments to show.</div>'}</div>
@@ -2270,7 +2272,7 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${insights}${revenuePanel}${clientsPanel}${teamPanel}`;
+  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${clientsPanel}${teamPanel}`;
 }
 
 /* ===================== DEPARTMENT ACTION PLANS =====================
@@ -2613,6 +2615,152 @@ function planReminderHTML(){
   return `<div class="banner" style="background:var(--neg-soft);color:var(--ink);align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg><div style="flex:1;"><b>Today's ${esc(dept)} action plan isn't filed yet.</b> What will you improve, optimise or introduce today?</div><button class="btn btn-sm primary" style="flex:none;" onclick="setSub('workspace','plan')">Open action plan</button></div>`;
 }
 
+/* ===================== MONTHLY SCORES =====================
+   Each score is out of 100 from weighted parts; a part with nothing to measure is left out and the rest re-weighted
+   (so a part that reads "n/a" costs nobody anything). They're computed on the server (/api/scores) so a department
+   head sees their own numbers without needing Finance or Clients access:
+     Department  Client growth 25 · Client satisfaction 30 · Feedback coverage 15 · Revenue 30
+     Sales       Target completion 45 · Lead conversion 30 · Meetings 25
+     Meta Ads    Return on ad spend 30 · Cost per lead 25 · Lead→sale 15 · Lead pace 15 · Daily tracking 15
+   Leadership sets the targets. Satisfaction/coverage fill in once client feedback exists; Meetings once sales meetings are logged. */
+let scoreTargets = null;
+let deptScores = null;      // {month, scores:{dept:{now,prev}}}
+let metaScoreData = null;   // {month, now, prev, totals, targets}
+async function loadDeptScores(){ const r = await apiJson("/api/scores/departments"); deptScores = r; scoreTargets = r.targets; }
+async function loadMetaScore(){ metaScoreData = await apiJson("/api/scores/meta-ads"); }
+function scoreGradePill(s){ return s==null ? pill('No data','neutral') : s>=85 ? pill('Strong','pos') : s>=65 ? pill('Fair','warn') : pill('Needs work','neg'); }
+function scoreTone(v){ return v==null ? 'var(--ink-faint)' : v>=0.85 ? 'var(--pos)' : v>=0.65 ? 'var(--warn)' : 'var(--neg)'; }
+function scoreRingHTML(score, size){
+  size = size || 112; const r = size/2-9, c = 2*Math.PI*r, v = score==null?0:Math.max(0,Math.min(100,score));
+  const color = score==null ? 'var(--ink-faint)' : score>=85 ? 'var(--pos)' : score>=65 ? 'var(--warn)' : 'var(--neg)';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex:none;">
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--surface-sunk)" stroke-width="10"/>
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${color}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${c*v/100} ${c}" transform="rotate(-90 ${size/2} ${size/2})"/>
+    <text x="50%" y="48%" text-anchor="middle" dominant-baseline="middle" style="font:800 28px Manrope,sans-serif;fill:var(--ink);">${score==null?'—':score}</text>
+    <text x="50%" y="70%" text-anchor="middle" style="font:700 10px Manrope,sans-serif;fill:var(--ink-faint);letter-spacing:.06em;">/ 100</text>
+  </svg>`;
+}
+// A score ring + its parts, each with its mark out of its weight and last month's mark. `extra` is HTML slotted above the ring.
+function monthScorePanelHTML(title, sub, sc, scPrev, P, extra){
+  const col = v => v==null ? 'var(--ink-faint)' : v>=0.85 ? 'var(--pos)' : v>=0.65 ? 'var(--warn)' : 'var(--neg)';
+  const delta = (a,b) => b==null ? '' : a==null ? '' : a===b ? `<span class="faint">same</span>` : `<span style="color:${a>b?'var(--pos)':'var(--neg)'};font-weight:700;">${a>b?'▲':'▼'} ${Math.abs(a-b)}</span>`;
+  return `
+  <div class="panel">
+    <div class="panel-head"><div><h3>${title}</h3><div class="sub">${sub}</div></div>${scoreGradePill(sc.score)}</div>
+    ${extra?`<div class="panel-body" style="padding-bottom:0;">${extra}</div>`:''}
+    <div class="modal-body" style="flex-direction:row;flex-wrap:wrap;align-items:center;gap:24px;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+        ${scoreRingHTML(sc.score, 128)}
+        <div style="font-size:12px;color:var(--ink-soft);">${scPrev.score==null?`${P}: no data`:`${P}: <b>${scPrev.score}</b> ${delta(sc.score, scPrev.score)}`}</div>
+      </div>
+      <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:9px;">
+        ${sc.parts.map(p=>{ const q = scPrev.parts.find(x=>x.key===p.key); const a = p.v==null?null:Math.round(p.v*p.w), b = (q&&q.v!=null)?Math.round(q.v*q.w):null; return `<div style="display:grid;grid-template-columns:150px 1fr 86px;gap:10px;align-items:center;font-size:12.5px;${p.v==null?'opacity:.55;':''}">
+          <div><b>${p.label}</b><div class="subtext">${esc(p.detail)}</div></div>
+          <div class="bar-track" style="height:8px;"><div class="bar-fill" style="width:${p.v==null?0:p.v*100}%;background:${col(p.v)};"></div></div>
+          <div style="text-align:right;"><div class="mono" style="font-weight:700;">${a==null?'n/a':a+'/'+p.w}</div><div style="font-size:10.5px;">${b==null?`<span class="faint">${P}: n/a</span>`:`${(a==null||a===b)?'':delta(a,b)+' '}<span class="faint">${P}: ${b}</span>`}</div></div>
+        </div>`; }).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+function deptScoreOf(d){ return deptScores && deptScores.scores[d] ? deptScores.scores[d] : null; }
+function deptScorePanel(d){
+  const sc = deptScoreOf(d); if(!sc) return '';
+  const month = deptScores.month, P = monthLabel(prevMonth(month)).split(' ')[0];
+  const t = deptScores.targets;
+  const foot = isLeadershipRole(currentUser) ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>${d==="Sales"?`Targets: ${shortInr(t.sales.revenue)} a month · ${t.sales.conversion}% conversion · ${t.sales.meetings} meetings`:`Targets: ${shortInr(t.deptRevenue[d]||0)} revenue a month · +${t.deptClientGrowth}% clients a month`}</span><button class="btn btn-sm ghost" onclick="openScoreTargets()">Set targets</button></div>` : '';
+  const title = d==="Sales" ? `Sales Score · ${monthLabel(month)}` : `${esc(d)} score · ${monthLabel(month)}`;
+  const sub = d==="Sales" ? `Target completion, lead conversion and meetings · vs ${P}` : `Client growth, client satisfaction, feedback coverage and revenue · vs ${P}`;
+  return monthScorePanelHTML(title, sub, sc.now, sc.prev, P, foot);
+}
+// Leadership's overview of every department's score.
+function deptScoresPanelHTML(){
+  if(!deptScores) return '';
+  const list = DEPARTMENTS.filter(d=>deptScoreOf(d));
+  if(!list.length) return '';
+  const P = monthLabel(prevMonth(deptScores.month)).slice(0,3);
+  return `<div class="panel">
+    <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><div><h3>Department scores · ${monthLabel(deptScores.month)}</h3><div class="sub">Out of 100 · open a department for the full breakdown</div></div>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openScoreTargets()">Set targets</button>`:''}</div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Department</th><th class="num">Score</th><th class="num">vs ${P}</th><th>Grade</th>${['Client growth','Satisfaction','Feedback','Revenue'].map(h=>`<th class="num">${h}</th>`).join('')}</tr></thead><tbody>${list.map(d=>{ const s = deptScoreOf(d), diff = s.now.score!=null && s.prev.score!=null ? s.now.score-s.prev.score : null; const pv = k => { const p = s.now.parts.find(x=>x.key===k); return p && p.v!=null ? Math.round(p.v*p.w)+'/'+p.w : 'n/a'; };
+      const keys = d==="Sales" ? ['target','conversion','meetings'] : ['growth','satisfaction','feedback','revenue'];
+      return `<tr class="row-click" onclick="setSub('departments','${deptSlug(d)}')"><td style="font-weight:700;">${esc(d)}</td><td class="num mono" style="font-weight:800;color:${scoreTone(s.now.score==null?null:s.now.score/100)};">${s.now.score==null?'—':s.now.score}</td><td class="num">${diff==null?'<span class="faint">—</span>':`<b style="color:${diff>=0?'var(--pos)':'var(--neg)'};">${diff>=0?'▲':'▼'}${Math.abs(diff)}</b>`}</td><td>${scoreGradePill(s.now.score)}</td>${d==="Sales"?`<td class="num mono faint" colspan="4" style="text-align:left;">Target ${pv('target')} · Conversion ${pv('conversion')} · Meetings ${pv('meetings')}</td>`:keys.map(k=>`<td class="num mono">${pv(k)}</td>`).join('')}</tr>`; }).join('')}</tbody></table></div>
+  </div>`;
+}
+// A head's own score card at the top of My Workspace → Overview.
+function myDeptScoreHTML(){
+  const d = currentUser ? headDeptOf(currentUser.name) : null;
+  const sc = d ? deptScoreOf(d) : null; if(!sc) return '';
+  const diff = sc.now.score!=null && sc.prev.score!=null ? sc.now.score-sc.prev.score : null;
+  return `<div class="panel" style="padding:14px 18px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;cursor:pointer;" onclick="setSub('departments','${deptSlug(d)}')">
+    ${scoreRingHTML(sc.now.score, 78)}
+    <div style="flex:1;min-width:200px;"><div class="kpi-label">${esc(d)} score · ${monthLabel(deptScores.month)}</div><div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${scoreGradePill(sc.now.score)}${diff==null?'':`<span style="font-size:12px;"><b style="color:${diff>=0?'var(--pos)':'var(--neg)'};">${diff>=0?'▲':'▼'}${Math.abs(diff)}</b> <span class="faint">vs ${monthLabel(prevMonth(deptScores.month)).slice(0,3)}</span></span>`}</div><div class="subtext" style="margin-top:4px;">Open the department for the breakdown</div></div>
+  </div>`;
+}
+// One modal for every target (leadership only).
+function openScoreTargets(){
+  if(!isLeadershipRole(currentUser) || !scoreTargets) return;
+  const t = scoreTargets;
+  showModal(`
+    <div class="modal-head"><h3>Score targets</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-score-targets"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">Scores measure each month against these. Changing them re-scores every month, past ones included.</div>
+      <div class="section-label">Department revenue received (₹ / month)</div>
+      <div class="field-row">${SERVICE_DEPARTMENTS.map(d=>`<div><label class="field-label">${esc(d)}</label><input class="field-input" type="number" min="0" step="5000" name="rev:${esc(d)}" value="${t.deptRevenue[d]||0}" required></div>`).join('')}</div>
+      <div><label class="field-label">Client growth target (% a month)</label><input class="field-input" type="number" min="0" max="100" step="1" name="growth" value="${t.deptClientGrowth}" required></div>
+      <div class="section-label">Sales</div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">Sales target (₹ / month)</label><input class="field-input" type="number" min="10000" step="10000" name="srev" value="${t.sales.revenue}" required></div>
+        <div><label class="field-label">Lead conversion (%)</label><input class="field-input" type="number" min="1" max="100" step="1" name="sconv" value="${t.sales.conversion}" required></div>
+        <div><label class="field-label">Meetings / month</label><input class="field-input" type="number" min="1" step="1" name="smeet" value="${t.sales.meetings}" required></div>
+      </div>
+      <div class="section-label">Meta Ads (our own)</div>
+      <div class="field-row cols-3">
+        <div><label class="field-label">ROAS target (x)</label><input class="field-input" type="number" min="0.5" step="0.1" name="mroas" value="${t.meta.roas}" required></div>
+        <div><label class="field-label">Cost per lead (₹)</label><input class="field-input" type="number" min="1" step="10" name="mcpl" value="${t.meta.cpl}" required></div>
+        <div><label class="field-label">Lead → sale (%)</label><input class="field-input" type="number" min="0.5" step="0.5" name="mconv" value="${t.meta.conv}" required></div>
+      </div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save targets</button></div></div>
+    </form>`);
+  document.getElementById("f-score-targets").addEventListener("submit", async ev=>{
+    ev.preventDefault(); const f = new FormData(ev.target);
+    const body = {
+      deptRevenue: Object.fromEntries(SERVICE_DEPARTMENTS.map(d=>[d, Number(f.get("rev:"+d))])),
+      deptClientGrowth: Number(f.get("growth")),
+      sales: { revenue:Number(f.get("srev")), conversion:Number(f.get("sconv")), meetings:Number(f.get("smeet")) },
+      meta: { roas:Number(f.get("mroas")), cpl:Number(f.get("mcpl")), conv:Number(f.get("mconv")) },
+    };
+    try{
+      await apiJson("/api/scores/targets", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      await Promise.all([loadDeptScores().catch(()=>{}), loadMetaScore().catch(()=>{})]);
+      toast("Targets saved"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the targets"); }
+  });
+}
+// Meta Ads tab: our own ads' month-vs-month tiles and score.
+function metaAdsScorePanelHTML(){
+  const d = metaScoreData; if(!d) return '';
+  const P = monthLabel(prevMonth(d.month)).split(' ')[0], Ps = P.slice(0,3);
+  const a = d.totals.now, b = d.totals.prev, partial = d.month===TODAY.slice(0,7);
+  const r = x => x.spend ? x.revenue/x.spend : null, c = x => x.leads ? x.spend/x.leads : null;
+  const tiles = [
+    {label:"Spend", now:a.spend, was:b.spend, fmt:shortInr, neutral:true, total:true},
+    {label:"Leads", now:a.leads, was:b.leads, fmt:String, total:true},
+    {label:"Cost per lead", now:c(a)==null?null:Math.round(c(a)), was:c(b)==null?null:Math.round(c(b)), fmt:inr, lower:true},
+    {label:"Sales", now:a.purchases, was:b.purchases, fmt:String, total:true},
+    {label:"Revenue", now:a.revenue, was:b.revenue, fmt:shortInr, total:true},
+    {label:"ROAS", now:r(a), was:r(b), fmt:x=>x.toFixed(1)+'x', eps:0.05},
+  ];
+  const tilesHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;">${tiles.map(x=>`<div style="padding:10px 12px;border-radius:8px;background:var(--surface-sunk);min-width:0;">
+    <div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);">${x.label}</div>
+    <div class="mono" style="font-size:17px;font-weight:800;margin-top:2px;">${x.now==null?'—':x.fmt(x.now)}</div>
+    <div style="font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${partial&&x.total?`<span class="faint">${Ps} full month ${x.was==null?'—':x.fmt(x.was)}</span>`:`${x.now!=null&&x.was!=null?deltaHTML(x.now, x.was, {neutral:x.neutral, fmt:v=>x.fmt(v), eps:x.eps})+' ':''}<span class="faint">${Ps} ${x.was==null?'—':x.fmt(x.was)}</span>`}</div>
+  </div>`).join('')}</div>`;
+  const t = d.targets;
+  const foot = `<div style="display:flex;flex-direction:column;gap:8px;">${tilesHTML}<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>Targets: ROAS ${t.roas}x · CPL ${inr(t.cpl)} · lead → sale ${t.conv}%</span>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openScoreTargets()">Set targets</button>`:''}</div></div>`;
+  return monthScorePanelHTML(`Meta Ads Score · ${monthLabel(d.month)}`, `Return, cost per lead, conversion, lead pace and daily tracking · vs ${P}${partial?` · ${a.days} days logged so far`:''}`, d.now, d.prev, P, foot);
+}
+
 /* ===================== NAV MODEL ===================== */
 const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
@@ -2812,6 +2960,7 @@ function visibleModulesLegacy(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
+  "marketing/performance":[()=>loadMetaScore().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
@@ -2826,7 +2975,7 @@ const TAB_REFRESH = {
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
   let jobs = TAB_REFRESH[mid+"/"+sid];
-  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid))] : null);
+  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid))] : null);
   if(!jobs) return;
   Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
 }
@@ -3244,6 +3393,7 @@ function workspaceOverview(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${myDeptScoreHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-calendar"/></svg></div></div><div class="kpi-value mono">${present}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${mtdWorkingDays}</span></div><div class="kpi-sub">days present</div></div>
@@ -3270,6 +3420,7 @@ function workspaceOverviewSales(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${myDeptScoreHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Commission Earned</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-percent"/></svg></div></div><div class="kpi-value mono" style="font-size:17px;">${inr(mine.earned)}</div><div class="kpi-sub">${mine.balance>0?inr(mine.balance)+' outstanding':'all settled'}</div></div>
@@ -5838,6 +5989,7 @@ function mktPerformance(){
     <svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg>
     <div><b>Our own Meta Ads.</b> Performance of DesGro Media's own Facebook/Instagram campaigns — lead generation for our services and Demand School enrollment. This is not client ad spend.</div>
   </div>
+  ${metaAdsScorePanelHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">Active Campaigns</div><div class="kpi-value mono">${activeCount}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${rows.length}</span></div></div>
     <div class="kpi-card"><div class="kpi-label">Total Spend</div><div class="kpi-value mono" style="font-size:20px;">${inr(totals.spend)}</div></div>
@@ -7835,7 +7987,7 @@ Auth.init().then(async (authUser) => {
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
-  crmContentJobs.push(loadDeptHeads().then(()=>loadActionPlans()).catch(err=>console.error("Department heads / action plans failed to load", err)));
+  crmContentJobs.push(loadDeptHeads().then(()=>Promise.all([loadActionPlans(), loadDeptScores().catch(()=>{})])).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
   await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
