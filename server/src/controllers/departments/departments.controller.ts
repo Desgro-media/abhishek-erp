@@ -17,8 +17,11 @@ const num = (x: unknown) => Number(x);
 export const listHeads: RequestHandler = asyncHandler(async (_req, res) => {
   const rows = await prisma.departmentHead.findMany({ include: { employee: { select: { name: true } } } });
   const heads: Record<string, string | null> = Object.fromEntries(DEPARTMENTS.map((d) => [d, null]));
-  rows.forEach((r) => { heads[r.dept] = r.employee?.name ?? null; });
-  res.json({ heads });
+  // Date (IST) the current head was assigned — action-plan tracking for a department starts then, so a newly named head
+  // isn't marked down for days before they had the job.
+  const since: Record<string, string | null> = Object.fromEntries(DEPARTMENTS.map((d) => [d, null]));
+  rows.forEach((r) => { heads[r.dept] = r.employee?.name ?? null; since[r.dept] = r.employee ? new Date(r.updatedAt.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10) : null; });
+  res.json({ heads, since });
 });
 
 // Leadership/Admin only: set (or clear, with employeeId null) a department's head.

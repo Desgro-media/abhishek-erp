@@ -2149,9 +2149,10 @@ function openMarkHoliday(date){
    from /api/departments (computed server-side, so a head doesn't need Clients or Finance access). Score,
    client feedback and the action plan attach to this page in later packages. */
 let deptHeads = {};            // dept -> head's name | null
+let deptHeadSince = {};        // dept -> IST date the current head was assigned
 let deptOverviewTiles = [];
 let deptSummaries = {};        // dept -> last loaded /summary
-async function loadDeptHeads(){ deptHeads = (await apiJson("/api/departments/heads")).heads; }
+async function loadDeptHeads(){ const r = await apiJson("/api/departments/heads"); deptHeads = r.heads; deptHeadSince = r.since || {}; }
 async function loadDeptOverview(){ deptOverviewTiles = (await apiJson("/api/departments/overview")).tiles; }
 async function loadDeptSummary(d){ deptSummaries[d] = await apiJson(`/api/departments/${encodeURIComponent(d)}/summary`); }
 function deptSlug(d){ return d.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
@@ -2232,6 +2233,7 @@ function deptPage(d){
   const s = deptSummaries[d];
   if(!s) return `<div class="empty">Loading ${esc(d)}…</div>`;
   const M = monthLabel(s.month).split(' ')[0], head = s.head;
+  const ps = head ? planScore(d, s.month) : null, psP = head ? planScore(d, prevMonth(s.month)) : null;
   const attLabel = id => { const a = attendanceToday[id]; return a ? attendanceLabel(a.status) : null; };
   const showToday = s.team.some(e=>attendanceToday[e.id]);
   const header = `<div class="panel" style="padding:16px 18px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between;">
@@ -2239,8 +2241,12 @@ function deptPage(d){
     <div style="display:flex;gap:22px;flex-wrap:wrap;">
       <div><div class="kpi-label">Team</div><div class="mono" style="font-size:18px;font-weight:800;">${s.team.length}</div></div>
       ${s.service?`<div><div class="kpi-label">Clients · ${M}</div><div class="mono" style="font-size:18px;font-weight:800;">${s.clients.length}</div></div>`:''}
+      ${ps&&ps.score!=null?`<div><div class="kpi-label">Action plan score</div><div class="mono" style="font-size:18px;font-weight:800;">${ps.score}${psP&&psP.score!=null?` <span style="font-size:11px;">${deltaHTML(ps.score, psP.score)}</span>`:''}</div></div>`:''}
     </div>
-    ${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${head?'Change head':'Assign head'}</button>`:''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${head && isLeadershipRole(currentUser) ? `<button class="btn btn-sm ghost" onclick="setSub('workspace','plans')">Action plans</button>` : (head && currentUser.name===head ? `<button class="btn btn-sm ghost" onclick="setSub('workspace','plan')">My action plan</button>` : '')}
+      ${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${head?'Change head':'Assign head'}</button>`:''}
+    </div>
   </div>`;
   const insights = `<div class="panel"><div class="panel-head"><div><h3>${esc(d)} · ${monthLabel(s.month)}</h3><div class="sub">This month against last month</div></div></div><div class="panel-body">${deptInsightsHTML(s)}</div></div>`;
   const teamPanel = `<div class="panel">
@@ -2267,11 +2273,353 @@ function deptPage(d){
   return `${header}${insights}${revenuePanel}${clientsPanel}${teamPanel}`;
 }
 
+/* ===================== DEPARTMENT ACTION PLANS =====================
+   Each department head files a plan every working day: a one-line focus, their research notes, and items tagged
+   Improve / Optimise / Introduce (a new service). Unfinished items carry over when they start the next day's plan.
+   Leadership reads everything under My Workspace → Dept Action Plans and only steps in when needed — a comment, an
+   item added to a head's plan, or an answer to a "Needs your input" question the head raised. Plans are stored
+   server-side (/api/action-plans); a head only ever sees their own department's. Tracking for a department starts the
+   day its current head was assigned, so nobody is marked down for days before they had the job. */
+const PLAN_ITEM_TYPES = ["Improve","Optimise","Introduce"];
+const PLAN_TYPE_KIND = {Improve:"blue", Optimise:"warn", Introduce:"pos"};
+const PLAN_TYPE_HINT = {Improve:"make an existing service better", Optimise:"same output, less time / cost", Introduce:"a new service or offer"};
+const PLAN_ITEM_STATUSES = ["Planned","In progress","Done","Dropped"];
+const PLAN_STATUS_KIND = {"Planned":"neutral","In progress":"blue","Done":"pos","Dropped":"neg"};
+let actionPlans = [];
+async function loadActionPlans(){ actionPlans = (await apiJson("/api/action-plans")).plans; }
+function canSeePlans(u){ return !!u && isLeadershipRole(u); }
+function planTrackStart(dept){ return (deptHeadSince[dept]) || TODAY; }
+function dateRange(a, b){ const out = []; for(let d=a; d<=b; d=addDays(d,1)) out.push(d); return out; }
+function monthLastDay(m){ const [y,mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo, 0)).toISOString().slice(0,10); }
+// Past working days (newest first) whose plan was due — today isn't included, it's still open.
+function pastPlanDays(n, dept){ const out=[]; const from = planTrackStart(dept); let d=addDays(TODAY,-1); while(out.length<n && d>=from){ if(isPlanWorkingDay(d)) out.push(d); d=addDays(d,-1); } return out; }
+function planFor(dept, date){ return actionPlans.find(p=>p.dept===dept && p.date===date); }
+function plansOf(dept){ return actionPlans.filter(p=>p.dept===dept).sort((a,b)=>b.date.localeCompare(a.date)); }
+function latestPlanBefore(dept, date){ return plansOf(dept).find(p=>p.date<date) || null; }
+function openNeedsInput(){ return actionPlans.filter(p=>p.needsInput && !p.needsInput.resolved).sort((a,b)=>b.date.localeCompare(a.date)); }
+function planCompliance(dept, n){
+  const days = pastPlanDays(n||14, dept);
+  const missed = deptHeads[dept] ? days.filter(d=>!planFor(dept,d)) : [];
+  return {days, missed, filed: days.length-missed.length, today: !!planFor(dept, TODAY)};
+}
+// Action plan score for the month, out of 100:
+//   60% — filing: plans filed ÷ working days they were due (from the 1st, or tracking start, to yesterday;
+//          today counts only once it's filed, so a morning without a plan yet isn't a penalty)
+//   40% — follow-through: items finished ÷ items taken on this month (an item is tracked by title across
+//          days, using its latest status; Dropped items don't count either way)
+function planScore(dept, month){
+  month = month || TODAY.slice(0,7);
+  if(!deptHeads[dept]) return {score:null, filed:0, due:0, done:0, taken:0, introduced:0, filing:null, follow:null};
+  const start = [month+"-01", planTrackStart(dept)].sort().pop();
+  const end = [addDays(TODAY,-1), monthLastDay(month)].sort()[0];
+  const due = start>end ? [] : dateRange(start, end).filter(isPlanWorkingDay);
+  if(month===TODAY.slice(0,7) && planFor(dept,TODAY)) due.push(TODAY);
+  const filed = due.filter(d=>planFor(dept,d)).length;
+  const plans = actionPlans.filter(p=>p.dept===dept && p.date.slice(0,7)===month).sort((a,b)=>a.date.localeCompare(b.date));
+  const latest = {};
+  plans.forEach(p=>p.items.forEach(it=>{ latest[it.title.trim().toLowerCase()] = it; }));
+  const items = Object.values(latest).filter(it=>it.status!=="Dropped");
+  const done = items.filter(it=>it.status==="Done").length;
+  const filing = due.length ? filed/due.length : null;
+  const follow = items.length ? done/items.length : null;
+  const score = filing==null ? null : Math.round(100*(0.6*filing + 0.4*(follow==null?0:follow)));
+  return {score, filed, due:due.length, done, taken:items.length, introduced:items.filter(it=>it.type==="Introduce").length, filing, follow};
+}
+function planScoreKind(s){ return s==null ? "neutral" : s>=85 ? "pos" : s>=65 ? "warn" : "neg"; }
+function planScoreLabel(s){ return s==null ? "No data" : s>=85 ? "Strong" : s>=65 ? "Fair" : "Weak"; }
+function myPlanPending(){ const d = currentUser ? headDeptOf(currentUser.name) : null; return d && isPlanWorkingDay(TODAY) && !planFor(d, TODAY) ? 1 : 0; }
+function canEditPlan(p){ return !!(currentUser && p && deptHeads[p.dept]===currentUser.name && p.date===TODAY); }
+async function planApi(method, path, body, okMsg){
+  try{
+    await apiJson("/api/action-plans"+path, { method, headers:{"Content-Type":"application/json"}, body: body?JSON.stringify(body):undefined });
+    await loadActionPlans();
+    if(okMsg) toast(okMsg);
+    return true;
+  }catch(err){ toast(err.message || "Couldn't save"); return false; }
+}
+function planItemsHTML(p, editable){
+  if(!p.items.length) return `<div class="empty" style="padding:10px 0;">No items yet.</div>`;
+  return `<div style="display:flex;flex-direction:column;gap:6px;">${p.items.map(it=>`
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;${it.status==='Done'||it.status==='Dropped'?'opacity:.72;':''}">
+      <span class="pill ${PLAN_TYPE_KIND[it.type]}" style="flex:none;">${it.type}</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:700;${it.status==='Dropped'?'text-decoration:line-through;':''}">${esc(it.title)}</div>
+        ${it.detail?`<div class="subtext" style="font-size:12px;">${esc(it.detail)}</div>`:''}
+        ${(it.carriedFrom||it.addedBy)?`<div class="subtext">${it.carriedFrom?'Carried over from '+fmtDateShort(it.carriedFrom):''}${it.carriedFrom&&it.addedBy?' · ':''}${it.addedBy?'Added by '+esc(it.addedBy):''}</div>`:''}
+      </div>
+      ${editable
+        ? `<select class="select-sm" style="flex:none;padding:4px 6px;font-size:11.5px;" onchange="setPlanItemStatus('${p.id}','${it.id}',this.value)">${PLAN_ITEM_STATUSES.map(s=>`<option ${s===it.status?'selected':''}>${s}</option>`).join('')}</select>
+           <button type="button" class="card-edit" title="Edit item" onclick="openPlanItem('${p.id}','${it.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>`
+        : pill(it.status, PLAN_STATUS_KIND[it.status])}
+    </div>`).join('')}</div>`;
+}
+function planCommentsHTML(p){
+  if(!p.comments.length) return '';
+  return `<div style="display:flex;flex-direction:column;gap:6px;margin-top:2px;">${p.comments.map(c=>`
+    <div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);font-size:12.5px;"><b>${esc(c.by)}</b> <span class="faint" style="font-size:11px;">${fmtDateShort(c.date)}</span><div style="margin-top:2px;">${esc(c.text)}</div></div>`).join('')}</div>`;
+}
+// One plan, full detail. mode: "head" (their own, editable today) or "lead" (leadership — comment / add item).
+function planCardHTML(p, mode){
+  const editable = mode==="head" && canEditPlan(p);
+  const ni = p.needsInput;
+  return `
+  <div class="panel" style="${ni&&!ni.resolved?'border-color:var(--warn);':''}">
+    <div class="panel-head">
+      <div><h3>${mode==="lead"?esc(p.dept):fmtDate(p.date)}</h3><div class="sub">${mode==="lead"?esc(p.head||'')+' · ':''}Filed ${fmtDateShort(p.date)}${p.submittedAt?' at '+p.submittedAt:''} · ${p.items.length} item${p.items.length===1?'':'s'}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+        ${editable?`<button class="btn btn-sm ghost" onclick="openPlanEdit('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit focus</button><button class="btn btn-sm ghost" onclick="openPlanNeedsInput('${p.id}')">${ni&&!ni.resolved?'Edit question':'Ask leadership'}</button><button class="btn btn-sm primary" onclick="openPlanItem('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add item</button>`:''}
+        ${mode==="lead"?`<button class="btn btn-sm ghost" onclick="openPlanItem('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add to their plan</button><button class="btn btn-sm ${ni&&!ni.resolved?'primary':'ghost'}" onclick="openPlanComment('${p.id}')">${ni&&!ni.resolved?'Answer':'Comment'}</button>`:''}
+      </div>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:14px;font-weight:700;">${esc(p.focus)}</div>
+      ${p.research?`<div style="font-size:12.5px;color:var(--ink-soft);"><b style="color:var(--ink);">Research:</b> ${esc(p.research)}</div>`:''}
+      ${ni?`<div class="banner" style="${ni.resolved?'':'background:var(--warn-soft);color:var(--ink);'}"><svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg><div><b>${ni.resolved?'Answered':'Needs your input'}:</b> ${esc(ni.question)}</div></div>`:''}
+      ${planItemsHTML(p, editable)}
+      ${planCommentsHTML(p)}
+      ${mode==="head" && p.comments.length ? `<div><button class="btn btn-sm ghost" onclick="openPlanComment('${p.id}')">Reply</button></div>` : ''}
+    </div>
+  </div>`;
+}
+// Last-n working days as a strip of filed / missed / today marks.
+function planStripHTML(dept, n){
+  const days = pastPlanDays(n, dept).slice().reverse();
+  const marks = days.map(d=>{ const ok = !!planFor(dept,d); return `<span title="${fmtDate(d)} — ${ok?'filed':'missed'}" style="width:14px;height:14px;border-radius:4px;display:inline-block;background:${ok?'var(--pos)':'var(--neg-soft)'};border:1px solid ${ok?'var(--pos)':'var(--neg)'};"></span>`; });
+  if(isPlanWorkingDay(TODAY)) marks.push(`<span title="Today — ${planFor(dept,TODAY)?'filed':'not yet'}" style="width:14px;height:14px;border-radius:4px;display:inline-block;background:${planFor(dept,TODAY)?'var(--pos)':'transparent'};border:1px dashed var(--ink-faint);"></span>`);
+  return `<span style="display:inline-flex;gap:3px;align-items:center;">${marks.join('')}</span>`;
+}
+
+/* ---- Head's own page: My Workspace → My Action Plan ---- */
+function workspacePlan(){
+  const dept = currentUser ? headDeptOf(currentUser.name) : null;
+  if(!dept) return `<div class="empty">You're not set as a department head, so there's no action plan to file.</div>`;
+  const today = planFor(dept, TODAY);
+  const comp = planCompliance(dept, 10);
+  const history = plansOf(dept).filter(p=>p.date<TODAY).slice(0,10);
+  const weekItems = plansOf(dept).filter(p=>p.date>=addDays(TODAY,-6)).flatMap(p=>p.items);
+  const doneThisWeek = new Set(weekItems.filter(i=>i.status==='Done').map(i=>i.title)).size;
+  const last = latestPlanBefore(dept, TODAY);
+  const carry = last ? last.items.filter(i=>i.status==='Planned'||i.status==='In progress') : [];
+  const sc = planScore(dept);
+  return `
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">${monthLabel(TODAY.slice(0,7)).split(' ')[0]} Score</div><div class="kpi-value mono ${sc.score==null?'':planScoreKind(sc.score)}">${sc.score==null?'—':sc.score}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 100</span></div><div class="kpi-sub">60% filing (${sc.filed}/${sc.due} days) · 40% follow-through (${sc.done}/${sc.taken} done)</div></div>
+    <div class="kpi-card"><div class="kpi-label">Plans Filed</div><div class="kpi-value mono ${comp.missed.length?'warn':''}">${comp.filed} / ${comp.days.length}</div><div class="kpi-sub">last ${comp.days.length} working days · ${planStripHTML(dept,10)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Done This Week</div><div class="kpi-value mono pos">${doneThisWeek}</div><div class="kpi-sub">items completed</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">Today</div><div class="kpi-value" style="font-size:17px;">${today?'Filed':(isPlanWorkingDay(TODAY)?'Not filed yet':'Day off')}</div><div class="kpi-sub">${today?'at '+today.submittedAt:'due today'}</div></div>
+  </div>
+  ${today ? planCardHTML(today, "head") : `
+  <div class="panel" style="border-color:var(--neg);">
+    <div class="panel-head"><div><h3>Today's action plan isn't in yet</h3><div class="sub">What will you research, improve, optimise or introduce in ${esc(dept)} today?${carry.length?` ${carry.length} unfinished item${carry.length>1?'s':''} from ${fmtDateShort(last.date)} will carry over.`:''}</div></div>
+      <button class="btn primary" onclick="openStartPlan()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Start today's plan</button></div>
+  </div>`}
+  <div class="section-label" style="margin:6px 2px;">Previous plans</div>
+  ${history.length ? history.map(p=>planCardHTML(p,"head")).join('') : `<div class="empty">No earlier plans yet.</div>`}`;
+}
+function openStartPlan(){
+  const dept = currentUser ? headDeptOf(currentUser.name) : null;
+  if(!dept || planFor(dept, TODAY)) return;
+  const last = latestPlanBefore(dept, TODAY);
+  const carry = last ? last.items.filter(i=>i.status==='Planned'||i.status==='In progress') : [];
+  showModal(`
+    <div class="modal-head"><h3>Today's action plan — ${esc(dept)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-start-plan"><div class="modal-body">
+      <div><label class="field-label">Today's focus</label><input class="field-input" name="focus" required placeholder="One line — e.g. Price and pilot the brand audit add-on"></div>
+      <div><label class="field-label">Research notes</label><textarea class="field-input" name="research" rows="3" placeholder="What you looked into — competitors, pricing, tools, numbers, links"></textarea></div>
+      ${carry.length?`<div><label class="field-label">Carry over from ${fmtDateShort(last.date)}</label><div style="display:flex;flex-direction:column;gap:6px;">${carry.map(i=>`<label class="check-chip" style="justify-content:flex-start;"><input type="checkbox" name="carry" value="${i.id}" checked><span class="pill ${PLAN_TYPE_KIND[i.type]}">${i.type}</span> ${esc(i.title)} <span class="faint">· ${i.status}</span></label>`).join('')}</div></div>`:''}
+      <div class="section-label" style="margin-top:4px;">New item${carry.length?' (optional)':''}</div>
+      <div class="field-row">
+        <div><label class="field-label">Type</label><select class="field-input" name="type">${PLAN_ITEM_TYPES.map(t=>`<option value="${t}">${t} — ${PLAN_TYPE_HINT[t]}</option>`).join('')}</select></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${PLAN_ITEM_STATUSES.slice(0,2).map(s=>`<option>${s}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label">What</label><input class="field-input" name="title" ${carry.length?'':'required'} placeholder="e.g. Website maintenance retainer"></div>
+      <div><label class="field-label">Detail</label><input class="field-input" name="detail" placeholder="Optional"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">File today's plan</button></div></div>
+    </form>`);
+  document.getElementById("f-start-plan").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const keep = f.getAll("carry");
+    const items = carry.filter(i=>keep.includes(i.id)).map(i=>({type:i.type, title:i.title, detail:i.detail, status:i.status, carriedFrom:last.date}));
+    const title = (f.get("title")||"").trim();
+    if(title) items.push({type:f.get("type"), title, detail:(f.get("detail")||"").trim(), status:f.get("status")});
+    if(!items.length){ toast("Add at least one item"); return; }
+    if(await planApi("POST", "", { focus:f.get("focus"), research:(f.get("research")||"").trim(), items }, "Today's plan filed")){ closeModal(); render(); }
+  });
+}
+function planById(id){ return actionPlans.find(p=>p.id===id); }
+async function setPlanItemStatus(planId, itemId, status){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  await planApi("PATCH", `/${planId}/items/${itemId}`, { status });
+  render();
+}
+// Add / edit an item. The head edits today's plan; leadership can add an item to any head's plan.
+function openPlanItem(planId, itemId){
+  const p = planById(planId); if(!p) return;
+  const lead = canSeePlans(currentUser) && !canEditPlan(p);
+  if(!canEditPlan(p) && !lead) return;
+  const it = itemId ? p.items.find(i=>i.id===itemId) : null;
+  if(it && !canEditPlan(p)) return;
+  showModal(`
+    <div class="modal-head"><h3>${it?'Edit item':(lead?'Add to '+esc(p.head||p.dept)+"'s plan":'Add item')}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-item"><div class="modal-body">
+      <div class="field-row">
+        <div><label class="field-label">Type</label><select class="field-input" name="type">${PLAN_ITEM_TYPES.map(t=>`<option value="${t}" ${it&&it.type===t?'selected':''}>${t} — ${PLAN_TYPE_HINT[t]}</option>`).join('')}</select></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status">${PLAN_ITEM_STATUSES.map(s=>`<option ${it&&it.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label">What</label><input class="field-input" name="title" required value="${esc(it?it.title:'')}"></div>
+      <div><label class="field-label">Detail</label><textarea class="field-input" name="detail" rows="2">${esc(it?it.detail:'')}</textarea></div>
+    </div>
+    <div class="modal-foot"><div>${it?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="removePlanItem('${p.id}','${it.id}')">Remove</button>`:''}</div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${it?'Save':'Add'}</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-item").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const data = {type:f.get("type"), status:f.get("status"), title:f.get("title"), detail:(f.get("detail")||"").trim()};
+    const ok = it ? await planApi("PATCH", `/${p.id}/items/${it.id}`, data, "Item updated") : await planApi("POST", `/${p.id}/items`, data, lead?"Added to "+(p.head||p.dept)+"'s plan":"Item added");
+    if(ok){ closeModal(); render(); }
+  });
+}
+async function removePlanItem(planId, itemId){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  if(await planApi("DELETE", `/${planId}/items/${itemId}`)){ closeModal(); render(); }
+}
+function openPlanEdit(planId){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  showModal(`
+    <div class="modal-head"><h3>Edit today's focus</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-edit"><div class="modal-body">
+      <div><label class="field-label">Today's focus</label><input class="field-input" name="focus" required value="${esc(p.focus)}"></div>
+      <div><label class="field-label">Research notes</label><textarea class="field-input" name="research" rows="4">${esc(p.research)}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-edit").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    if(await planApi("PATCH", `/${p.id}`, { focus:f.get("focus"), research:(f.get("research")||"").trim() }, "Plan updated")){ closeModal(); render(); }
+  });
+}
+// The head's way to pull leadership in — only when they actually need a decision.
+function openPlanNeedsInput(planId){
+  const p = planById(planId); if(!canEditPlan(p)) return;
+  const q = p.needsInput && !p.needsInput.resolved ? p.needsInput.question : '';
+  showModal(`
+    <div class="modal-head"><h3>Ask leadership</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-ask"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">Only for decisions you can't make yourself — it goes to the top of Dept Action Plans until it's answered.</div>
+      <div><label class="field-label">What do you need decided?</label><textarea class="field-input" name="question" rows="3" placeholder="Leave empty to withdraw the question">${esc(q)}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-ask").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const question = (f.get("question")||"").trim();
+    if(await planApi("PATCH", `/${p.id}`, { needsQuestion: question||null }, question?"Sent to Dept Action Plans":"Question withdrawn")){ closeModal(); render(); }
+  });
+}
+// Comment / answer. Leadership answering an open question marks it answered (unless they untick it);
+// the head can reply on their own plan's thread.
+function openPlanComment(planId){
+  const p = planById(planId); if(!p) return;
+  const lead = canSeePlans(currentUser);
+  const isHead = currentUser && deptHeads[p.dept]===currentUser.name;
+  if(!lead && !isHead) return;
+  const openQ = p.needsInput && !p.needsInput.resolved;
+  showModal(`
+    <div class="modal-head"><h3>${lead&&openQ?'Answer':'Comment'} — ${esc(p.dept)}, ${fmtDateShort(p.date)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-plan-comment"><div class="modal-body">
+      ${openQ?`<div class="banner" style="background:var(--warn-soft);color:var(--ink);"><div><b>${esc(p.head||'')} asked:</b> ${esc(p.needsInput.question)}</div></div>`:''}
+      <div><label class="field-label">Your ${lead&&openQ?'answer':'comment'}</label><textarea class="field-input" name="text" rows="3" required></textarea></div>
+      ${lead&&openQ?`<label class="check-chip" style="align-self:flex-start;"><input type="checkbox" name="resolve" value="1" checked>This answers their question</label>`:''}
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Post</button></div></div>
+    </form>`);
+  document.getElementById("f-plan-comment").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    if(await planApi("POST", `/${p.id}/comments`, { text:f.get("text"), resolve: !!(lead && openQ && f.get("resolve")) }, "Posted")){ closeModal(); render(); }
+  });
+}
+
+/* ---- Leadership: My Workspace → Dept Action Plans ---- */
+let planHistoryDept = "All";
+function setPlanHistoryDept(v){ planHistoryDept = v; render(); }
+function plansToday(){
+  if(!canSeePlans(currentUser)) return `<div class="empty">Only Leadership can see every department's action plans.</div>`;
+  const headed = DEPARTMENTS.filter(d=>deptHeads[d]);
+  const filed = headed.filter(d=>planFor(d,TODAY));
+  const questions = openNeedsInput();
+  const week = actionPlans.filter(p=>p.date>=addDays(TODAY,-6));
+  const uniq = (items)=>new Set(items.map(i=>i.dept+'|'+i.title)).size;
+  const weekItems = week.flatMap(p=>p.items.map(i=>({...i, dept:p.dept})));
+  const doneWeek = uniq(weekItems.filter(i=>i.status==='Done'));
+  const introduce = uniq(weekItems.filter(i=>i.type==='Introduce' && i.status!=='Dropped'));
+  return `
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">Filed Today</div><div class="kpi-value mono ${filed.length<headed.length?'warn':'pos'}">${filed.length}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${headed.length}</span></div><div class="kpi-sub">${headed.filter(d=>!planFor(d,TODAY)).map(d=>esc(deptHeads[d])).join(', ')||'all heads filed'}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Needs Your Input</div><div class="kpi-value mono ${questions.length?'warn':''}">${questions.length}</div><div class="kpi-sub">${questions.length?'questions waiting on you':'nothing waiting'}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Done This Week</div><div class="kpi-value mono pos">${doneWeek}</div><div class="kpi-sub">items across departments</div></div>
+    <div class="kpi-card hero"><div class="kpi-label">New Services in Progress</div><div class="kpi-value mono">${introduce}</div><div class="kpi-sub">"Introduce" items this week</div></div>
+  </div>
+  ${questions.length ? `
+  <div class="panel" style="border-color:var(--warn);">
+    <div class="panel-head"><div><h3>Needs your input</h3><div class="sub">The only things heads have asked you to decide</div></div></div>
+    <div class="panel-body">${questions.map(p=>`<div class="feed-item" style="align-items:center;"><div class="feed-dot" style="background:var(--warn);"></div><div style="flex:1;"><div class="feed-text"><strong>${esc(p.head||'')}</strong> · ${esc(p.dept)}</div><div style="font-size:13px;margin-top:2px;">${esc(p.needsInput.question)}</div><div class="feed-time">${fmtDateShort(p.date)} · ${esc(p.focus)}</div></div><button class="btn btn-sm primary" style="flex:none;" onclick="openPlanComment('${p.id}')">Answer</button></div>`).join('')}</div>
+  </div>` : ''}
+  <div class="panel">
+    <div class="panel-head"><div><h3>Filing record</h3><div class="sub">Last 10 working days since the head was assigned · green = filed, red = missed, dashed = today</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Department</th><th>Head</th><th>Record</th><th class="num">Filed</th><th class="num">${monthLabel(TODAY.slice(0,7)).split(' ')[0]} score</th><th>Today</th><th></th></tr></thead>
+      <tbody>${DEPARTMENTS.map(d=>{ const c = planCompliance(d,10); const sc = planScore(d); return `<tr>
+        <td style="font-weight:700;">${esc(d)}</td>
+        <td>${deptHeads[d]?esc(deptHeads[d]):pill('No head','warn')}</td>
+        <td>${deptHeads[d]?planStripHTML(d,10):'<span class="faint">—</span>'}</td>
+        <td class="num mono" style="${c.missed.length?'color:var(--neg);font-weight:700;':''}">${deptHeads[d]?c.filed+' / '+c.days.length:'—'}</td>
+        <td class="num">${deptHeads[d]&&sc.score!=null?`<span class="mono" style="font-weight:800;">${sc.score}</span> ${pill(planScoreLabel(sc.score),planScoreKind(sc.score))}`:'<span class="faint">—</span>'}</td>
+        <td>${!deptHeads[d]?'—':c.today?pill('Filed '+planFor(d,TODAY).submittedAt,'pos'):pill('Not filed','neg')}</td>
+        <td class="num"><button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${deptHeads[d]?'Change head':'Assign head'}</button></td>
+      </tr>`; }).join('')}</tbody>
+    </table></div>
+  </div>
+  <div class="section-label" style="margin:6px 2px;">Today's plans · ${fmtDate(TODAY)}</div>
+  ${filed.length ? `<div class="grid-2" style="align-items:start;">${filed.map(d=>planCardHTML(planFor(d,TODAY),"lead")).join('')}</div>` : `<div class="empty">No plans filed yet today.</div>`}`;
+}
+function plansHistory(){
+  if(!canSeePlans(currentUser)) return `<div class="empty">Only Leadership can see every department's action plans.</div>`;
+  const list = actionPlans.filter(p=>p.date<TODAY && (planHistoryDept==='All' || p.dept===planHistoryDept)).sort((a,b)=>b.date.localeCompare(a.date) || a.dept.localeCompare(b.dept));
+  const byDate = [...new Set(list.map(p=>p.date))];
+  const missedRows = (planHistoryDept==='All'?DEPARTMENTS:[planHistoryDept]).filter(d=>deptHeads[d]).map(d=>({d, m:planCompliance(d,14).missed})).filter(x=>x.m.length);
+  return `
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Department</span><select class="select-sm" onchange="setPlanHistoryDept(this.value)"><option ${planHistoryDept==='All'?'selected':''}>All</option>${DEPARTMENTS.map(d=>`<option ${d===planHistoryDept?'selected':''}>${esc(d)}</option>`).join('')}</select></div></div>
+  ${missedRows.length?`<div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Missed plans (last 14 working days):</b> ${missedRows.map(x=>`${esc(x.d)} — ${x.m.map(fmtDateShort).join(', ')}`).join(' · ')}</div></div>`:''}
+  ${byDate.length ? byDate.map(date=>`
+    <div class="section-label" style="margin:6px 2px;">${fmtDate(date)}</div>
+    <div class="grid-2" style="align-items:start;">${list.filter(p=>p.date===date).map(p=>planCardHTML(p,"lead")).join('')}</div>`).join('') : `<div class="empty">No earlier plans for this department yet.</div>`}`;
+}
+let planTeamView = "today";
+function setPlanTeamView(v){ planTeamView = v; render(); }
+function workspacePlansTeam(){
+  if(!canSeePlans(currentUser)) return `<div class="empty">Only Leadership can see every department's action plans.</div>`;
+  return `
+  <div class="toolbar"><div style="display:flex;gap:6px;">
+    <button class="btn btn-sm ${planTeamView==='today'?'primary':'ghost'}" onclick="setPlanTeamView('today')">Today${openNeedsInput().length?` · ${openNeedsInput().length} need${openNeedsInput().length===1?'s':''} you`:''}</button>
+    <button class="btn btn-sm ${planTeamView==='history'?'primary':'ghost'}" onclick="setPlanTeamView('history')">History</button>
+  </div></div>
+  ${planTeamView==='history' ? plansHistory() : plansToday()}`;
+}
+// Small nudge at the top of a head's My Workspace when today's plan isn't filed.
+function planReminderHTML(){
+  if(!myPlanPending()) return '';
+  const dept = headDeptOf(currentUser.name);
+  return `<div class="banner" style="background:var(--neg-soft);color:var(--ink);align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg><div style="flex:1;"><b>Today's ${esc(dept)} action plan isn't filed yet.</b> What will you improve, optimise or introduce today?</div><button class="btn btn-sm primary" style="flex:none;" onclick="setSub('workspace','plan')">Open action plan</button></div>`;
+}
+
 /* ===================== NAV MODEL ===================== */
 const MODULES = [
   {id:"dashboard", label:"Dashboard", icon:"i-home"},
   {id:"workspace", label:"My Workspace", icon:"i-briefcase", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
+    {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
+    {id:"plans", label:"Dept Action Plans", icon:"i-target", when:()=>canSeePlans(currentUser), count:()=>openNeedsInput().length},
     {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
     {id:"attendance", label:"My Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
@@ -2360,6 +2708,7 @@ function isStaffRole(emp){ return !!emp && !isHRRole(emp) && !isLeadershipRole(e
 // in for the default (Staff-flavored) workspace sub-array by visibleModules() below.
 const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
+  {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
   {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
   {id:"attendance", label:"My Attendance", icon:"i-attendance"},
   {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
@@ -2463,6 +2812,7 @@ function visibleModulesLegacy(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
+  "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
@@ -2476,7 +2826,7 @@ const TAB_REFRESH = {
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
   let jobs = TAB_REFRESH[mid+"/"+sid];
-  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadDeptSummary(deptFromSlug(sid))] : null);
+  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid))] : null);
   if(!jobs) return;
   Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
 }
@@ -2519,6 +2869,8 @@ const TOPBAR_TITLES = {
   calendar: { main:["Calendar", ()=>{ const p = taskCalPersonValue(); return "Tasks, events, holidays and leave · "+(p==="All"?"whole team":p); }] },
   workspace: {
     overview:["My Workspace", ()=>currentUser?currentUser.role+" · "+currentUser.name:"Your personal snapshot"],
+    plan:["My Action Plan", ()=>{ const d = currentUser?headDeptOf(currentUser.name):null; return d ? d+" · file today's plan" : ""; }],
+    plans:["Dept Action Plans", ()=>{ const h = DEPARTMENTS.filter(d=>deptHeads[d]); return h.filter(d=>planFor(d,TODAY)).length+" of "+h.length+" heads filed today"; }],
     tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+" open across your clients":""],
     attendance:["My Attendance","Your check-in status and this month's record"],
     leave:["Leave", ()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id).length+" request(s) on record":""],
@@ -2674,7 +3026,7 @@ function render(){
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
   else if(nav.module==="calendar") root.innerHTML = calendarView();
   else if(nav.module==="departments") root.innerHTML = nav.sub.departments==="overview" ? deptsOverview() : deptPage(deptFromSlug(nav.sub.departments));
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
@@ -2891,6 +3243,7 @@ function workspaceOverview(){
   const present = monthPresentDays[currentUser.id] ?? mtdWorkingDays;
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
+  ${planReminderHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-calendar"/></svg></div></div><div class="kpi-value mono">${present}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${mtdWorkingDays}</span></div><div class="kpi-sub">days present</div></div>
@@ -2916,6 +3269,7 @@ function workspaceOverviewSales(){
   const myRank = board.findIndex(r=>r.name===currentUser.name)+1;
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
+  ${planReminderHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-attendance"/></svg></div></div><div class="kpi-value mono" style="font-size:19px;">${att?attendanceLabel(att.status):'—'}</div><div class="kpi-sub">${att&&att.in?'checked in '+att.in:''}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Commission Earned</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-percent"/></svg></div></div><div class="kpi-value mono" style="font-size:17px;">${inr(mine.earned)}</div><div class="kpi-sub">${mine.balance>0?inr(mine.balance)+' outstanding':'all settled'}</div></div>
@@ -7481,7 +7835,7 @@ Auth.init().then(async (authUser) => {
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
-  crmContentJobs.push(loadDeptHeads().catch(err=>console.error("Department heads failed to load", err)));
+  crmContentJobs.push(loadDeptHeads().then(()=>loadActionPlans()).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
   await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);

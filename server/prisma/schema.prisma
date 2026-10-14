@@ -1457,3 +1457,61 @@ model DepartmentHead {
 
   @@map("department_heads")
 }
+
+// A department head's daily action plan: a one-line focus, research notes and a running list of items
+// (Improve / Optimise / Introduce). One plan per department per day; unfinished items are carried into the next.
+// The head's name is stored as filed, so history survives a change of head.
+model ActionPlan {
+  id             String    @id @default(uuid())
+  dept           String
+  headName       String    @map("head_name")
+  date           DateTime  @db.Date
+  // "HH:MM" wall-clock time it was filed.
+  submittedAt    String    @map("submitted_at")
+  focus          String
+  research       String    @default("")
+  // A decision the head needs from leadership; null when nothing is pending.
+  needsQuestion  String?   @map("needs_question")
+  needsResolved  Boolean   @default(false) @map("needs_resolved")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  items    ActionPlanItem[]
+  comments ActionPlanComment[]
+
+  @@unique([dept, date])
+  @@index([date])
+  @@map("action_plans")
+}
+
+model ActionPlanItem {
+  id          String     @id @default(uuid())
+  planId      String     @map("plan_id")
+  plan        ActionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  seq         Int
+  // Improve | Optimise | Introduce
+  type        String
+  title       String
+  detail      String     @default("")
+  // Planned | In progress | Done | Dropped
+  status      String
+  carriedFrom DateTime?  @map("carried_from") @db.Date
+  // Set when leadership added the item to the head's plan.
+  addedBy     String?    @map("added_by")
+
+  @@index([planId])
+  @@map("action_plan_items")
+}
+
+model ActionPlanComment {
+  id        String     @id @default(uuid())
+  planId    String     @map("plan_id")
+  plan      ActionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  by        String
+  text      String
+  date      DateTime   @db.Date
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@index([planId])
+  @@map("action_plan_comments")
+}
