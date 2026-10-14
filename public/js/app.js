@@ -3240,7 +3240,6 @@ const MODULES = [
     {id:"attendance", label:"My Attendance", icon:"i-attendance"},
     {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
-    {id:"advance", label:"Advance Salary", icon:"i-coins", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length:0},
     {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
     {id:"complaints", label:"Complaints", icon:"i-megaphone"},
   ]},
@@ -3329,7 +3328,7 @@ const SALES_WORKSPACE_SUB = [
   {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
   {id:"attendance", label:"My Attendance", icon:"i-attendance"},
   {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
-  {id:"advance", label:"Advance Salary", icon:"i-coins", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length:0},
+  {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
   {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
   {id:"commission", label:"My Commission", icon:"i-percent", count:()=>currentUser?payables.filter(p=>p.category==="Commission" && p.salesPerson===currentUser.name && payableBalance(p)>0).length:0},
   {id:"leaderboard", label:"Leaderboard", icon:"i-target"},
@@ -3435,7 +3434,7 @@ const TAB_REFRESH = {
   "calendar/main":[()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
-  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/advance":[loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
+  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
   "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():loadReceiptsSummary(), ()=>isFinanceAdminUser(currentUser)?loadLeadAdvances().catch(()=>{}):null],
