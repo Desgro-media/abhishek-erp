@@ -3405,8 +3405,8 @@ function visibleModulesLegacy(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
-  "hr/programs":[loadHrPrograms],
-  "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{})],
+  "hr/programs":[loadHrPrograms], "hr/overview":[loadHrPrograms],
+  "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
@@ -3848,6 +3848,7 @@ function workspaceOverview(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${socialReminderHTML()}
   ${feedbackDueHTML()}
   ${myDeptScoreHTML()}
   ${upcomingProgramsHTML()}
@@ -3877,6 +3878,7 @@ function workspaceOverviewSales(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${socialReminderHTML()}
   ${feedbackDueHTML()}
   ${myDeptScoreHTML()}
   ${upcomingProgramsHTML()}
@@ -4320,7 +4322,37 @@ function statusKind(s){
 }
 function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",leave:"On Leave",wfh:"Work From Home",wfhp:"Partially Paid WFH"}[s]; }
 
+/* ===================== HR SCORE =====================
+   Out of 100:  Programs run 40 (each of the 3 program types run, or still scheduled) · Feedback rating 25 · Feedback
+   response rate 10 · Requests handled on time 15 (leave / advance / withdrawal decided, or under 2 days old) ·
+   Complaints picked up 10. A part with nothing to measure is left out and the rest re-weighted. */
+function hrMonthScore(month){
+  const asOf = [TODAY, monthEndOf(month)].sort()[0], mEnd = monthEndOf(month);
+  const progs = programsInMonth(month).filter(p=>p.status!=="Cancelled");
+  const done = progs.filter(p=>p.status==="Completed");
+  const ratings = done.map(p=>p.rating).filter(r=>r!=null);
+  const att = done.reduce((t,p)=>t+p.attendees.length,0), resp = done.reduce((t,p)=>t+p.responses,0);
+  const reqs = [
+    ...leaveRequests.filter(l=>(l.applied||'').slice(0,7)===month).map(r=>({status:r.status, d:r.applied})),
+    ...advances.filter(a=>(a.requested||'').slice(0,7)===month).map(r=>({status:r.status, d:r.requested})),
+    ...withdrawalRequests.filter(w=>(w.requested||'').slice(0,7)===month).map(r=>({status:r.status, d:r.requested})),
+  ];
+  const onTime = reqs.filter(r=>r.status!=="Pending" || r.d>=addDays(asOf,-2)).length;
+  const comps = complaints.filter(c=>(c.submitted||'').slice(0,7)===month || (c.status==="New" && (c.submitted||'')<=mEnd));
+  const typeOk = PROGRAM_TYPES.map(t=>({t, ok: progs.some(p=>p.type===t && (p.status==="Completed" || p.date>asOf)), overdue: progs.filter(p=>p.type===t && p.status!=="Completed" && p.date<=asOf).length}));
+  const okCount = typeOk.filter(x=>x.ok).length, overdueCount = typeOk.reduce((t,x)=>t+x.overdue,0);
+  const avg = ratings.length ? ratings.reduce((a,b)=>a+b,0)/ratings.length : null;
+  const parts = [
+    {key:"programs", label:"Programs run", w:40, v: okCount/PROGRAM_TYPES.length, detail:`${okCount} of ${PROGRAM_TYPES.length} types run or on schedule${overdueCount?` · ${overdueCount} not run on its date`:''}${okCount<PROGRAM_TYPES.length?` · missing ${typeOk.filter(x=>!x.ok).map(x=>x.t.toLowerCase()).join(', ')}`:''}`},
+    {key:"feedback", label:"Feedback rating", w:25, v: avg==null ? null : avg/5, detail: avg==null ? "no feedback yet" : `${avg.toFixed(1)} / 5 average`},
+    {key:"response", label:"Feedback response rate", w:10, v: att ? Math.min(1, resp/att) : null, detail: att ? `${resp} of ${att} attendees replied` : "—"},
+    {key:"requests", label:"Requests handled on time", w:15, v: reqs.length ? onTime/reqs.length : null, detail: reqs.length ? `${onTime} of ${reqs.length} decided or under 2 days old` : "no requests this month"},
+    {key:"complaints", label:"Complaints picked up", w:10, v: comps.length ? comps.filter(c=>c.status!=="New").length/comps.length : 1, detail: comps.length ? `${comps.filter(c=>c.status!=="New").length} of ${comps.length} reviewed` : "no complaints — full marks"},
+  ];
+  return {score: weightedScoreOf(parts), parts};
+}
 function hrOverview(){
+  const hrMonth = TODAY.slice(0,7), hrPrev = prevMonth(hrMonth), hrP = monthLabel(hrPrev).split(' ')[0];
   const present = Object.values(attendanceToday).filter(a=>a.status==="present").length;
   const late = Object.values(attendanceToday).filter(a=>a.status==="late").length;
   const half = Object.values(attendanceToday).filter(a=>a.status==="half").length;
@@ -4338,10 +4370,7 @@ function hrOverview(){
   ].slice(0,5);
 
   return `
-  <div class="banner">
-    <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-    <div><b>Sample data.</b> Approving a leave or advance updates its status live; fully paying an employee's salary for the month recovers their approved advance automatically.</div>
-  </div>
+  ${monthScorePanelHTML(`HR Score · ${monthLabel(hrMonth)}`, `Programs, feedback, requests and complaints · vs ${hrP}`, hrMonthScore(hrMonth), hrMonthScore(hrPrev), hrP)}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Team Size</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-users"/></svg></div></div><div class="kpi-value mono">${employees.length}</div><div class="kpi-sub">${onNotice ? onNotice+" on notice period" : "across "+DEPARTMENTS.length+" departments"}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Present Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg></div></div><div class="kpi-value mono">${present+late+half}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${employees.length}</span></div><div class="kpi-sub">${onLeave} on leave</div></div>
@@ -5948,6 +5977,117 @@ function ownAdsForMonth(month){
   return rows.length ? { days:rows.length, spend:rows.reduce((s,m)=>s+m.spend,0), leads:rows.reduce((s,m)=>s+m.leads,0) } : null;
 }
 
+/* ===================== SOCIAL MEDIA NUMBERS + MARKETING SCORE =====================
+   Once a month the marketing owner (or leadership) copies each platform's followers, reach and engagements from its
+   insights. The Marketing Score is out of 100:  Content delivered 50 · Follower growth 30 (target 3% a month) ·
+   Engagement rate 20 (target 5% of reach). A part with nothing to measure is left out and the rest re-weighted. */
+const MKT_FOLLOWER_GROWTH_TARGET = 0.03, MKT_ENGAGEMENT_TARGET = 0.05;
+const SOCIAL_METRICS = [
+  {k:"followers", label:"Followers", req:true}, {k:"reach", label:"Reach"}, {k:"impressions", label:"Impressions"},
+  {k:"engagements", label:"Engagements"}, {k:"profileVisits", label:"Profile visits"}, {k:"linkClicks", label:"Link clicks"},
+];
+let socialData = null;                                   // {owner, canUpdate, platforms, stats, notes} from /api/scores/social
+let socialStatus = {isOwner:false, pending:false};       // light read for the owner's My Workspace nudge
+async function loadSocial(){ socialData = await apiJson("/api/scores/social"); }
+async function loadSocialStatus(){ socialStatus = await apiJson("/api/scores/social/status"); }
+const socialPlatforms = ()=> socialData ? socialData.platforms : ["Instagram","LinkedIn"];
+const socialFor = (month, platform)=> (socialData && socialData.stats.find(x=>x.month===month && x.platform===platform)) || null;
+function socialTotal(month, key){ const rows = socialData ? socialData.stats.filter(x=>x.month===month) : []; return rows.length ? rows.reduce((t,x)=>t+(x[key]||0),0) : null; }
+const socialPendingNow = ()=> !!socialData && !socialData.stats.some(x=>x.month===TODAY.slice(0,7));
+function monthEndOf(month){ const [y,m] = month.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10); }
+function weightedScoreOf(parts){ const live = parts.filter(p=>p.v!=null), w = live.reduce((t,p)=>t+p.w,0); return w ? Math.round(live.reduce((t,p)=>t+p.v*p.w,0)/w*100) : null; }
+function marketingScore(month){
+  const asOf = [TODAY, monthEndOf(month)].sort()[0];
+  const due = contentItems.filter(c=>(c.due||'').slice(0,7)===month && c.due<=asOf), done = due.filter(c=>c.stage==="Published");
+  const f = socialTotal(month,'followers'), fp = socialTotal(prevMonth(month),'followers');
+  const reach = socialTotal(month,'reach'), eng = socialTotal(month,'engagements');
+  const growth = (f!=null && fp) ? (f-fp)/fp : null, er = reach ? eng/reach : null;
+  const parts = [
+    {key:"content", label:"Content delivered", w:50, v: due.length ? done.length/due.length : null, detail: due.length ? `${done.length} of ${due.length} due so far published` : "nothing due yet"},
+    {key:"followers", label:"Follower growth", w:30, v: growth==null ? null : Math.max(0, Math.min(1, growth/MKT_FOLLOWER_GROWTH_TARGET)), detail: growth==null ? "no numbers to compare" : `${growth>=0?'+':''}${(growth*100).toFixed(1)}% · target ${MKT_FOLLOWER_GROWTH_TARGET*100}%`},
+    {key:"engagement", label:"Engagement rate", w:20, v: er==null ? null : Math.min(1, er/MKT_ENGAGEMENT_TARGET), detail: er==null ? "no numbers yet" : `${(er*100).toFixed(1)}% of reach · target ${MKT_ENGAGEMENT_TARGET*100}%`},
+  ];
+  return {score: weightedScoreOf(parts), parts};
+}
+function socialPanelHTML(){
+  if(!socialData) return '';
+  const month = TODAY.slice(0,7), prev = prevMonth(month), M = monthLabel(month).split(' ')[0];
+  const owner = socialData.owner ? socialData.owner.name : "Nobody yet";
+  const pending = socialPendingNow(), note = socialData.notes[month];
+  const last = socialData.stats.filter(x=>x.month===month).map(x=>x.updatedOn).sort().pop();
+  const er = x => x && x.reach ? x.engagements/x.reach*100 : null;
+  const num = x => x.toLocaleString('en-IN');
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Social media · ${M}</h3><div class="sub">Updated by ${esc(owner)} each month from platform insights${last?` · last update ${fmtDateShort(last)}`:''}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openMarketingOwner()">Change owner</button>`:''}${socialData.canUpdate?`<button class="btn btn-sm ${pending?'primary':'ghost'}" onclick="openSocialUpdate()">${pending?'Update '+M+' numbers':'Edit '+M+' numbers'}</button>`:''}</div></div>
+    ${pending?`<div class="banner" style="margin:12px 16px 0;background:var(--warn-soft);color:var(--ink);"><div><b>${M}'s numbers aren't in yet.</b> ${esc(owner)} updates followers, reach and engagements for each platform.</div></div>`:''}
+    <div class="table-wrap"><table class="data"><thead><tr><th>Platform</th><th class="num">Followers</th><th class="num">Growth</th><th class="num">Reach</th><th class="num">Engagements</th><th class="num">Engagement rate</th></tr></thead>
+      <tbody>${socialPlatforms().map(pl=>{ const a = socialFor(month, pl), b = socialFor(prev, pl); const g = a&&b&&b.followers ? (a.followers-b.followers)/b.followers*100 : null; return `<tr>
+        <td style="font-weight:700;">${esc(pl)}</td>
+        <td class="num"><div class="mono" style="font-weight:700;">${a?num(a.followers):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.followers:null, b?b.followers:null, {fmt:num})}</div></td>
+        <td class="num mono" style="font-weight:700;color:${g!=null&&g>=0?'var(--pos)':'var(--neg)'};">${g==null?'—':(g>=0?'+':'')+g.toFixed(1)+'%'}</td>
+        <td class="num"><div class="mono">${a?num(a.reach):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.reach:null, b?b.reach:null, {fmt:num})}</div></td>
+        <td class="num"><div class="mono">${a?num(a.engagements):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.engagements:null, b?b.engagements:null, {fmt:num})}</div></td>
+        <td class="num"><div class="mono">${er(a)==null?'—':er(a).toFixed(1)+'%'}</div><div style="font-size:10.5px;">${vsHTML(er(a), er(b), {fmt:x=>x.toFixed(1)+'%', eps:0.05})}</div></td>
+      </tr>`; }).join('')}</tbody>
+    </table></div>
+    ${note?`<div class="panel-body" style="padding-top:8px;"><div class="subtext"><b>What the insights say</b> · ${esc(note.by)}, ${fmtDateShort(note.on)}</div><div style="margin-top:4px;font-size:13px;">${esc(note.text)}</div></div>`:''}
+  </div>`;
+}
+function openSocialUpdate(){
+  if(!socialData || !socialData.canUpdate) return;
+  const month = TODAY.slice(0,7), prev = prevMonth(month), pm = monthLabel(prev).slice(0,3), note = socialData.notes[month];
+  showModal(`
+    <div class="modal-head"><h3>Followers &amp; insights — ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-social"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">Copy these from each platform's insights for the month. Only followers is required. ${pm} numbers are shown under each box.</div>
+      ${socialPlatforms().map(pl=>{ const a = socialFor(month, pl), b = socialFor(prev, pl); return `
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;">
+          <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(pl)}</legend>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;">
+            ${SOCIAL_METRICS.map(m=>`<div><label class="field-label" for="soc-${pl}-${m.k}">${m.label}${m.req?' *':''}</label><input class="field-input" type="number" min="0" step="1" id="soc-${pl}-${m.k}" name="${pl}-${m.k}" value="${a&&a[m.k]!=null?a[m.k]:''}" ${m.req?'required':''}><div class="subtext">${pm}: ${b&&b[m.k]!=null?b[m.k].toLocaleString('en-IN'):'—'}</div></div>`).join('')}
+          </div>
+        </fieldset>`; }).join('')}
+      <div><label class="field-label" for="soc-note">What the insights say (optional)</label><textarea class="field-input" id="soc-note" name="note" rows="3" placeholder="What worked, what didn't, what we change next month">${note?esc(note.text):''}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-social").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const val = (pl,k)=>{ const v = f.get(pl+'-'+k); return v===''||v==null ? null : Number(v); };
+    // followers, reach and engagements feed the score, so blanks there count as 0
+    const stats = socialPlatforms().map(pl=>({ platform:pl, followers:val(pl,'followers')||0, reach:val(pl,'reach')||0, engagements:val(pl,'engagements')||0, impressions:val(pl,'impressions'), profileVisits:val(pl,'profileVisits'), linkClicks:val(pl,'linkClicks') }));
+    try{
+      await apiJson(`/api/scores/social/${month}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ stats, note:(f.get('note')||'').trim() }) });
+      await Promise.all([loadSocial(), loadSocialStatus().catch(()=>{})]);
+      toast("Followers & insights saved for "+monthLabel(month)); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the numbers"); }
+  });
+}
+function openMarketingOwner(){
+  if(!isLeadershipRole(currentUser) || !socialData) return;
+  showModal(`
+    <div class="modal-head"><h3>Who updates social media numbers?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-mkt-owner"><div class="modal-body">
+      <div><label class="field-label">Marketing owner</label><select class="field-input" name="owner">${employees.filter(e=>e.employmentStatus!=="Left").map(e=>`<option value="${e.id}" ${socialData.owner&&socialData.owner.code===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+      <div class="subtext">They get a reminder in My Workspace until each month's numbers are in.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-mkt-owner").addEventListener("submit", async e=>{
+    e.preventDefault();
+    try{
+      const r = await apiJson("/api/scores/social-owner", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId: employeeDbIdByCode[new FormData(e.target).get("owner")] }) });
+      await loadSocial(); toast(r.owner.name+" now updates social numbers"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't change the owner"); }
+  });
+}
+// The owner's My Workspace nudge.
+function socialReminderHTML(){
+  if(!currentUser || !socialStatus.isOwner || !socialStatus.pending) return '';
+  return `<div class="banner" style="background:var(--warn-soft);color:var(--ink);align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg><div style="flex:1;"><b>Update ${monthLabel(TODAY.slice(0,7))}'s social media numbers</b> — followers, reach and engagements for each platform.</div>${visibleModules().some(m=>m.id==='marketing')?`<button class="btn btn-sm primary" onclick="setSub('marketing','overview')">Open</button>`:''}</div>`;
+}
+
 // Marketing → Overview: our own Meta Ads score and month-on-month content and ad numbers, with the content pipeline.
 function mktOverview(){
   const month = TODAY.slice(0,7), prev = prevMonth(month), P = monthLabel(prev).split(' ')[0], M = monthLabel(month).split(' ')[0];
@@ -5964,6 +6104,7 @@ function mktOverview(){
     <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
     <div><b>Internal marketing.</b> This tracks DesGro Media's own brand content and ad campaigns — not client work, which lives under Clients. Leads and quotes are under Sales.</div>
   </div>
+  ${monthScorePanelHTML(`Marketing Score · ${monthLabel(month)}`, `Content, followers and engagement · vs ${P}`, marketingScore(month), marketingScore(prev), P)}
   ${metaAdsScorePanelHTML()}
 
   <div class="panel">
@@ -5971,6 +6112,7 @@ function mktOverview(){
     <div class="modal-body">
       <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
         ${monthCardHTML("Content published", published, months, x=>x)}
+        ${socialData ? monthCardHTML("Total followers", months.map(m=>socialTotal(m,'followers')), months, x=>x.toLocaleString('en-IN'), {}, socialPendingNow()?`<div class="kpi-sub" style="color:var(--warn);">${M} not updated yet</div>`:'') : ''}
         ${monthCardHTML("Meta ads spend", adSpend, months, inr, {neutral:true}, adNow?`<div class="kpi-sub faint">${adNow.days} day${adNow.days===1?'':'s'} logged · ${adNow.leads} leads</div>`:'')}
         ${monthCardHTML("Leads from ads", adLeads, months, x=>x)}
         <div class="kpi-card"><div class="kpi-label">Content in flight</div><div class="kpi-value mono" style="font-size:21px;">${activeContent}</div><div class="kpi-sub ${overdueContent?'neg':''}">${overdueContent?overdueContent+' overdue':'none overdue'}</div></div>
@@ -5981,7 +6123,8 @@ function mktOverview(){
   <div class="panel">
     <div class="panel-head"><div><h3>Content by stage</h3><div class="sub">${contentItems.length} items in the pipeline</div></div><button class="btn btn-sm ghost" onclick="setSub('marketing','content')">Open</button></div>
     <div class="panel-body"><div class="barchart">${STAGES.map(st=>{ const n=contentItems.filter(c=>c.stage===st).length; return `<div class="bar-row"><div class="bar-label">${st}</div><div class="bar-track"><div class="bar-fill" style="width:${n/maxStage*100}%"></div></div><div class="bar-val mono">${n}</div></div>`; }).join('')}</div></div>
-  </div>`;
+  </div>
+  ${socialPanelHTML()}`;
 }
 
 // Sales → Overview: the sales score, month-on-month pipeline numbers, the team and where leads stand.
@@ -8631,6 +8774,7 @@ Auth.init().then(async (authUser) => {
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
   crmContentJobs.push(loadMyPrograms().catch(err=>console.error("Programs failed to load", err)));
+  crmContentJobs.push(loadSocialStatus().catch(()=>{}));
   crmContentJobs.push(loadCalendarPrograms().catch(err=>console.error("Calendar programs failed to load", err)));
   crmContentJobs.push(loadDeptHeads().then(()=>Promise.all([loadActionPlans(), loadDeptScores().catch(()=>{})])).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
