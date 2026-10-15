@@ -104,12 +104,12 @@ const TITLECASE_FROM_API = s => s==null ? s : String(s).split('_').map(w=>w.char
 const TITLECASE_TO_API = s => s==null ? s : String(s).toUpperCase().replace(/ /g,'_');
 // Attendance is the one enum that doesn't round-trip through a simple case
 // transform (old "half"/"leave" vs API "HALF_DAY"/"ON_LEAVE").
-const ATTENDANCE_FROM_API = {PRESENT:"present", LATE:"late", HALF_DAY:"half", ABSENT:"absent", ON_LEAVE:"leave", WFH:"wfh", WFH_PARTIAL:"wfhp"};
-const ATTENDANCE_TO_API = {present:"PRESENT", late:"LATE", half:"HALF_DAY", absent:"ABSENT", leave:"ON_LEAVE", wfh:"WFH", wfhp:"WFH_PARTIAL"};
+const ATTENDANCE_FROM_API = {PRESENT:"present", LATE:"late", HALF_DAY:"half", ABSENT:"absent", ON_LEAVE:"leave", WFH:"wfh", WFH_PARTIAL:"wfhp", UNPAID_LEAVE:"unpaid"};
+const ATTENDANCE_TO_API = {present:"PRESENT", late:"LATE", half:"HALF_DAY", absent:"ABSENT", leave:"ON_LEAVE", wfh:"WFH", wfhp:"WFH_PARTIAL", unpaid:"UNPAID_LEAVE"};
 // LeaveRequest.type doesn't round-trip through TITLECASE either (WFH is an
 // all-caps abbreviation, not a title-cased word).
-const LEAVE_TYPE_FROM_API = {CASUAL_SICK:"Casual/Sick", WFH:"WFH", PARTIAL_WFH:"Partially Paid WFH (75% payout)"};
-const LEAVE_TYPE_TO_API = {"Casual/Sick":"CASUAL_SICK", WFH:"WFH", "Partially Paid WFH (75% payout)":"PARTIAL_WFH"};
+const LEAVE_TYPE_FROM_API = {CASUAL_SICK:"Casual/Sick", WFH:"WFH", PARTIAL_WFH:"Partially Paid WFH (75% payout)", UNPAID_LEAVE:"Unpaid Leave"};
+const LEAVE_TYPE_TO_API = {"Casual/Sick":"CASUAL_SICK", WFH:"WFH", "Partially Paid WFH (75% payout)":"PARTIAL_WFH", "Unpaid Leave":"UNPAID_LEAVE"};
 const isoDate = s => s ? String(s).slice(0,10) : s;
 
 function mapEmployee(e){
@@ -381,7 +381,7 @@ function workingDaysMTD(){ return workingDaysInRange(TODAY.slice(0,7)+"-01", TOD
 // before an employee is even added to payroll lines up with what the server will actually deduct.
 function lopDaysFor(empId, month){
   const counts = attendanceMonthSummary[month] && attendanceMonthSummary[month][empId];
-  return Math.max(0, (counts?.leave||0) - (counts?.leaveCap ?? hrPolicy.paidLeavesPerMonth));
+  return Math.max(0, (counts?.leave||0) - (counts?.leaveCap ?? hrPolicy.paidLeavesPerMonth)) + (counts?.unpaidLeave||0);
 }
 // WFH days beyond the monthly paid-WFH allowance, plus every Partially Paid WFH day — mirrors computeWfhExcessDays, paid at 75% (a 25% cut)
 // rather than a full Loss of Pay.
@@ -4168,7 +4168,7 @@ function openApplyLeave(){
     <form id="f-apply-leave"><div class="modal-body">
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval. <b>Your balance for ${esc(monthLabel(leaveBalance(currentUser.id).month))}:</b> ${leaveBalance(currentUser.id).leaveRemaining} paid leave day${leaveBalance(currentUser.id).leaveRemaining===1?'':'s'} left${leaveCarryNote(leaveBalance(currentUser.id))} · ${leaveBalance(currentUser.id).wfhRemaining} paid WFH day${leaveBalance(currentUser.id).wfhRemaining===1?'':'s'} left.</div></div>
       <div class="field-row">
-        <div><label class="field-label">Type</label><select class="field-input" id="leave-type" name="type" onchange="updateLeaveImpactNote()"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option><option value="Partially Paid WFH (75% payout)">Partially Paid WFH (75% payout)</option></select></div>
+        <div><label class="field-label">Type</label><select class="field-input" id="leave-type" name="type" onchange="updateLeaveImpactNote()"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option><option value="Partially Paid WFH (75% payout)">Partially Paid WFH (75% payout)</option><option value="Unpaid Leave">Unpaid Leave</option></select></div>
         <div><label class="field-label">Duration</label><select class="field-input" id="leave-duration" name="duration" onchange="updateLeaveImpactNote()"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
       </div>
       <div class="field-row">
@@ -4217,12 +4217,21 @@ async function updateLeaveImpactNote(){
   const from = fromEl.value, to = toEl.value;
   const duration = durationEl ? durationEl.value : 'Full Day';
   const isPartial = typeEl ? typeEl.value === 'Partially Paid WFH (75% payout)' : false;
+  const isUnpaid = typeEl ? typeEl.value === 'Unpaid Leave' : false;
   const isWfh = isPartial || (typeEl ? typeEl.value === 'WFH' : false);
   if(!from || !to || to<from){ noteEl.innerHTML = ''; return; }
   if(from===to && duration!=='Full Day'){
     noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;">
       <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
       <div>Half Day and Quarter Day requests don't affect Loss of Pay or the WFH pay-cut — only Full Day requests do.</div>
+    </div>`;
+    return;
+  }
+
+  if(isUnpaid){
+    noteEl.innerHTML = `<div class="banner" style="margin-top:2px;margin-bottom:10px;">
+      <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
+      <div><b>Unpaid leave.</b> Every approved day is deducted from salary (Loss of Pay) and doesn't use your paid-leave allowance.</div>
     </div>`;
     return;
   }
@@ -4346,14 +4355,14 @@ function openRequestAdvance(){
 
 /* ===================== HR ===================== */
 function statusKind(s){
-  const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Work From Home":"blue","Partially Paid WFH":"blue",
+  const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Work From Home":"blue","Partially Paid WFH":"blue","Unpaid Leave":"neg",
     Approved:"pos",Pending:"warn",Rejected:"neg",Recovering:"warn",Recovered:"pos",Paid:"pos",Open:"blue",Interview:"warn",Offer:"pos",Hired:"pos",Applied:"neutral",
     Permanent:"pos",Probation:"warn",
     Unpaid:"neg",Overpaid:"neg","Partially Paid":"warn","Payments pending":"warn","Adding entries":"neutral",
     New:"warn",Reviewed:"blue",Resolved:"pos"};
   return map[s] || "neutral";
 }
-function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",leave:"On Leave",wfh:"Work From Home",wfhp:"Partially Paid WFH"}[s]; }
+function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",leave:"On Leave",wfh:"Work From Home",wfhp:"Partially Paid WFH",unpaid:"Unpaid Leave"}[s]; }
 
 /* ===================== HR SCORE =====================
    Out of 100:  Programs run 40 (each of the 3 program types run, or still scheduled) · Feedback rating 25 · Feedback
@@ -4389,7 +4398,7 @@ function hrOverview(){
   const present = Object.values(attendanceToday).filter(a=>a.status==="present").length;
   const late = Object.values(attendanceToday).filter(a=>a.status==="late").length;
   const half = Object.values(attendanceToday).filter(a=>a.status==="half").length;
-  const onLeave = Object.values(attendanceToday).filter(a=>a.status==="leave").length;
+  const onLeave = Object.values(attendanceToday).filter(a=>a.status==="leave"||a.status==="unpaid").length;
   const pendingLeave = leaveRequests.filter(l=>l.status==="Pending").length;
   const pendingAdvances = advances.filter(a=>a.status==="Pending").length;
   const payrollStatus = payrollMonthStatus(payroll.selectedMonth);
@@ -4465,7 +4474,7 @@ let selectedAttendanceEmp = null;
 function setAttendanceEmp(id){ selectedAttendanceEmp=id; render(); }
 async function cycleAttendance(id, date){
   date = date || selectedAttendanceDate;
-  const order=["present","late","half","wfh","wfhp","absent","leave"];
+  const order=["present","late","half","wfh","wfhp","absent","leave","unpaid"];
   const dayMap = attendanceByDate[date];
   if(!dayMap) return;
   const cur=dayMap[id];
@@ -4538,7 +4547,7 @@ function hrAttendance(){
   const isToday = date===TODAY;
   const dayMap = attendanceByDate[date] || {};
   const rows = employees.map(e=>({emp:e, a:dayMap[e.id] || {status:"present", in:null}}));
-  const counts = {present:0,late:0,half:0,absent:0,leave:0,wfh:0,wfhp:0};
+  const counts = {present:0,late:0,half:0,absent:0,leave:0,wfh:0,wfhp:0,unpaid:0};
   rows.forEach(r=>counts[r.a.status]++);
   const selected = byId(selectedAttendanceEmp) || employees[0];
   selectedAttendanceEmp = selected.id;
@@ -5513,7 +5522,7 @@ function openAddLeave(){
     <form id="f-add-leave"><div class="modal-body">
       <div><label class="field-label">Employee</label><select class="field-input" name="empId">${employees.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join("")}</select></div>
       <div class="field-row">
-        <div><label class="field-label">Type</label><select class="field-input" name="type"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option><option value="Partially Paid WFH (75% payout)">Partially Paid WFH (75% payout)</option></select></div>
+        <div><label class="field-label">Type</label><select class="field-input" name="type"><option value="Casual/Sick">Casual/Sick</option><option value="WFH">WFH</option><option value="Partially Paid WFH (75% payout)">Partially Paid WFH (75% payout)</option><option value="Unpaid Leave">Unpaid Leave</option></select></div>
         <div><label class="field-label">Duration</label><select class="field-input" name="duration"><option value="Full Day">Full Day</option><option value="Half Day">Half Day</option><option value="Quarter Day">Quarter Day</option></select></div>
       </div>
       <div class="field-row">

@@ -129,7 +129,7 @@ export const decideLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
     });
 
     if (d.status === "APPROVED" && before.duration === "FULL_DAY") {
-      const attendanceStatus = before.type === "WFH" ? "WFH" : before.type === "PARTIAL_WFH" ? "WFH_PARTIAL" : "ON_LEAVE";
+      const attendanceStatus = before.type === "WFH" ? "WFH" : before.type === "PARTIAL_WFH" ? "WFH_PARTIAL" : before.type === "UNPAID_LEAVE" ? "UNPAID_LEAVE" : "ON_LEAVE";
       for (const date of eachDateInclusive(before.fromDate, before.toDate)) {
         await tx.attendanceRecord.upsert({
           where: { employeeId_date: { employeeId: before.employeeId, date } },

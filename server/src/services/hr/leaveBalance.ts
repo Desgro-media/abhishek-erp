@@ -127,7 +127,12 @@ export async function computeLopDays(employeeId: string, month: string, db: Pris
     where: { employeeId, status: "ON_LEAVE", date: { gte: start, lt: end } },
   });
 
-  return Math.max(0, leaveCount - cap);
+  // Approved Unpaid leave days are Loss of Pay in full — they never use the paid-leave allowance.
+  const unpaidCount = await db.attendanceRecord.count({
+    where: { employeeId, status: "UNPAID_LEAVE", date: { gte: start, lt: end } },
+  });
+
+  return Math.max(0, leaveCount - cap) + unpaidCount;
 }
 
 // WFH days beyond hrPolicy.paidWfhPerMonth in a given payroll month (plus every Partially Paid WFH day), paid at
@@ -162,12 +167,13 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
 
   const grouped = await db.attendanceRecord.groupBy({
     by: ["status"],
-    where: { employeeId, status: { in: ["ON_LEAVE", "WFH", "WFH_PARTIAL"] }, date: { gte: start, lt: end } },
+    where: { employeeId, status: { in: ["ON_LEAVE", "WFH", "WFH_PARTIAL", "UNPAID_LEAVE"] }, date: { gte: start, lt: end } },
     _count: { _all: true },
   });
   const leaveDays = grouped.find((g) => g.status === "ON_LEAVE")?._count._all ?? 0;
   const wfhDays = grouped.find((g) => g.status === "WFH")?._count._all ?? 0;
   const partialWfhDays = grouped.find((g) => g.status === "WFH_PARTIAL")?._count._all ?? 0;
+  const unpaidLeaveDays = grouped.find((g) => g.status === "UNPAID_LEAVE")?._count._all ?? 0;
 
   // Requests still awaiting a decision — shown beside the balance, never deducted from it until approved.
   const pendingReqs = await db.leaveRequest.findMany({
@@ -178,7 +184,7 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
   for (const r of pendingReqs) {
     const lo = Math.max(r.fromDate.getTime(), start.getTime()), hi = Math.min(r.toDate.getTime(), end.getTime() - 86400000);
     const inMonth = r.duration === "FULL_DAY" ? Math.max(0, Math.round((hi - lo) / 86400000) + 1) : num(r.days);
-    if (r.type === "CASUAL_SICK") pendingLeaveDays += inMonth; else pendingWfhDays += inMonth;
+    if (r.type === "CASUAL_SICK" || r.type === "UNPAID_LEAVE") pendingLeaveDays += inMonth; else pendingWfhDays += inMonth;
   }
 
   return {
@@ -195,7 +201,9 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
     leaveCarryOutProjected: Math.min(Math.max(0, leaveCap - leaveDays), policy?.carryForwardMaxDays ?? 0),
     leaveCap,
     leaveRemaining: Math.max(0, leaveCap - leaveDays),
-    lopDays: Math.max(0, leaveDays - leaveCap),
+    unpaidLeaveDays,
+    // Paid-leave days beyond the allowance + every Unpaid leave day.
+    lopDays: Math.max(0, leaveDays - leaveCap) + unpaidLeaveDays,
     wfhDays,
     wfhCap,
     wfhRemaining: Math.max(0, wfhCap - wfhDays),
