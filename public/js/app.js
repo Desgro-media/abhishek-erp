@@ -6825,8 +6825,8 @@ function logAdMetricModal(forLabel, existing, save){
         <div><label class="field-label">Revenue</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" placeholder="Optional — saved as 0"></div>
       </div>
       <div class="field-row">
-        <div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" required></div>
-        <div><label class="field-label">Purchases</label><input class="field-input" type="number" step="1" min="0" name="purchases" value="${esc(v.purchases)}" required></div>
+        <div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" placeholder="Optional — saved as 0"></div>
+        <div><label class="field-label">Purchases</label><input class="field-input" type="number" step="1" min="0" name="purchases" value="${esc(v.purchases)}" placeholder="Optional — saved as 0"></div>
       </div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
