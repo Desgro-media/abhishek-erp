@@ -562,7 +562,10 @@ async function loadEmployeeDirectory(){
 }
 
 async function loadCrmModule(){
-  await Promise.all([loadClients(), loadLeads(), loadQuotes(), loadTasks(), loadEmployeeDirectory()]);
+  // Let every loader finish even if one fails (a partial CRM beats none), then report the first failure.
+  const results = await Promise.allSettled([loadClients(), loadLeads(), loadQuotes(), loadTasks(), loadEmployeeDirectory()]);
+  const failed = results.find(r=>r.status==="rejected");
+  if(failed) throw failed.reason;
 }
 async function loadContentModule(){
   // Content-only logins (e.g. SMM) can't call the HR employee list; the name-only directory feeds the assignee pickers.
@@ -8910,12 +8913,25 @@ Auth.init().then(async (authUser) => {
   crmContentJobs.push(loadDeptHeads().then(()=>Promise.all([loadActionPlans(), loadDeptScores().catch(()=>{})])).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
   // (e.g. migration not applied yet) every other module should still come up.
-  await Promise.all([loadHrModule(), loadFinanceModule(), loadPaymentRequests().catch(err=>console.error("Payment requests failed to load", err)), loadWithdrawalRequests().catch(err=>console.error("Withdrawal requests failed to load", err)), loadMyPayroll().catch(err=>console.error("My payroll failed to load", err)), ...crmContentJobs]);
+  // One failing request must never blank the whole app: every boot job is isolated, failures are listed, and the
+  // shell still opens with whatever did load (a banner says what didn't).
+  const bootFailures = [];
+  const guard = (job, label) => Promise.resolve(job).catch(err=>{ console.error(label+" failed to load", err); bootFailures.push(label); });
+  const bootJobs = [loadHrModule(), loadFinanceModule(), loadPaymentRequests(), loadWithdrawalRequests(), loadMyPayroll(), ...crmContentJobs];
+  await Promise.all(bootJobs.map((j,i)=>guard(j, ["HR","Finance","Payment requests","Withdrawal requests","My payroll"][i] || "Clients / content / calendar")));
   nav.module = isLeadershipRole(emp) ? 'dashboard' : (isHRRole(emp) ? 'hr' : ((isStaffRole(emp) || isSalesRole(emp)) ? 'workspace' : 'dashboard'));
   if(!visibleModules().some(m=>m.id===nav.module)) nav.module = visibleModules()[0].id;
   const landingMod = visibleModules().find(m=>m.id===nav.module);
   nav.sub[nav.module] = (landingMod && landingMod.sub && landingMod.sub.length) ? landingMod.sub[0].id : (nav.sub[nav.module] || 'overview');
   document.getElementById('app-shell').hidden = false;
   render();
+  if(bootFailures.length) toast("Some data couldn't load ("+[...new Set(bootFailures)].join(", ")+") — try reloading; tell an admin if it keeps happening.");
   { const m = /^#feedback\/([\w-]+)$/i.exec(location.hash||''); if(m) openFeedbackFromLink(m[1]); }
-}).catch((err) => { console.error(err); /* Auth.init() already redirects to /login.html on failure */ });
+}).catch((err) => {
+  console.error(err); /* Auth.init() already redirects to /login.html on failure */
+  // Never leave a blank screen: if the app shell never opened, say so.
+  const shell = document.getElementById('app-shell');
+  if(shell && shell.hidden && !document.getElementById('boot-error')){
+    document.body.insertAdjacentHTML('beforeend', '<div id="boot-error" style="max-width:420px;margin:15vh auto;padding:24px;font-family:sans-serif;text-align:center;"><h3>Couldn\'t load the ERP</h3><p style="color:#666;">Something went wrong while starting up. Please reload; if it keeps happening, tell an admin.</p><button onclick="location.reload()" style="padding:8px 16px;">Reload</button></div>');
+  }
+});
