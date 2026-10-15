@@ -4,7 +4,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { headedDepartments, isLeadership } from "../../services/departmentAccess";
-import { DEFAULT_TARGETS, SERVICE_DEPARTMENTS, deptClientScore, getTargets, metaAdsScore, prevMonthOf, salesScore } from "../../services/scores";
+import { DEFAULT_TARGETS, SERVICE_DEPARTMENTS, deptClientScore, getTargets, metaAdsScore, prevMonthOf, salesMonthStats, salesPeopleMonth, salesScore } from "../../services/scores";
 
 const monthRe = /^\d{4}-\d{2}$/;
 const thisMonth = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 7);
@@ -60,4 +60,19 @@ export const metaScore: RequestHandler = asyncHandler(async (req, res) => {
     return { days: rows.length, spend: n("spend"), leads: n("leads"), purchases: n("purchases"), revenue: n("revenue") };
   };
   res.json({ month, now: await metaAdsScore(month, t), prev: await metaAdsScore(prev, t), totals: { now: await totals(month), prev: await totals(prev) }, targets: t.meta });
+});
+
+// The Sales overview: the sales score and its month-on-month figures, plus each salesperson's month. For leadership and
+// everyone with Sales access (a rep sees the same team table as the head, as the prototype shows).
+export const salesOverview: RequestHandler = asyncHandler(async (req, res) => {
+  const roles = req.user!.roles ?? [];
+  if (!roles.some((r) => ["ADMIN", "SALES", "SALES_HEAD"].includes(r)) && !(await isLeadership(req.user!))) return res.status(403).json({ error: "Forbidden" });
+  const month = (req.query.month as string) || thisMonth();
+  if (!monthRe.test(month)) return res.status(400).json({ error: "month must be YYYY-MM" });
+  const t = await getTargets(), prev = prevMonthOf(month);
+  const [now, was, statsNow, statsPrev, peopleNow, peoplePrev] = await Promise.all([
+    salesScore(month, t), salesScore(prev, t), salesMonthStats(month), salesMonthStats(prev), salesPeopleMonth(month), salesPeopleMonth(prev),
+  ]);
+  const people = peopleNow.map((p) => ({ name: p.name, now: p, prev: peoplePrev.find((q) => q.name === p.name) ?? p }));
+  res.json({ month, now: { ...now, stats: statsNow }, prev: { ...was, stats: statsPrev }, targets: t.sales, people });
 });

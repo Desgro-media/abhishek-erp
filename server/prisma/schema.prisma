@@ -1668,3 +1668,42 @@ model ClientReportLink {
 
   @@map("client_report_links")
 }
+
+// Our own social media numbers, entered once a month per platform from each platform's insights by the marketing owner (or
+// leadership). Followers is the only required figure; reach and engagements feed the Marketing Score.
+model SocialStat {
+  id            String   @id @default(uuid())
+  month         String   // YYYY-MM
+  platform      String
+  followers     Int
+  reach         Int      @default(0)
+  impressions   Int?
+  engagements   Int      @default(0)
+  profileVisits Int?     @map("profile_visits")
+  linkClicks    Int?     @map("link_clicks")
+  updatedBy     String   @map("updated_by")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([month, platform])
+  @@map("social_stats")
+}
+
+// The month's written takeaways from the insights — one note per month.
+model SocialNote {
+  month     String   @id
+  text      String
+  updatedBy String   @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("social_notes")
+}
+
+// Single row (id = 1): who updates the social numbers each month. No row = the default owner named in the controller.
+model MarketingSettings {
+  id              Int      @id
+  ownerEmployeeId String?  @map("owner_employee_id")
+  updatedBy       String   @map("updated_by")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("marketing_settings")
+}

@@ -1347,27 +1347,6 @@ function openRequestWithdrawal(){
 
 // HR/Finance view — parallel to hrAdvances(). HR (who run payroll) can see every request; only
 // Finance/Admin can approve or reject, since approving moves real money out.
-let withdrawalsMonthFilter = "All";
-function setWithdrawalsMonthFilter(v){ withdrawalsMonthFilter = v; render(); }
-function hrWithdrawals(){
-  const canDecide = isFinanceAdminUser(currentUser);
-  const months = [...new Set(withdrawalRequests.map(w=>w.month))].sort().reverse();
-  const filtered = withdrawalsMonthFilter==='All' ? withdrawalRequests : withdrawalRequests.filter(w=>w.month===withdrawalsMonthFilter);
-  const order = {Pending:0,Approved:1,Rejected:2};
-  const sorted = filtered.slice().sort((a,b)=> order[a.status]!==order[b.status] ? order[a.status]-order[b.status] : b.requested.localeCompare(a.requested));
-  return `
-  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Requests against a month that's already closed and fully earned — not a loan like Advance Salary. Approving records an early payment against that month's payroll entry; the scheduled run then only owes whatever's left.${canDecide?'':' Approving or rejecting is Finance/Admin only — you can see everything here but not decide.'}</div></div>
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Month</span><select class="select-sm" onchange="setWithdrawalsMonthFilter(this.value)"><option value="All" ${withdrawalsMonthFilter==='All'?'selected':''}>All time</option>${months.map(m=>`<option value="${m}" ${m===withdrawalsMonthFilter?'selected':''}>${esc(MONTH_LABEL[m]||m)}</option>`).join("")}</select></div><div></div></div>
-  <div class="panel">
-    <div class="panel-head"><h3>Requests</h3><div class="sub">Approving pays out immediately, against that month's payroll</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>Month</th><th class="num">Amount</th><th>Requested</th><th>Status</th><th></th></tr></thead>
-      <tbody>${sorted.length ? sorted.map(w=>{
-        const actions = (w.status==="Pending" && canDecide) ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="decideWithdrawal('${w.id}','Approved')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve &amp; pay</button><button class="btn btn-sm danger" onclick="decideWithdrawal('${w.id}','Rejected')">Reject</button></div>` : "";
-        return `<tr><td>${esc(w.empName)}<div class="subtext mono">${esc(w.empId)}</div></td><td class="muted">${esc(MONTH_LABEL[w.month]||w.month)}</td><td class="num mono">${inr(w.amount)}</td><td class="muted">${fmtDate(w.requested)}</td><td>${pill(w.status==='Approved'?'Paid':w.status, w.status==='Approved'?'pos':statusKind(w.status))}</td><td>${actions}</td></tr>`;
-      }).join("") : `<tr><td colspan="6"><div class="empty">No withdrawal requests${withdrawalsMonthFilter==='All'?'':' for this month'}.</div></td></tr>`}</tbody>
-    </table></div>
-  </div>`;
-}
 async function decideWithdrawal(id, decision){
   const w = withdrawalRequests.find(x=>x.id===id);
   try{
@@ -3237,8 +3216,7 @@ const MODULES = [
     {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
     {id:"plans", label:"Dept Action Plans", icon:"i-target", when:()=>canSeePlans(currentUser), count:()=>openNeedsInput().length},
     {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
-    {id:"attendance", label:"My Attendance", icon:"i-attendance"},
-    {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
+    {id:"attendance", label:"My Attendance", icon:"i-attendance", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
     {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
     {id:"complaints", label:"Complaints", icon:"i-megaphone"},
@@ -3251,21 +3229,22 @@ const MODULES = [
   {id:"hr", label:"HR", icon:"i-users", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"directory", label:"Directory", icon:"i-users"},
-    {id:"attendance", label:"Attendance", icon:"i-attendance"},
-    {id:"leave", label:"Leave Requests", icon:"i-leave", count:()=>leaveRequests.filter(l=>l.status==="Pending").length},
+    {id:"attendance", label:"Attendance & Leave", icon:"i-attendance", count:()=>leaveRequests.filter(l=>l.status==="Pending").length},
     {id:"hiring", label:"Hiring", icon:"i-target", count:()=>openPositions.filter(p=>p.status==="Open").length},
     {id:"programs", label:"Programs", icon:"i-users"},
     {id:"payroll", label:"Payroll", icon:"i-wallet"},
-    {id:"advances", label:"Advance Salary", icon:"i-coins", count:()=>advances.filter(a=>a.status==="Pending").length},
-    {id:"withdrawals", label:"Withdrawal Requests", icon:"i-wallet", count:()=>withdrawalRequests.filter(w=>w.status==="Pending").length},
+    {id:"advances", label:"Advances & Withdrawals", icon:"i-coins", count:()=>advances.filter(a=>a.status==="Pending").length + withdrawalRequests.filter(w=>w.status==="Pending").length},
     {id:"complaints", label:"Complaints", icon:"i-megaphone", count:()=>complaints.filter(c=>c.status==="New").length},
     {id:"notices", label:"Notices", icon:"i-bell"},
     {id:"policies", label:"HR Settings", icon:"i-sliders"},
   ]},
-  {id:"marketing", label:"Marketing and Sales", icon:"i-megaphone", sub:[
+  {id:"marketing", label:"Marketing", icon:"i-megaphone", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"content", label:"Content", icon:"i-board"},
     {id:"performance", label:"Meta Ads", icon:"i-target"},
+  ]},
+  {id:"sales", label:"Sales", icon:"i-handshake", sub:[
+    {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"leads", label:"Leads", icon:"i-users", count:()=>marketingLeads.filter(l=>!l.leadOwner).length},
     {id:"quotes", label:"Quotes", icon:"i-handshake", count:()=>quotes.filter(q=>q.status==="Sent").length},
     {id:"invoices", label:"Invoices", icon:"i-receipt", count:()=>clientsMissingInvoice().length},
@@ -3290,7 +3269,7 @@ const MODULES = [
     {id:"reports", label:"Reports", icon:"i-file"},
   ]},
 ];
-let nav = {module:"dashboard", sub:{workspace:"overview", calendar:"main", departments:"overview", hr:"overview", marketing:"overview", clients:"overview", accounts:"overview"}, detail:null};
+let nav = {module:"dashboard", sub:{workspace:"overview", calendar:"main", departments:"overview", hr:"overview", marketing:"overview", sales:"overview", clients:"overview", accounts:"overview"}, detail:null};
 
 // An "HR Executive" (role containing "HR") only manages HR — hiring, attendance, leave, payroll,
 // advances, complaints, policies — so their sidebar shows nothing else. Their payroll work already
@@ -3326,8 +3305,7 @@ const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
   {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
   {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
-  {id:"attendance", label:"My Attendance", icon:"i-attendance"},
-  {id:"leave", label:"Leave", icon:"i-leave", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
+  {id:"attendance", label:"My Attendance", icon:"i-attendance", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
   {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
   {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
   {id:"commission", label:"My Commission", icon:"i-percent", count:()=>currentUser?payables.filter(p=>p.category==="Commission" && p.salesPerson===currentUser.name && payableBalance(p)>0).length:0},
@@ -3375,13 +3353,12 @@ function visibleModulesBase(){
     if(currentUser.isAdmin) return MODULES;
     const r = currentUser.roles;
     const sales = r.includes('SALES') || r.includes('SALES_HEAD');
-    const show = { workspace:true, calendar:true, hr:r.includes('HR'), marketing:sales||r.includes('CONTENT'), clients:sales||r.includes('CLIENTS'), accounts:r.includes('FINANCE') };
+    const show = { workspace:true, calendar:true, hr:r.includes('HR'), marketing:r.includes('CONTENT'), sales, clients:sales||r.includes('CLIENTS'), accounts:r.includes('FINANCE') };
     return MODULES.filter(m=>show[m.id]).map(m=>{
       if(m.id==='workspace' && sales) return {...m, sub:SALES_WORKSPACE_SUB};
+      // The Content board and Meta Ads are Admin/Content-only on the server, so Marketing only shows for the
+      // Content role; without Sales on top, that role gets just the board.
       if(m.id==='marketing' && !sales) return {...m, sub:m.sub.filter(s=>s.id==='content')};
-      // The Content board and Meta Ads are Admin/Content-only on the server; a Sales login without the
-      // Content role would just get an empty page, so don't offer them.
-      if(m.id==='marketing' && !r.includes('CONTENT')) return {...m, sub:m.sub.filter(s=>s.id!=='content' && s.id!=='performance')};
       return m;
     });
   }
@@ -3399,7 +3376,7 @@ function visibleModulesLegacy(){
     return MODULES.filter(m=>m.id==='hr').map(m=>({...m, sub:[...m.sub, paymentsSub]}));
   }
   if(currentUser && isSalesRole(currentUser)){
-    const order = ['workspace','clients','marketing'];
+    const order = ['workspace','clients','sales'];
     return order.map(id=>MODULES.find(m=>m.id===id)).filter(Boolean).map(m=>
       m.id==='workspace' ? {...m, sub:SALES_WORKSPACE_SUB} : m
     );
@@ -3428,13 +3405,14 @@ function visibleModulesLegacy(){
 // Data is otherwise loaded once at page load, so a request someone else just raised wouldn't show up
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
-  "hr/programs":[loadHrPrograms],
-  "marketing/performance":[()=>loadMetaScore().catch(()=>{})],
+  "hr/programs":[loadHrPrograms], "hr/overview":[loadHrPrograms],
+  "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
+  "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
-  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/leave":[loadMyLeaveBalance], "hr/withdrawals":[loadWithdrawalRequests],
+  "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/attendance":[loadMyLeaveBalance], "hr/advances":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
   "accounts/receipts":[loadInvoices, ()=>canLoadQuotes()?loadQuotes():null, ()=>isFinanceAdminUser(currentUser)?loadApprovedReceipts():loadReceiptsSummary(), ()=>isFinanceAdminUser(currentUser)?loadLeadAdvances().catch(()=>{}):null],
@@ -3490,8 +3468,7 @@ const TOPBAR_TITLES = {
     plan:["My Action Plan", ()=>{ const d = currentUser?headDeptOf(currentUser.name):null; return d ? d+" · file today's plan" : ""; }],
     plans:["Dept Action Plans", ()=>{ const h = DEPARTMENTS.filter(d=>deptHeads[d]); return h.filter(d=>planFor(d,TODAY)).length+" of "+h.length+" heads filed today"; }],
     tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+" open across your clients":""],
-    attendance:["My Attendance","Your check-in status and this month's record"],
-    leave:["Leave", ()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id).length+" request(s) on record":""],
+    attendance:["My Attendance","Check-in, this month's record, and your leave & WFH"],
     payroll:["My Payroll", ()=>{ const m=myPayroll[0]; return m ? MONTH_LABEL[m.month]+" · "+m.payStatus : "Your salary and requests"; }],
     advance:["Advance Salary", ()=>currentUser?advances.filter(a=>a.empId===currentUser.id).length+" request(s) on record":""],
     payments:["Payment Requests", ()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id).length+" request(s) on record":""],
@@ -3504,22 +3481,23 @@ const TOPBAR_TITLES = {
   hr: {
     overview:["People Overview","Team snapshot · "+employees.length+" people"],
     directory:["Team Directory", employees.length+" people across "+DEPARTMENTS.length+" departments"],
-    attendance:["Attendance","Today · click a status to update it"],
-    leave:["Leave Requests", ()=>leaveRequests.filter(l=>l.status==="Pending").length+" pending approval"],
+    attendance:["Attendance & Leave", ()=>{ const n = leaveRequests.filter(l=>l.status==="Pending").length; return "Daily roster and leave requests"+(n?" · "+n+" leave pending":""); }],
     hiring:["Hiring", ()=>openPositions.filter(p=>p.status==="Open").length+" open positions"],
     programs:["Programs", ()=>programsInMonth(hrProgramMonth).filter(p=>p.status!=="Cancelled").length+" planned in "+monthLabel(hrProgramMonth)],
     payroll:["Payroll", ()=>MONTH_LABEL[payroll.selectedMonth]+" · "+payrollMonthStatus(payroll.selectedMonth)],
-    advances:["Advance Salary", ()=>inr(advances.filter(a=>a.status==="Recovering").reduce((s,a)=>s+a.balance,0))+" outstanding"],
-    withdrawals:["Withdrawal Requests", ()=>withdrawalRequests.filter(w=>w.status==="Pending").length+" pending"],
+    advances:["Advances & Withdrawals", ()=>(advances.filter(a=>a.status==="Pending").length + withdrawalRequests.filter(w=>w.status==="Pending").length)+" pending · "+inr(advances.filter(a=>a.status==="Recovering").reduce((s,a)=>s+a.balance,0))+" of advances still to recover"],
     complaints:["Complaints", ()=>complaints.filter(c=>c.status==="New").length+" new"],
     notices:["Notices", ()=>notices.length+" posted"],
     policies:["HR Settings","Holidays, leave entitlements and general policy"],
     payments:["Payment Requests", ()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id).length+" request(s) on record":""],
   },
   marketing: {
-    overview:["Marketing and Sales Overview","Content, campaigns and pipeline · DesGro Media"],
+    overview:["Marketing Overview","Content and our own Meta Ads · DesGro Media"],
     content:["Content Pipeline","Organic content · script to publish"],
     performance:["Meta Ads","DesGro Media's own ad performance"],
+  },
+  sales: {
+    overview:["Sales Overview","Targets, meetings, pipeline and the sales team · DesGro Media"],
     leads:["Leads", ()=>marketingLeads.length+" total leads"],
     quotes:["Quotes", ()=>quotes.filter(q=>q.status==="Submitted to Finance").length+" awaiting Finance"],
     invoices:["Invoices", ()=>clientsMissingInvoice().length+" client"+(clientsMissingInvoice().length===1?"":"s")+" awaiting an invoice"],
@@ -3615,8 +3593,8 @@ function openGlobalSearchResult(type, id){
   closeGlobalSearch();
   const input = document.getElementById("global-search"); if(input) input.value = "";
   if(type==="Client"){ setModule("clients"); openClientDetail(id); }
-  else if(type==="Lead"){ setSub("marketing","leads"); openEditLead(id); }
-  else if(type==="Quote"){ setSub("marketing","quotes"); openEditQuote(id); }
+  else if(type==="Lead"){ setSub("sales","leads"); openEditLead(id); }
+  else if(type==="Quote"){ setSub("sales","quotes"); openEditQuote(id); }
   else if(type==="Invoice"){
     // A plain Sales sign-in has no Accounts module at all — their invoices live inline on the
     // client's own page instead (see clientDetailPage), so fall back to that when Accounts isn't
@@ -3645,9 +3623,10 @@ function render(){
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
   else if(nav.module==="calendar") root.innerHTML = calendarView();
   else if(nav.module==="departments") root.innerHTML = nav.sub.departments==="overview" ? deptsOverview() : deptPage(deptFromSlug(nav.sub.departments));
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,tasks:workspaceTasks,attendance:workspaceAttendance,leave:workspaceLeave,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
-  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,leave:hrLeave,hiring:hrHiring,programs:hrProgramsView,payroll:hrPayroll,advances:hrAdvances,withdrawals:hrWithdrawals,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
-  else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.marketing]();
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,tasks:workspaceTasks,attendance:workspaceAttendance,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
+  else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,hiring:hrHiring,programs:hrProgramsView,payroll:hrPayroll,advances:hrAdvances,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
+  else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance})[nav.sub.marketing]();
+  else if(nav.module==="sales") root.innerHTML = ({overview:salesOverview,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.sales]();
   else if(nav.module==="clients") root.innerHTML = ({overview:clientsOverview,all:clientsAll})[nav.sub.clients]();
   else if(nav.module==="accounts") root.innerHTML = ({overview:acctOverview,invoices:acctInvoices,receipts:acctPaymentReceipts,requests:acctPaymentRequests,payroll:acctPayroll,payables:acctPayables,expenses:acctExpenses,banks:acctBanks,quotes:acctQuotes,commissions:acctCommissions,coa:acctChartOfAccounts,journal:acctJournal,reports:acctReports})[nav.sub.accounts]();
   if(nav.module==="marketing" && nav.sub.marketing==="content") initContentBoard();
@@ -3807,12 +3786,18 @@ function dashboardModuleOverviews(){
 
   if(vis.has("marketing")){
     const inFlight = contentItems.filter(c=>c.stage!=="Published").length;
+    const adSpend = metaAdsCampaigns.map(adMetrics).reduce((s,r)=>s+r.spend,0);
+    cards.push(dashCard("marketing","Marketing","i-megaphone",[
+      dashStat("content in progress", inFlight), dashStat("Meta Ads spend", inr(adSpend)),
+    ]));
+  }
+
+  if(vis.has("sales")){
     const lead = s=>marketingLeads.filter(l=>l.status===s).length;
     const quote = s=>quotes.filter(q=>q.status===s).length;
     const soldMTD = salesTargets.reduce((s,r)=>s+r.monthlySales,0);
     const targetMTD = salesTargets.reduce((s,r)=>s+r.target,0);
-    cards.push(dashCard("marketing","Marketing and Sales","i-megaphone",[
-      dashStat("content in progress", inFlight),
+    cards.push(dashCard("sales","Sales","i-handshake",[
       dashStat("sales vs target (month)", targetMTD ? `${inr(soldMTD)}<span style="font-size:12px;color:var(--ink-soft);font-family:Manrope;"> / ${inr(targetMTD)}</span>` : "—"),
       dashStat("leads: new · contacted · qualified", `${lead("New")} · ${lead("Contacted")} · ${lead("Qualified")}`),
       dashStat("quotes: draft · sent · with finance", `${quote("Draft")} · ${quote("Sent")} · ${quote("Submitted to Finance")}`),
@@ -3863,6 +3848,7 @@ function workspaceOverview(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${socialReminderHTML()}
   ${feedbackDueHTML()}
   ${myDeptScoreHTML()}
   ${upcomingProgramsHTML()}
@@ -3892,6 +3878,7 @@ function workspaceOverviewSales(){
   const recentNotices = notices.slice().sort((a,b)=>b.postedDate.localeCompare(a.postedDate)).slice(0,5);
   return `
   ${planReminderHTML()}
+  ${socialReminderHTML()}
   ${feedbackDueHTML()}
   ${myDeptScoreHTML()}
   ${upcomingProgramsHTML()}
@@ -4247,7 +4234,10 @@ async function updateLeaveImpactNote(){
     </div>`;
   }
 }
-function workspaceAttendance(){
+// My Attendance holds leave too: check-in and the month's record first, then leave & WFH balance, "Apply for leave" and the
+// request history (workspaceLeave), all on one page.
+function workspaceAttendance(){ return workspaceAttendanceCore() + workspaceLeave(); }
+function workspaceAttendanceCore(){
   if(!currentUser) return '';
   const att = attendanceToday[currentUser.id];
   const mtdWorkingDays = workingDaysMTD();
@@ -4332,7 +4322,37 @@ function statusKind(s){
 }
 function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",leave:"On Leave",wfh:"Work From Home",wfhp:"Partially Paid WFH"}[s]; }
 
+/* ===================== HR SCORE =====================
+   Out of 100:  Programs run 40 (each of the 3 program types run, or still scheduled) · Feedback rating 25 · Feedback
+   response rate 10 · Requests handled on time 15 (leave / advance / withdrawal decided, or under 2 days old) ·
+   Complaints picked up 10. A part with nothing to measure is left out and the rest re-weighted. */
+function hrMonthScore(month){
+  const asOf = [TODAY, monthEndOf(month)].sort()[0], mEnd = monthEndOf(month);
+  const progs = programsInMonth(month).filter(p=>p.status!=="Cancelled");
+  const done = progs.filter(p=>p.status==="Completed");
+  const ratings = done.map(p=>p.rating).filter(r=>r!=null);
+  const att = done.reduce((t,p)=>t+p.attendees.length,0), resp = done.reduce((t,p)=>t+p.responses,0);
+  const reqs = [
+    ...leaveRequests.filter(l=>(l.applied||'').slice(0,7)===month).map(r=>({status:r.status, d:r.applied})),
+    ...advances.filter(a=>(a.requested||'').slice(0,7)===month).map(r=>({status:r.status, d:r.requested})),
+    ...withdrawalRequests.filter(w=>(w.requested||'').slice(0,7)===month).map(r=>({status:r.status, d:r.requested})),
+  ];
+  const onTime = reqs.filter(r=>r.status!=="Pending" || r.d>=addDays(asOf,-2)).length;
+  const comps = complaints.filter(c=>(c.submitted||'').slice(0,7)===month || (c.status==="New" && (c.submitted||'')<=mEnd));
+  const typeOk = PROGRAM_TYPES.map(t=>({t, ok: progs.some(p=>p.type===t && (p.status==="Completed" || p.date>asOf)), overdue: progs.filter(p=>p.type===t && p.status!=="Completed" && p.date<=asOf).length}));
+  const okCount = typeOk.filter(x=>x.ok).length, overdueCount = typeOk.reduce((t,x)=>t+x.overdue,0);
+  const avg = ratings.length ? ratings.reduce((a,b)=>a+b,0)/ratings.length : null;
+  const parts = [
+    {key:"programs", label:"Programs run", w:40, v: okCount/PROGRAM_TYPES.length, detail:`${okCount} of ${PROGRAM_TYPES.length} types run or on schedule${overdueCount?` · ${overdueCount} not run on its date`:''}${okCount<PROGRAM_TYPES.length?` · missing ${typeOk.filter(x=>!x.ok).map(x=>x.t.toLowerCase()).join(', ')}`:''}`},
+    {key:"feedback", label:"Feedback rating", w:25, v: avg==null ? null : avg/5, detail: avg==null ? "no feedback yet" : `${avg.toFixed(1)} / 5 average`},
+    {key:"response", label:"Feedback response rate", w:10, v: att ? Math.min(1, resp/att) : null, detail: att ? `${resp} of ${att} attendees replied` : "—"},
+    {key:"requests", label:"Requests handled on time", w:15, v: reqs.length ? onTime/reqs.length : null, detail: reqs.length ? `${onTime} of ${reqs.length} decided or under 2 days old` : "no requests this month"},
+    {key:"complaints", label:"Complaints picked up", w:10, v: comps.length ? comps.filter(c=>c.status!=="New").length/comps.length : 1, detail: comps.length ? `${comps.filter(c=>c.status!=="New").length} of ${comps.length} reviewed` : "no complaints — full marks"},
+  ];
+  return {score: weightedScoreOf(parts), parts};
+}
 function hrOverview(){
+  const hrMonth = TODAY.slice(0,7), hrPrev = prevMonth(hrMonth), hrP = monthLabel(hrPrev).split(' ')[0];
   const present = Object.values(attendanceToday).filter(a=>a.status==="present").length;
   const late = Object.values(attendanceToday).filter(a=>a.status==="late").length;
   const half = Object.values(attendanceToday).filter(a=>a.status==="half").length;
@@ -4350,10 +4370,7 @@ function hrOverview(){
   ].slice(0,5);
 
   return `
-  <div class="banner">
-    <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-    <div><b>Sample data.</b> Approving a leave or advance updates its status live; fully paying an employee's salary for the month recovers their approved advance automatically.</div>
-  </div>
+  ${monthScorePanelHTML(`HR Score · ${monthLabel(hrMonth)}`, `Programs, feedback, requests and complaints · vs ${hrP}`, hrMonthScore(hrMonth), hrMonthScore(hrPrev), hrP)}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Team Size</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-users"/></svg></div></div><div class="kpi-value mono">${employees.length}</div><div class="kpi-sub">${onNotice ? onNotice+" on notice period" : "across "+DEPARTMENTS.length+" departments"}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Present Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg></div></div><div class="kpi-value mono">${present+late+half}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${employees.length}</span></div><div class="kpi-sub">${onLeave} on leave</div></div>
@@ -4483,6 +4500,7 @@ function openAttendanceHistory(empId){
     <div class="modal-foot"><div></div><button class="btn ghost" onclick="closeModal()">Close</button></div>`);
 }
 function hrAttendance(){
+  const leave = hrLeaveParts();
   const date = selectedAttendanceDate;
   const isToday = date===TODAY;
   const dayMap = attendanceByDate[date] || {};
@@ -4509,6 +4527,7 @@ function hrAttendance(){
     <div class="kpi-card"><div class="kpi-label">On Leave</div><div class="kpi-value mono">${counts.leave}</div></div>
     <div class="kpi-card"><div class="kpi-label">Absent</div><div class="kpi-value mono neg">${counts.absent}</div></div>
   </div>
+  ${leave.requests}
   <div class="grid-2">
     <div class="panel">
       <div class="panel-head"><h3>${isToday?"Today's roster":fmtDate(date)+"'s roster"}</h3><div class="sub">${employees.length} team members${isToday?"":" · click a status to correct it for this date"}</div></div>
@@ -4524,7 +4543,8 @@ function hrAttendance(){
         <div class="kpi-card" style="box-shadow:none;"><div class="kpi-label">Days present</div><div class="kpi-value mono">${present}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${mtdWorkingDays} working days</span></div><div class="kpi-sub">${present>=mtdWorkingDays?'full attendance this month':(mtdWorkingDays-present)+' day(s) missed'}</div></div>
       </div>
     </div>
-  </div>`;
+  </div>
+  ${leave.summary}`;
 }
 
 let leaveRequestsMonthFilter = "All";
@@ -4534,13 +4554,14 @@ async function setLeaveRequestsMonthFilter(v){
   if(!attendanceMonthSummary[summaryMonth]) await loadAttendanceMonthSummary(summaryMonth).catch(()=>{});
   render();
 }
-function hrLeave(){
+// The two halves of the merged Attendance & Leave page: the requests list, and each employee's leave / WFH month.
+function hrLeaveParts(){
   const filtered = leaveRequests.filter(l=>matchesDateFilter(l.from, leaveRequestsMonthFilter));
   const sorted = filtered.slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
-  return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeaveRequestsMonthFilter(this.value)">${dateFilterOptions(leaveRequests.map(l=>l.from), leaveRequestsMonthFilter)}</select></div><button class="btn primary" onclick="openAddLeave()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New request</button></div>
+  const requests = `
   <div class="panel">
-    <div class="panel-head"><h3>Requests</h3><div class="sub">${filtered.length} of ${leaveRequests.length}${dateFilterSuffix(leaveRequestsMonthFilter,'starting in')}</div></div>
+    <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;"><div><h3>Leave requests</h3><div class="sub">${leaveRequests.filter(l=>l.status==="Pending").length} pending · ${filtered.length} of ${leaveRequests.length}${dateFilterSuffix(leaveRequestsMonthFilter,'starting in')}</div></div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeaveRequestsMonthFilter(this.value)">${dateFilterOptions(leaveRequests.map(l=>l.from), leaveRequestsMonthFilter)}</select></div><button class="btn primary" onclick="openAddLeave()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New leave request</button></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th class="num">Days</th><th>Reason</th><th>Status</th><th></th></tr></thead>
       <tbody>${sorted.map(l=>{
         const emp=byId(l.empId);
@@ -4549,8 +4570,8 @@ function hrLeave(){
         return `<tr><td>${personCell(emp)}</td><td>${esc(l.type)}${l.duration && l.duration!=="Full Day" ? ` <span class="faint">· ${esc(l.duration)}</span>` : ""}</td><td class="muted">${range}</td><td class="num">${l.days}</td><td class="muted">${esc(l.reason)}</td><td>${pill(l.status,statusKind(l.status))}</td><td>${actions}</td></tr>`;
       }).join("") || `<tr><td colspan="7"><div class="empty">No leave requests${leaveRequestsMonthFilter==='All'?' yet':' for this range'}.</div></td></tr>`}</tbody>
     </table></div>
-  </div>
-  ${(()=>{
+  </div>`;
+  const summary = (()=>{
     // Marked "On Leave"/"WFH" in Attendance for the chosen month — computed the same way payroll's
     // Loss of Pay / WFH pay-cut are (computeLopDays()/computeWfhExcessDays()), both against the
     // org-wide monthly caps set in HR Settings. Monthly caps, not an annual balance — there's no
@@ -4564,7 +4585,8 @@ function hrLeave(){
       <tbody>${employees.map(e=>{ const c=summary[e.id]||{leave:0,wfh:0}; const lop=Math.max(0,c.leave-(c.leaveCap ?? hrPolicy.paidLeavesPerMonth)); const wfhCut=Math.max(0,c.wfh-(c.wfhCap ?? hrPolicy.paidWfhPerMonth))+(c.partialWfh||0); return `<tr><td>${personCell(e)}</td><td class="num">${c.leave||'—'}</td><td class="num ${lop>0?'warn':''}">${lop||'—'}</td><td class="num">${c.wfh||'—'}</td><td class="num ${wfhCut>0?'warn':''}">${wfhCut||'—'}</td><td class="num"><button class="btn btn-sm ghost" onclick="openLeaveBalance('${e.id}')">Balance</button></td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>`;
-  })()}`;
+  })();
+  return {requests, summary};
 }
 
 let hiringFilter = { dept:"", role:"" };
@@ -4793,19 +4815,50 @@ async function saveLeavePayPolicyNotes(){
   }catch(err){ toast(err.message || "Couldn't save notes"); }
 }
 
+// One page for both kinds of early-pay request: an Advance (against this month's salary, HR approves, recovered from
+// payroll) and a Withdrawal (a closed, earned month paid early, Finance/Admin approve). Pending first, then newest.
+let advancesTypeFilter = "All";
+function setAdvancesTypeFilter(v){ advancesTypeFilter = v; render(); }
 function hrAdvances(){
-  const filtered = advances.filter(a=>matchesDateFilter(a.requested, advancesMonthFilter));
-  const sorted = filtered.slice().sort((a,b)=>{ const order={Pending:0,Recovering:1,Recovered:2,Rejected:3}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.requested.localeCompare(a.requested); });
+  const canDecideWithdrawal = isFinanceAdminUser(currentUser);
+  const rows = [
+    ...advances.map(a=>({kind:"Advance", id:a.id, empId:a.empId, amount:a.amount, requested:a.requested, status:a.status,
+      detail:esc(a.reason||'')+(a.deductFromMonth?`<div class="subtext">Deduct from ${monthLabel(a.deductFromMonth)} salary</div>`:''),
+      balance:a.status==='Rejected'?null:a.balance})),
+    ...withdrawalRequests.map(w=>({kind:"Withdrawal", id:w.id, empId:w.empId, empName:w.empName, amount:w.amount, requested:w.requested, status:w.status, decided:w.decidedDate,
+      detail:`Against ${esc(MONTH_LABEL[w.month]||monthLabel(w.month))} salary`, balance:w.status==='Approved'?0:null})),
+  ];
+  const inView = rows.filter(r=>(advancesTypeFilter==='All' || r.kind===advancesTypeFilter) && matchesDateFilter(r.requested, advancesMonthFilter));
+  const order = {Pending:0, Recovering:1, Recovered:2, Approved:2, Rejected:3};
+  inView.sort((a,b)=>(order[a.status]-order[b.status]) || b.requested.localeCompare(a.requested));
+  const pend = rows.filter(r=>r.status==="Pending");
+  const toRecover = advances.filter(a=>a.status==="Recovering").reduce((t,a)=>t+a.balance,0);
+  const month = TODAY.slice(0,7);
+  const wdPaid = withdrawalRequests.filter(w=>w.status==="Approved" && (w.decidedDate||w.requested||'').slice(0,7)===month).reduce((t,w)=>t+w.amount,0);
+  const kindPill = k => `<span class="tag type" style="${k==='Withdrawal'?'background:var(--blue-soft);color:var(--blue);':''}">${k}</span>`;
+  const btns = (ok, no) => `<div style="display:flex;gap:6px;justify-content:flex-end;">${ok}<button class="btn btn-sm danger" onclick="${no}">Reject</button></div>`;
+  const actions = r => {
+    if(r.kind==="Advance") return r.status==="Pending" ? btns(`<button class="btn btn-sm" onclick="openApproveAdvance('${r.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button>`, `decideAdvance('${r.id}','Rejected')`) : '';
+    return r.status==="Pending" && canDecideWithdrawal ? btns(`<button class="btn btn-sm" onclick="decideWithdrawal('${r.id}','Approved')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve &amp; pay</button>`, `decideWithdrawal('${r.id}','Rejected')`) : '';
+  };
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setAdvancesMonthFilter(this.value)">${dateFilterOptions(advances.map(a=>a.requested), advancesMonthFilter)}</select></div><button class="btn primary" onclick="openAddAdvance()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New request</button></div>
+  <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Advance</b> — money against this month's salary, before it's fully earned. HR approves, then it's recovered from payroll. <b>Withdrawal</b> — an early payout from a month that's already closed and earned. Approving pays it at once against that month's payroll.${canDecideWithdrawal?'':' Approving or rejecting a withdrawal is Finance/Admin only — you can see everything here.'}</div></div>
+  <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
+    <div class="kpi-card"><div class="kpi-label">Waiting on approval</div><div class="kpi-value mono ${pend.length?'warn':''}">${pend.length}</div><div class="kpi-sub">${pend.filter(r=>r.kind==='Advance').length} advance · ${pend.filter(r=>r.kind==='Withdrawal').length} withdrawal</div></div>
+    <div class="kpi-card"><div class="kpi-label">Advances to recover</div><div class="kpi-value mono">${inr(toRecover)}</div><div class="kpi-sub">approved, still being deducted</div></div>
+    <div class="kpi-card"><div class="kpi-label">Withdrawals paid · ${monthLabel(month).split(' ')[0]}</div><div class="kpi-value mono">${inr(wdPaid)}</div><div class="kpi-sub">taken off payroll this month</div></div>
+  </div>
+  <div class="toolbar">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+      <div class="filter-group"><span class="filter-label">Type</span><div>${["All","Advance","Withdrawal"].map(t=>`<button class="chip ${advancesTypeFilter===t?'active':''}" onclick="setAdvancesTypeFilter('${t}')">${t==='All'?'All':t+'s'}</button>`).join(' ')}</div></div>
+      <div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setAdvancesMonthFilter(this.value)">${dateFilterOptions(rows.map(r=>r.requested), advancesMonthFilter)}</select></div>
+    </div>
+    <button class="btn primary" onclick="openAddAdvance()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New advance</button>
+  </div>
   <div class="panel">
-    <div class="panel-head"><h3>Requests</h3><div class="sub">${filtered.length} of ${advances.length}${dateFilterSuffix(advancesMonthFilter,'requested in')} · approved advances recover automatically from payroll</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Amount</th><th>Reason</th><th>Requested</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
-      <tbody>${sorted.map(a=>{
-        const emp=byId(a.empId);
-        const actions = a.status==="Pending" ? `<div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm" onclick="openApproveAdvance('${a.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm danger" onclick="decideAdvance('${a.id}','Rejected')">Reject</button></div>` : a.status==='Rejected' ? `<span class="faint" style="font-size:11.5px;">${a.note||''}</span>` : `<span class="faint" style="font-size:11.5px;">${inr(a.monthlyDeduction)}/mo</span>${a.paidDate?`<div class="subtext">Paid out ${fmtDateShort(a.paidDate)}</div>`:`<div class="subtext" style="color:var(--warn);">Awaiting payout — Accounts &gt; Payment Requests</div>`}`;
-        return `<tr><td>${personCell(emp)}</td><td class="num mono">${inr(a.amount)}</td><td class="muted">${esc(a.reason)}${a.deductFromMonth?`<div class="subtext">Deduct from ${monthLabel(a.deductFromMonth)} salary</div>`:''}</td><td class="muted">${fmtDate(a.requested)}</td><td class="num mono">${a.status==='Rejected'?'—':inr(a.balance)}</td><td>${pill(a.status,statusKind(a.status))}</td><td>${actions}</td></tr>`;
-      }).join("")}</tbody>
+    <div class="panel-head"><h3>Requests</h3><div class="sub">${inView.length} of ${rows.length}${dateFilterSuffix(advancesMonthFilter,'requested in')} · pending first, then newest</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>Type</th><th class="num">Amount</th><th>Details</th><th>Requested</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
+      <tbody>${inView.length ? inView.map(r=>{ const emp = byId(r.empId); const shown = r.kind==="Withdrawal" && r.status==="Approved" ? "Paid" : r.status; return `<tr><td>${emp?personCell(emp):`${esc(r.empName||r.empId)}<div class="subtext mono">${esc(r.empId)}</div>`}</td><td>${kindPill(r.kind)}</td><td class="num mono">${inr(r.amount)}</td><td class="muted">${r.detail}</td><td class="muted">${fmtDate(r.requested)}</td><td class="num mono">${r.balance==null?'—':inr(r.balance)}</td><td>${pill(shown, statusKind(shown))}</td><td>${actions(r)}</td></tr>`; }).join('') : `<tr><td colspan="8"><div class="empty">No requests${advancesMonthFilter==='All'&&advancesTypeFilter==='All'?' yet':' for this view'}.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -5962,37 +6015,286 @@ function openRecordPayment(id){
 }
 
 /* ===================== MARKETING ===================== */
+// Month-on-month helpers shared by the Marketing and Sales overviews.
+function lastMonths(month, n){ const out=[month]; while(out.length<n) out.unshift(prevMonth(out[0])); return out; }
+function vsHTML(now, prev, opts){
+  opts = opts || {};
+  const mon = opts.mon || monthLabel(prevMonth(TODAY.slice(0,7))).split(' ')[0];
+  const fmt = opts.fmt || (x=>x);
+  if(now==null || prev==null) return `<span class="faint">${mon}: ${prev==null?'—':fmt(prev)}</span>`;
+  const d = now - prev;
+  if(Math.abs(d) < (opts.eps||1e-9)) return `<span class="faint">same as ${mon}</span>`;
+  const good = opts.neutral ? null : (opts.lowerIsBetter ? d<0 : d>0);
+  const color = good==null ? 'var(--ink-soft)' : good ? 'var(--pos)' : 'var(--neg)';
+  return `<span style="color:${color};font-weight:700;">${d>0?'▲':'▼'} ${fmt(Math.abs(d))}</span> <span class="faint">vs ${mon} (${fmt(prev)})</span>`;
+}
+// Tiny bar trend for a KPI card — the last bar (this month) in the accent, earlier months faint.
+function sparkBarsHTML(vals, months){
+  const max = Math.max(1, ...vals.map(v=>v||0));
+  return `<div style="display:flex;align-items:flex-end;gap:4px;height:34px;margin-top:8px;">${vals.map((v,i)=>`<div title="${monthLabel(months[i])}: ${v==null?'—':v}" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;"><div style="width:100%;height:${v?Math.max(3,v/max*26):2}px;border-radius:3px;background:${i===vals.length-1?'var(--brand)':'var(--ink-faint)'};opacity:${i===vals.length-1?1:.35};"></div><span style="font-size:9px;color:var(--ink-faint);">${monthLabel(months[i]).slice(0,3)}</span></div>`).join('')}</div>`;
+}
+// Two bars per row — this month (solid) over last month (faint) — with both values.
+function compareBarsHTML(rows, fmt){
+  fmt = fmt || (x=>x);
+  const max = Math.max(1, ...rows.flatMap(r=>[r.now||0, r.prev||0]));
+  return `<div style="display:flex;flex-direction:column;gap:10px;">${rows.map(r=>`
+    <div style="display:grid;grid-template-columns:150px 1fr 92px;gap:10px;align-items:center;">
+      <div class="bar-label" title="${esc(r.label)}" style="font-size:12.5px;">${esc(r.label)}</div>
+      <div style="display:flex;flex-direction:column;gap:3px;">
+        <div class="bar-track" style="height:8px;"><div class="bar-fill" style="width:${(r.now||0)/max*100}%;"></div></div>
+        <div class="bar-track" style="height:4px;background:transparent;"><div class="bar-fill" style="width:${(r.prev||0)/max*100}%;background:var(--ink-faint);opacity:.45;"></div></div>
+      </div>
+      <div style="text-align:right;font-size:12px;"><b class="mono">${r.now==null?'—':fmt(r.now)}</b> <span class="faint mono">/ ${r.prev==null?'—':fmt(r.prev)}</span></div>
+    </div>`).join('')}</div>`;
+}
+function compareLegendHTML(month, prev){
+  return `<div style="display:flex;gap:14px;font-size:11px;color:var(--ink-soft);"><span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:14px;height:6px;border-radius:3px;background:var(--brand);display:inline-block;"></span>${monthLabel(month).split(' ')[0]}</span><span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:14px;height:4px;border-radius:2px;background:var(--ink-faint);opacity:.45;display:inline-block;"></span>${monthLabel(prev).split(' ')[0]}</span></div>`;
+}
+// One KPI card with this month vs last month and a 4-month bar trend.
+function monthCardHTML(label, series, months, fmt, opts, extra){
+  const now = series[series.length-1], before = series[series.length-2];
+  return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value mono" style="font-size:21px;">${now==null?'—':fmt(now)}</div>
+    <div class="kpi-sub">${vsHTML(now, before, Object.assign({fmt}, opts||{}))}</div>${extra||''}${sparkBarsHTML(series, months)}</div>`;
+}
+// Our own ads' spend / leads for a month, from the daily tracker; null when nothing was logged.
+function ownAdsForMonth(month){
+  const rows = ownAdMetrics.filter(m=>m.date.slice(0,7)===month);
+  return rows.length ? { days:rows.length, spend:rows.reduce((s,m)=>s+m.spend,0), leads:rows.reduce((s,m)=>s+m.leads,0) } : null;
+}
+
+/* ===================== SOCIAL MEDIA NUMBERS + MARKETING SCORE =====================
+   Once a month the marketing owner (or leadership) copies each platform's followers, reach and engagements from its
+   insights. The Marketing Score is out of 100:  Content delivered 50 · Follower growth 30 (target 3% a month) ·
+   Engagement rate 20 (target 5% of reach). A part with nothing to measure is left out and the rest re-weighted. */
+const MKT_FOLLOWER_GROWTH_TARGET = 0.03, MKT_ENGAGEMENT_TARGET = 0.05;
+const SOCIAL_METRICS = [
+  {k:"followers", label:"Followers", req:true}, {k:"reach", label:"Reach"}, {k:"impressions", label:"Impressions"},
+  {k:"engagements", label:"Engagements"}, {k:"profileVisits", label:"Profile visits"}, {k:"linkClicks", label:"Link clicks"},
+];
+let socialData = null;                                   // {owner, canUpdate, platforms, stats, notes} from /api/scores/social
+let socialStatus = {isOwner:false, pending:false};       // light read for the owner's My Workspace nudge
+async function loadSocial(){ socialData = await apiJson("/api/scores/social"); }
+async function loadSocialStatus(){ socialStatus = await apiJson("/api/scores/social/status"); }
+const socialPlatforms = ()=> socialData ? socialData.platforms : ["Instagram","LinkedIn"];
+const socialFor = (month, platform)=> (socialData && socialData.stats.find(x=>x.month===month && x.platform===platform)) || null;
+function socialTotal(month, key){ const rows = socialData ? socialData.stats.filter(x=>x.month===month) : []; return rows.length ? rows.reduce((t,x)=>t+(x[key]||0),0) : null; }
+const socialPendingNow = ()=> !!socialData && !socialData.stats.some(x=>x.month===TODAY.slice(0,7));
+function monthEndOf(month){ const [y,m] = month.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10); }
+function weightedScoreOf(parts){ const live = parts.filter(p=>p.v!=null), w = live.reduce((t,p)=>t+p.w,0); return w ? Math.round(live.reduce((t,p)=>t+p.v*p.w,0)/w*100) : null; }
+function marketingScore(month){
+  const asOf = [TODAY, monthEndOf(month)].sort()[0];
+  const due = contentItems.filter(c=>(c.due||'').slice(0,7)===month && c.due<=asOf), done = due.filter(c=>c.stage==="Published");
+  const f = socialTotal(month,'followers'), fp = socialTotal(prevMonth(month),'followers');
+  const reach = socialTotal(month,'reach'), eng = socialTotal(month,'engagements');
+  const growth = (f!=null && fp) ? (f-fp)/fp : null, er = reach ? eng/reach : null;
+  const parts = [
+    {key:"content", label:"Content delivered", w:50, v: due.length ? done.length/due.length : null, detail: due.length ? `${done.length} of ${due.length} due so far published` : "nothing due yet"},
+    {key:"followers", label:"Follower growth", w:30, v: growth==null ? null : Math.max(0, Math.min(1, growth/MKT_FOLLOWER_GROWTH_TARGET)), detail: growth==null ? "no numbers to compare" : `${growth>=0?'+':''}${(growth*100).toFixed(1)}% · target ${MKT_FOLLOWER_GROWTH_TARGET*100}%`},
+    {key:"engagement", label:"Engagement rate", w:20, v: er==null ? null : Math.min(1, er/MKT_ENGAGEMENT_TARGET), detail: er==null ? "no numbers yet" : `${(er*100).toFixed(1)}% of reach · target ${MKT_ENGAGEMENT_TARGET*100}%`},
+  ];
+  return {score: weightedScoreOf(parts), parts};
+}
+function socialPanelHTML(){
+  if(!socialData) return '';
+  const month = TODAY.slice(0,7), prev = prevMonth(month), M = monthLabel(month).split(' ')[0];
+  const owner = socialData.owner ? socialData.owner.name : "Nobody yet";
+  const pending = socialPendingNow(), note = socialData.notes[month];
+  const last = socialData.stats.filter(x=>x.month===month).map(x=>x.updatedOn).sort().pop();
+  const er = x => x && x.reach ? x.engagements/x.reach*100 : null;
+  const num = x => x.toLocaleString('en-IN');
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Social media · ${M}</h3><div class="sub">Updated by ${esc(owner)} each month from platform insights${last?` · last update ${fmtDateShort(last)}`:''}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openMarketingOwner()">Change owner</button>`:''}${socialData.canUpdate?`<button class="btn btn-sm ${pending?'primary':'ghost'}" onclick="openSocialUpdate()">${pending?'Update '+M+' numbers':'Edit '+M+' numbers'}</button>`:''}</div></div>
+    ${pending?`<div class="banner" style="margin:12px 16px 0;background:var(--warn-soft);color:var(--ink);"><div><b>${M}'s numbers aren't in yet.</b> ${esc(owner)} updates followers, reach and engagements for each platform.</div></div>`:''}
+    <div class="table-wrap"><table class="data"><thead><tr><th>Platform</th><th class="num">Followers</th><th class="num">Growth</th><th class="num">Reach</th><th class="num">Engagements</th><th class="num">Engagement rate</th></tr></thead>
+      <tbody>${socialPlatforms().map(pl=>{ const a = socialFor(month, pl), b = socialFor(prev, pl); const g = a&&b&&b.followers ? (a.followers-b.followers)/b.followers*100 : null; return `<tr>
+        <td style="font-weight:700;">${esc(pl)}</td>
+        <td class="num"><div class="mono" style="font-weight:700;">${a?num(a.followers):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.followers:null, b?b.followers:null, {fmt:num})}</div></td>
+        <td class="num mono" style="font-weight:700;color:${g!=null&&g>=0?'var(--pos)':'var(--neg)'};">${g==null?'—':(g>=0?'+':'')+g.toFixed(1)+'%'}</td>
+        <td class="num"><div class="mono">${a?num(a.reach):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.reach:null, b?b.reach:null, {fmt:num})}</div></td>
+        <td class="num"><div class="mono">${a?num(a.engagements):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.engagements:null, b?b.engagements:null, {fmt:num})}</div></td>
+        <td class="num"><div class="mono">${er(a)==null?'—':er(a).toFixed(1)+'%'}</div><div style="font-size:10.5px;">${vsHTML(er(a), er(b), {fmt:x=>x.toFixed(1)+'%', eps:0.05})}</div></td>
+      </tr>`; }).join('')}</tbody>
+    </table></div>
+    ${note?`<div class="panel-body" style="padding-top:8px;"><div class="subtext"><b>What the insights say</b> · ${esc(note.by)}, ${fmtDateShort(note.on)}</div><div style="margin-top:4px;font-size:13px;">${esc(note.text)}</div></div>`:''}
+  </div>`;
+}
+function openSocialUpdate(){
+  if(!socialData || !socialData.canUpdate) return;
+  const month = TODAY.slice(0,7), prev = prevMonth(month), pm = monthLabel(prev).slice(0,3), note = socialData.notes[month];
+  showModal(`
+    <div class="modal-head"><h3>Followers &amp; insights — ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-social"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">Copy these from each platform's insights for the month. Only followers is required. ${pm} numbers are shown under each box.</div>
+      ${socialPlatforms().map(pl=>{ const a = socialFor(month, pl), b = socialFor(prev, pl); return `
+        <fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;">
+          <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(pl)}</legend>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;">
+            ${SOCIAL_METRICS.map(m=>`<div><label class="field-label" for="soc-${pl}-${m.k}">${m.label}${m.req?' *':''}</label><input class="field-input" type="number" min="0" step="1" id="soc-${pl}-${m.k}" name="${pl}-${m.k}" value="${a&&a[m.k]!=null?a[m.k]:''}" ${m.req?'required':''}><div class="subtext">${pm}: ${b&&b[m.k]!=null?b[m.k].toLocaleString('en-IN'):'—'}</div></div>`).join('')}
+          </div>
+        </fieldset>`; }).join('')}
+      <div><label class="field-label" for="soc-note">What the insights say (optional)</label><textarea class="field-input" id="soc-note" name="note" rows="3" placeholder="What worked, what didn't, what we change next month">${note?esc(note.text):''}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-social").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const val = (pl,k)=>{ const v = f.get(pl+'-'+k); return v===''||v==null ? null : Number(v); };
+    // followers, reach and engagements feed the score, so blanks there count as 0
+    const stats = socialPlatforms().map(pl=>({ platform:pl, followers:val(pl,'followers')||0, reach:val(pl,'reach')||0, engagements:val(pl,'engagements')||0, impressions:val(pl,'impressions'), profileVisits:val(pl,'profileVisits'), linkClicks:val(pl,'linkClicks') }));
+    try{
+      await apiJson(`/api/scores/social/${month}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ stats, note:(f.get('note')||'').trim() }) });
+      await Promise.all([loadSocial(), loadSocialStatus().catch(()=>{})]);
+      toast("Followers & insights saved for "+monthLabel(month)); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the numbers"); }
+  });
+}
+function openMarketingOwner(){
+  if(!isLeadershipRole(currentUser) || !socialData) return;
+  showModal(`
+    <div class="modal-head"><h3>Who updates social media numbers?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-mkt-owner"><div class="modal-body">
+      <div><label class="field-label">Marketing owner</label><select class="field-input" name="owner">${employees.filter(e=>e.employmentStatus!=="Left").map(e=>`<option value="${e.id}" ${socialData.owner&&socialData.owner.code===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+      <div class="subtext">They get a reminder in My Workspace until each month's numbers are in.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-mkt-owner").addEventListener("submit", async e=>{
+    e.preventDefault();
+    try{
+      const r = await apiJson("/api/scores/social-owner", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeId: employeeDbIdByCode[new FormData(e.target).get("owner")] }) });
+      await loadSocial(); toast(r.owner.name+" now updates social numbers"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't change the owner"); }
+  });
+}
+// The owner's My Workspace nudge.
+function socialReminderHTML(){
+  if(!currentUser || !socialStatus.isOwner || !socialStatus.pending) return '';
+  return `<div class="banner" style="background:var(--warn-soft);color:var(--ink);align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg><div style="flex:1;"><b>Update ${monthLabel(TODAY.slice(0,7))}'s social media numbers</b> — followers, reach and engagements for each platform.</div>${visibleModules().some(m=>m.id==='marketing')?`<button class="btn btn-sm primary" onclick="setSub('marketing','overview')">Open</button>`:''}</div>`;
+}
+
+// Marketing → Overview: our own Meta Ads score and month-on-month content and ad numbers, with the content pipeline.
 function mktOverview(){
+  const month = TODAY.slice(0,7), prev = prevMonth(month), P = monthLabel(prev).split(' ')[0], M = monthLabel(month).split(' ')[0];
+  const months = lastMonths(month, 4);
+  const published = months.map(m=>contentItems.filter(c=>c.stage==="Published" && (c.due||'').slice(0,7)===m).length);
+  const adSpend = months.map(m=>{ const a = ownAdsForMonth(m); return a ? a.spend : null; });
+  const adLeads = months.map(m=>{ const a = ownAdsForMonth(m); return a ? a.leads : null; });
+  const adNow = ownAdsForMonth(month);
   const activeContent = contentItems.filter(c=>c.stage!=="Published").length;
-  const overdueContent = contentItems.filter(c=>c.stage!=="Published" && c.due<TODAY).length;
-  const publishedMTD = contentItems.filter(c=>c.stage==="Published" && c.due.slice(0,7)===TODAY.slice(0,7)).length;
-  const adRows = metaAdsCampaigns.map(adMetrics);
-  const totalAdSpend = adRows.reduce((s,r)=>s+r.spend,0);
-  const totalAdLeads = adRows.reduce((s,r)=>s+r.leads,0);
-  const totalLeads = marketingLeads.length;
-  const bySource = {};
-  marketingLeads.forEach(l=>{ bySource[l.source]=(bySource[l.source]||0)+1; });
-  const sourceRows = Object.entries(bySource).sort((a,b)=>b[1]-a[1]);
-  const maxSource = Math.max(...sourceRows.map(x=>x[1]),1);
+  const overdueContent = contentItems.filter(c=>c.stage!=="Published" && c.due && c.due<TODAY).length;
+  const maxStage = Math.max(...STAGES.map(x=>contentItems.filter(c=>c.stage===x).length),1);
   return `
   <div class="banner">
     <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-    <div><b>Internal marketing.</b> This module tracks DesGro Media's own brand content and ad campaigns — not client work, which lives under Clients.</div>
+    <div><b>Internal marketing.</b> This tracks DesGro Media's own brand content and ad campaigns — not client work, which lives under Clients. Leads and quotes are under Sales.</div>
   </div>
-  <div class="kpi-grid">
-    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Content In Flight</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-board"/></svg></div></div><div class="kpi-value mono">${activeContent}</div><div class="kpi-sub">${overdueContent} overdue</div></div>
-    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label" id="kpi-published-label">Published This Month</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg></div></div><div class="kpi-value mono">${publishedMTD}</div><div class="kpi-sub">our own channels</div></div>
-    <div class="kpi-card hero"><div class="kpi-top"><span class="kpi-label">Meta Ads Spend</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg></div></div><div class="kpi-value mono">${inr(totalAdSpend)}</div><div class="kpi-sub">${totalAdLeads} leads generated</div></div>
-    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Total Leads</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-handshake"/></svg></div></div><div class="kpi-value mono">${totalLeads}</div><div class="kpi-sub">${sourceRows.length?sourceRows[0][0]+" is the top source":"no leads yet"}</div></div>
+  ${monthScorePanelHTML(`Marketing Score · ${monthLabel(month)}`, `Content, followers and engagement · vs ${P}`, marketingScore(month), marketingScore(prev), P)}
+  ${metaAdsScorePanelHTML()}
+
+  <div class="panel">
+    <div class="panel-head"><div><h3>${M} vs ${P}</h3><div class="sub">${M} is month to date · bars show the last 4 months</div></div></div>
+    <div class="modal-body">
+      <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
+        ${monthCardHTML("Content published", published, months, x=>x)}
+        ${socialData ? monthCardHTML("Total followers", months.map(m=>socialTotal(m,'followers')), months, x=>x.toLocaleString('en-IN'), {}, socialPendingNow()?`<div class="kpi-sub" style="color:var(--warn);">${M} not updated yet</div>`:'') : ''}
+        ${monthCardHTML("Meta ads spend", adSpend, months, inr, {neutral:true}, adNow?`<div class="kpi-sub faint">${adNow.days} day${adNow.days===1?'':'s'} logged · ${adNow.leads} leads</div>`:'')}
+        ${monthCardHTML("Leads from ads", adLeads, months, x=>x)}
+        <div class="kpi-card"><div class="kpi-label">Content in flight</div><div class="kpi-value mono" style="font-size:21px;">${activeContent}</div><div class="kpi-sub ${overdueContent?'neg':''}">${overdueContent?overdueContent+' overdue':'none overdue'}</div></div>
+      </div>
+    </div>
   </div>
-  <div class="grid-2">
+
+  <div class="panel">
+    <div class="panel-head"><div><h3>Content by stage</h3><div class="sub">${contentItems.length} items in the pipeline</div></div><button class="btn btn-sm ghost" onclick="setSub('marketing','content')">Open</button></div>
+    <div class="panel-body"><div class="barchart">${STAGES.map(st=>{ const n=contentItems.filter(c=>c.stage===st).length; return `<div class="bar-row"><div class="bar-label">${st}</div><div class="bar-track"><div class="bar-fill" style="width:${n/maxStage*100}%"></div></div><div class="bar-val mono">${n}</div></div>`; }).join('')}</div></div>
+  </div>
+  ${socialPanelHTML()}`;
+}
+
+// Sales → Overview: the sales score, month-on-month pipeline numbers, the team and where leads stand.
+let salesOverviewData = null;   // {month, now, prev, targets, people} from /api/scores/sales
+async function loadSalesOverview(){ salesOverviewData = await apiJson("/api/scores/sales"); }
+function salesScorePanelHTML(){
+  const d = salesOverviewData; if(!d) return '';
+  const month = d.month, P = monthLabel(prevMonth(month)).split(' ')[0], Ps = P.slice(0,3);
+  const sc = d.now, sp = d.prev, partial = month===TODAY.slice(0,7);
+  const share = new Date(TODAY+"T00:00:00Z").getUTCDate()/new Date(Date.UTC(+month.slice(0,4), +month.slice(5,7), 0)).getUTCDate();
+  const tile = (label, now, was, fmt, opts) => { opts = opts||{}; return `<div style="padding:10px 12px;border-radius:8px;background:var(--surface-sunk);min-width:0;">
+    <div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);">${label}</div>
+    <div class="mono" style="font-size:17px;font-weight:800;margin-top:2px;">${now==null?'—':fmt(now)}</div>
+    <div style="font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${opts.sub!=null?opts.sub:(partial&&opts.total?`<span class="faint">${Ps} full month ${was==null?'—':fmt(was)}</span>`:`${now!=null&&was!=null?deltaHTML(now, was, {fmt}):''} <span class="faint">${Ps} ${was==null?'—':fmt(was)}</span>`)}</div>
+  </div>`; };
+  const rate = x => { const m = /· (\d+)% · target/.exec(x.parts.find(p=>p.key==="conversion").detail); return m ? +m[1] : null; };
+  const meetsOf = x => { const m = /^(\d+) of/.exec(x.parts.find(p=>p.key==="meetings").detail); return m ? +m[1] : 0; };
+  const tiles = [
+    tile("Sales booked", sc.booked, sp.booked, shortInr, {total:true}),
+    tile("Target", Math.round(sc.booked/d.targets.revenue*100), null, x=>x+'%', {sub:`<span class="faint">of ${shortInr(d.targets.revenue)}${partial?` · ${Math.round(share*100)}% of month gone`:''}</span>`}),
+    tile("Meetings", meetsOf(sc), meetsOf(sp), String, {total:true}),
+    tile("Lead conversion", rate(sc), rate(sp), x=>x+'%'),
+    tile("New leads", sc.stats.leadsNew, sp.stats.leadsNew, String, {total:true}),
+    tile("Won", sc.stats.won, sp.stats.won, String, {total:true}),
+  ].join('');
+  const foot = `<div style="display:flex;flex-direction:column;gap:8px;"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;">${tiles}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>Targets: ${shortInr(d.targets.revenue)} a month · ${d.targets.conversion}% lead conversion · ${d.targets.meetings} meetings</span><span style="display:flex;gap:6px;">${isSalesRole(currentUser)?`<button class="btn btn-sm ghost" onclick="setSub('sales','leads')">Log meeting</button>`:''}${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openScoreTargets()">Edit targets</button>`:''}</span></div></div>`;
+  return monthScorePanelHTML(`Sales Score · ${monthLabel(month)}`, `Target completion, lead conversion and meetings · vs ${P}`, sc, sp, P, foot);
+}
+function salesOverview(){
+  const month = TODAY.slice(0,7), prev = prevMonth(month), P = monthLabel(prev).split(' ')[0], M = monthLabel(month).split(' ')[0];
+  const months = lastMonths(month, 4);
+  const showMoney = !!currentUser && (isLeadershipRole(currentUser) || isSalesRole(currentUser));
+  const inM = (d,m) => (d||'').slice(0,7)===m;
+  const series = {
+    leads: months.map(m=>marketingLeads.filter(l=>inM(l.createdDate,m)).length),
+    quotes: months.map(m=>quotes.filter(q=>inM(q.createdDate,m)).length),
+    invoices: months.map(m=>invoices.filter(i=>inM(i.issued,m)).length),
+    invoiced: months.map(m=>invoices.filter(i=>inM(i.issued,m)).reduce((s,i)=>s+invoiceTotal(i),0)),
+    revenue: months.map(m=>invoices.reduce((s,i)=>s+(i.payments||[]).filter(p=>inM(p.date,m)).reduce((a,p)=>a+p.amount,0),0)),
+  };
+  const people = salesOverviewData ? salesOverviewData.people.slice().sort((a,b)=>(b.now.revenue-a.now.revenue)||(b.now.billed-a.now.billed)||(b.now.converted-a.now.converted)) : [];
+  const best = people[0] && (people[0].now.revenue || people[0].now.billed || people[0].now.converted) ? people[0] : null;
+  const cell = (a, b, fmt) => `<td class="num"><div class="mono" style="font-weight:700;">${fmt?fmt(a):a}</div><div style="font-size:10.5px;">${vsHTML(a, b, {fmt:fmt||(x=>x)})}</div></td>`;
+  const sourceRows = LEAD_SOURCES.map(s=>({label:s, now:marketingLeads.filter(l=>l.source===s && inM(l.createdDate,month)).length, prev:marketingLeads.filter(l=>l.source===s && inM(l.createdDate,prev)).length})).filter(r=>r.now||r.prev).sort((a,b)=>b.now-a.now);
+  const stageCounts = LEAD_STAGES.map(s=>({label:s, n:marketingLeads.filter(l=>leadStage(l)===s).length}));
+  const maxStage = Math.max(1, ...stageCounts.map(x=>x.n));
+  return `
+  ${salesScorePanelHTML()}
+
+  <div class="panel">
+    <div class="panel-head"><div><h3>${M} vs ${P}</h3><div class="sub">${M} is month to date · bars show the last 4 months</div></div></div>
+    <div class="modal-body">
+      <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
+        ${monthCardHTML("New leads", series.leads, months, x=>x)}
+        ${monthCardHTML("Quotes generated", series.quotes, months, x=>x)}
+        ${monthCardHTML("Invoices generated", series.invoices, months, x=>x, {}, showMoney?`<div class="kpi-sub faint">${inr(series.invoiced[3])} invoiced</div>`:'')}
+        ${showMoney ? monthCardHTML("Revenue received", series.revenue, months, inr) : ''}
+      </div>
+    </div>
+  </div>
+
+  ${salesOverviewData ? `<div class="panel">
+    <div class="panel-head"><div><h3>Sales team · ${M}</h3><div class="sub">Each person against their own ${P} · ranked by revenue received from their clients</div></div>${best?`<div style="display:flex;align-items:center;gap:8px;"><span class="faint" style="font-size:12px;">Best this month</span>${pill('★ '+best.name,'pos')}</div>`:''}</div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>#</th><th>Salesperson</th><th class="num">Leads</th><th class="num">Meetings</th><th class="num">Quotes</th><th class="num">Invoices</th>${showMoney?'<th class="num">Invoiced</th><th class="num">Revenue received</th>':''}<th class="num">Converted</th></tr></thead>
+      <tbody>${people.map((p,i)=>`<tr style="${best&&p===best?'background:var(--pos-soft);':''}">
+        <td class="mono" style="font-weight:800;">${i+1}</td>
+        <td><span class="assignee"><span class="mini-avatar sm">${initials(p.name)}</span><b>${esc(p.name)}</b></span>${best&&p===best?' '+pill('Best','pos'):''}</td>
+        ${cell(p.now.leads, p.prev.leads)}${cell(p.now.meetings, p.prev.meetings)}${cell(p.now.quotes, p.prev.quotes)}${cell(p.now.invoices, p.prev.invoices)}
+        ${showMoney?cell(p.now.billed, p.prev.billed, inr)+cell(p.now.revenue, p.prev.revenue, inr):''}
+        ${cell(p.now.converted, p.prev.converted)}
+      </tr>`).join('') || `<tr><td colspan="9"><div class="empty">No one in the Sales department yet.</div></td></tr>`}</tbody>
+    </table></div>
+  </div>` : ''}
+
+  <div class="grid-2" style="align-items:start;">
     <div class="panel">
-      <div class="panel-head"><h3>Content by stage</h3><div class="sub">${contentItems.length} items in the pipeline</div></div>
-      <div class="panel-body"><div class="barchart">${STAGES.map(s=>{ const n=contentItems.filter(c=>c.stage===s).length; const max=Math.max(...STAGES.map(x=>contentItems.filter(c=>c.stage===x).length),1); return `<div class="bar-row"><div class="bar-label">${s}</div><div class="bar-track"><div class="bar-fill" style="width:${(n/max)*100}%"></div></div><div class="bar-val">${n}</div></div>`; }).join("")}</div></div>
+      <div class="panel-head"><div><h3>New leads by source</h3><div class="sub">${M} vs ${P}</div></div><button class="btn btn-sm ghost" onclick="setSub('sales','leads')">Open</button></div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:12px;">
+        ${sourceRows.length ? compareLegendHTML(month, prev)+compareBarsHTML(sourceRows) : '<div class="empty">No leads either month.</div>'}
+      </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Leads by source</h3></div>
-      <div class="panel-body">${sourceRows.length ? `<div class="barchart">${sourceRows.map(([s,n])=>`<div class="bar-row"><div class="bar-label">${esc(s)}</div><div class="bar-track"><div class="bar-fill" style="width:${(n/maxSource)*100}%"></div></div><div class="bar-val">${n}</div></div>`).join("")}</div>` : '<div class="empty">No leads yet.</div>'}</div>
+      <div class="panel-head"><div><h3>Sales pipeline</h3><div class="sub">Where every lead is today</div></div><button class="btn btn-sm ghost" onclick="setSub('sales','leads')">Open</button></div>
+      <div class="panel-body"><div style="display:flex;flex-direction:column;gap:6px;">${stageCounts.map(f=>`<div style="display:grid;grid-template-columns:110px 1fr 28px;gap:10px;align-items:center;font-size:12.5px;"><span class="muted">${f.label}</span><div class="bar-track" style="height:8px;"><div class="bar-fill" style="width:${f.n/maxStage*100}%;background:var(--${{neutral:'ink-faint',blue:'brand',warn:'warn',pos:'pos',neg:'neg'}[LEAD_STAGE_KIND[f.label]]||'brand'});"></div></div><b class="mono" style="text-align:right;">${f.n}</b></div>`).join('')}</div></div>
     </div>
   </div>`;
 }
@@ -8557,6 +8859,7 @@ Auth.init().then(async (authUser) => {
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
   crmContentJobs.push(loadMyPrograms().catch(err=>console.error("Programs failed to load", err)));
+  crmContentJobs.push(loadSocialStatus().catch(()=>{}));
   crmContentJobs.push(loadCalendarPrograms().catch(err=>console.error("Calendar programs failed to load", err)));
   crmContentJobs.push(loadDeptHeads().then(()=>Promise.all([loadActionPlans(), loadDeptScores().catch(()=>{})])).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails
