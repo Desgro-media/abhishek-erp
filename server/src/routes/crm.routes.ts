@@ -25,7 +25,11 @@ router.use(authenticate);
 // Clients and client tasks are open to a Clients-only login as well; leads and quotes stay Sales/Admin.
 router.get("/clients", requireClientsUser, clients.listClients);
 router.get("/clients/:id", requireClientsUser, clients.getClient);
-router.get("/tasks", requireClientsUser, tasks.listTasks);
+// Any signed-in login: tasksForUser scopes it (assignee / creator / book / all), so an Employee sees their own assigned work.
+router.get("/tasks", tasks.listTasks);
+router.patch("/tasks/:id", tasks.updateTask); // assignee-only stage moves enforced inside
+router.post("/tasks/:id/attachments", tasks.addTaskAttachment);
+router.delete("/tasks/:id/attachments/:attachmentId", tasks.removeTaskAttachment);
 router.get("/clients/:id/lead-advances", requireClientsUser, leads.getClientLeadAdvances);
 // Client satisfaction feedback — who may read/share/log is decided inside each handler (account manager, leadership, heads).
 router.get("/clients/:clientId/feedback", clientFeedback.getClientFeedback);
@@ -82,8 +86,5 @@ router.post("/quotes/:id/pending-payments", quotes.submitQuotePendingPayment);
 router.delete("/quotes/:id/pending-payments/:pendingId", quotes.deleteQuotePendingPayment);
 
 router.post("/clients/:clientId/tasks", tasks.createTask);
-router.patch("/tasks/:id", tasks.updateTask);
-router.post("/tasks/:id/attachments", tasks.addTaskAttachment);
-router.delete("/tasks/:id/attachments/:attachmentId", tasks.removeTaskAttachment);
 
 export default router;

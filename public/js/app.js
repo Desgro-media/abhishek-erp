@@ -18,6 +18,34 @@ const initials = name => String(name||"").split(" ").map(p=>p[0]).filter(Boolean
 // tracking the real clock.
 const TODAY = new Date().toISOString().slice(0,10);
 function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
+/* ---- Notifications (the bell) ---- */
+let notifications = [], notifUnread = 0;
+async function loadNotifications(){
+  const r = await apiJson("/api/notifications");
+  notifications = r.notifications; notifUnread = r.unread; renderBell();
+}
+function renderBell(){
+  const b = document.getElementById("bell-badge"); if(!b) return;
+  b.hidden = !notifUnread; b.textContent = notifUnread>9 ? "9+" : String(notifUnread);
+  const p = document.getElementById("notif-panel"); if(!p || p.hidden) return;
+  p.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border,#ddd);"><b style="font-size:13px;">Notifications</b>${notifUnread?`<button class="btn btn-sm ghost" onclick="markAllNotifRead()">Mark all read</button>`:''}</div>`
+    + (notifications.length ? notifications.map(n=>`<div class="row-click" onclick="openNotif('${n.id}')" style="padding:10px 12px;border-bottom:1px solid var(--border,#eee);${n.readAt?'opacity:.6;':''}"><div style="font-size:13px;font-weight:${n.readAt?500:700};">${esc(n.title)}</div>${n.body?`<div class="faint" style="font-size:12px;">${esc(n.body)}</div>`:''}<div class="faint" style="font-size:11px;">${fmtDateShort(isoDate(n.createdAt))}</div></div>`).join("") : `<div class="empty" style="padding:18px;">No notifications yet.</div>`);
+}
+function toggleNotifPanel(ev){
+  const p = document.getElementById("notif-panel"); if(!p) return;
+  p.hidden = !p.hidden; if(!p.hidden) renderBell();
+}
+async function openNotif(id){
+  const n = notifications.find(x=>x.id===id); if(!n) return;
+  if(!n.readAt){ n.readAt = new Date().toISOString(); notifUnread = Math.max(0, notifUnread-1); Auth.apiFetch(`/api/notifications/${id}/read`, { method:"POST" }).catch(()=>{}); }
+  document.getElementById("notif-panel").hidden = true; renderBell();
+  const [mid, sid] = (n.link||"").split("/"); if(mid && sid) setSub(mid, sid);
+}
+async function markAllNotifRead(){
+  notifications.forEach(n=>{ n.readAt = n.readAt || new Date().toISOString(); }); notifUnread = 0; renderBell();
+  Auth.apiFetch("/api/notifications/read-all", { method:"POST" }).catch(()=>{});
+}
+document.addEventListener("click", e=>{ const p = document.getElementById("notif-panel"); if(p && !p.hidden && !e.target.closest("#bell-btn")) p.hidden = true; });
 function toast(msg){
   const root = document.getElementById("toast-root");
   root.innerHTML = `<div class="toast"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg><span>${esc(msg)}</span></div>`;
@@ -92,7 +120,7 @@ function mapEmployee(e){
     empType: TITLECASE_FROM_API(e.empType),
     employmentStatus: TITLECASE_FROM_API(e.employmentStatus),
     leavingDate: isoDate(e.leavingDate), noticeGivenDate: isoDate(e.noticeGivenDate), noticeNote: e.noticeNote || "",
-    hasErpAccess: !!e.hasErpAccess, erpRoles: e.erpRoles || [],
+    hasErpAccess: !!e.hasErpAccess, erpRoles: e.erpRoles || [], userId: e.userId || null,
   };
 }
 function mapLeaveRequest(l){
@@ -530,7 +558,7 @@ function mapClient(c){
 async function loadClients(){ clients = (await apiJson("/api/crm/clients")).clients.map(mapClient); }
 async function loadEmployeeDirectory(){
   const { employees: list } = await apiJson("/api/hr/employees/directory");
-  employeeDirectory = list.map(e=>({ id: e.employeeCode, _dbId: e.id, name: e.name, dept: e.dept }));
+  employeeDirectory = list.map(e=>({ id: e.employeeCode, _dbId: e.id, name: e.name, dept: e.dept, userId: e.userId||null }));
 }
 
 async function loadCrmModule(){
@@ -827,9 +855,12 @@ function quoteBalance(q){ return Math.max(0, quoteTotal(q) - quoteApprovedPaid(q
 // a client shows up on their one workflow board (see renderClientTaskBoard()), so there's nowhere
 // else to look for "what have we done for this client".
 let clientTasks = [];
+// Assignment is matched by login ID, never by display name.
+function isMyTask(t){ return !!currentUser && !!currentUser.userId && t.assigneeUserId===currentUser.userId; }
+function assigneeFromSelect(el){ const o=el.options[el.selectedIndex]; return { assignedTo:o.value, assigneeUserId:o.dataset.uid||undefined }; }
 function mapTask(t){
   return {
-    id: t.id, clientId: t.clientId, title: t.title, assignedTo: t.assignedTo||"",
+    id: t.id, clientId: t.clientId, title: t.title, assignedTo: t.assignedTo||"", assigneeUserId: t.assigneeUserId||null,
     due: isoDate(t.dueAt), status: TASK_STATUS_FROM_API[t.status] || t.status,
     revisions: t.revisions, doneDate: t.doneAt ? isoDate(t.doneAt) : undefined,
     attachments: (t.attachments||[]).map(a=>({id:a.id, name:a.name, size:a.size, addedDate:isoDate(a.addedAt)})),
@@ -3215,7 +3246,7 @@ const MODULES = [
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
     {id:"plans", label:"Dept Action Plans", icon:"i-target", when:()=>canSeePlans(currentUser), count:()=>openNeedsInput().length},
-    {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
+    {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>isMyTask(t) && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
     {id:"attendance", label:"My Attendance", icon:"i-attendance", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
     {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
@@ -3304,7 +3335,7 @@ function isStaffRole(emp){ return !!emp && !isHRRole(emp) && !isLeadershipRole(e
 const SALES_WORKSPACE_SUB = [
   {id:"overview", label:"Overview", icon:"i-trend"},
   {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
-  {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
+  {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>isMyTask(t) && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
   {id:"attendance", label:"My Attendance", icon:"i-attendance", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
   {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
   {id:"payments", label:"Payment Requests", icon:"i-receipt", count:()=>currentUser?paymentRequests.filter(r=>r.empId===currentUser.id && r.status==="Pending").length:0},
@@ -3467,7 +3498,7 @@ const TOPBAR_TITLES = {
     overview:["My Workspace", ()=>currentUser?currentUser.role+" · "+currentUser.name:"Your personal snapshot"],
     plan:["My Action Plan", ()=>{ const d = currentUser?headDeptOf(currentUser.name):null; return d ? d+" · file today's plan" : ""; }],
     plans:["Dept Action Plans", ()=>{ const h = DEPARTMENTS.filter(d=>deptHeads[d]); return h.filter(d=>planFor(d,TODAY)).length+" of "+h.length+" heads filed today"; }],
-    tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>t.assignedTo===currentUser.name && t.status!=="Done").length+" open across your clients":""],
+    tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>isMyTask(t) && t.status!=="Done").length+" open across your clients":""],
     attendance:["My Attendance","Check-in, this month's record, and your leave & WFH"],
     payroll:["My Payroll", ()=>{ const m=myPayroll[0]; return m ? MONTH_LABEL[m.month]+" · "+m.payStatus : "Your salary and requests"; }],
     advance:["Advance Salary", ()=>currentUser?advances.filter(a=>a.empId===currentUser.id).length+" request(s) on record":""],
@@ -3762,7 +3793,7 @@ function dashboardModuleOverviews(){
   const cards = [];
 
   if(vis.has("workspace") && currentUser){
-    const mine = clientTasks.filter(t=>t.assignedTo===currentUser.name);
+    const mine = clientTasks.filter(t=>isMyTask(t));
     const weekAgo = new Date(Date.now()-6*864e5).toISOString().slice(0,10);
     const open = mine.filter(t=>t.status!=="Done").length;
     const overdue = mine.filter(t=>t.status!=="Done" && t.due && t.due<TODAY).length;
@@ -3839,7 +3870,7 @@ function dashboardModuleOverviews(){
 function workspaceOverview(){
   if(!currentUser) return '';
   if(isSalesRole(currentUser)) return workspaceOverviewSales();
-  const myTasks = clientTasks.filter(t=>t.assignedTo===currentUser.name);
+  const myTasks = clientTasks.filter(t=>isMyTask(t));
   const openTasks = myTasks.filter(t=>t.status!=="Done");
   const overdueTasks = myTasks.filter(t=>t.status!=="Done" && t.due && t.due<TODAY);
   const att = attendanceToday[currentUser.id];
@@ -3970,7 +4001,7 @@ function workspaceComplaints(){
   </div>`;
 }
 function workspaceTasks(){
-  const archivedCount = currentUser ? clientTasks.filter(t=>t.assignedTo===currentUser.name && isTaskArchived(t)).length : 0;
+  const archivedCount = currentUser ? clientTasks.filter(t=>isMyTask(t) && isTaskArchived(t)).length : 0;
   return `
   <div class="toolbar">
     <div class="banner muted" style="margin:0;flex:1;min-width:260px;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Every task assigned to you, across every client — drag a card between columns, or use the stage dropdown on each card. Completed tasks move to the archive after 3 days.</div></div>
@@ -7320,7 +7351,7 @@ function renderClientTaskBoard(clientId){
 function renderMyTaskBoard(){
   const board = document.getElementById('my-task-board');
   if(!board || !currentUser) return;
-  const tasks = clientTasks.filter(t=>t.assignedTo===currentUser.name && !isTaskArchived(t));
+  const tasks = clientTasks.filter(t=>isMyTask(t) && !isTaskArchived(t));
   board.innerHTML = TASK_STAGES.map(stage=>{
     const inStage = tasks.filter(t=>t.status===stage);
     return `<div class="col" data-stage="${stage}" ondragover="onTaskDragOver(event)" ondrop="onTaskDrop(event,'${stage}','')" ondragleave="onTaskDragLeave(event)">
@@ -7332,7 +7363,7 @@ function renderMyTaskBoard(){
 // Read-only list of a client's (or, with no clientId, the signed-in Staff member's own) completed
 // tasks that have aged into the archive — opened from the "Archive" button next to Workflow / My Tasks.
 function openTaskArchive(clientId){
-  const scopeTasks = clientId ? tasksOf(clientId) : clientTasks.filter(t=>currentUser && t.assignedTo===currentUser.name);
+  const scopeTasks = clientId ? tasksOf(clientId) : clientTasks.filter(t=>isMyTask(t));
   const list = scopeTasks.filter(isTaskArchived).sort((a,b)=>(b.doneDate||'').localeCompare(a.doneDate||''));
   showModal(`
     <div class="modal-head"><h3>Completed tasks archive</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
@@ -7375,7 +7406,7 @@ function openAddTask(clientId){
     <form id="f-add-task"><div class="modal-body">
       <div><label class="field-label">Task</label><input class="field-input" name="title" required placeholder="e.g. First draft — homepage copy"></div>
       <div class="field-row">
-        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${assignableEmployees().map(e=>`<option>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${assignableEmployees().map(e=>`<option value="${esc(e.name)}" data-uid="${e.userId||''}">${esc(e.name)}${e.userId?'':' (no login)'}</option>`).join('')}</select></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" value="${TODAY}" required></div>
       </div>
     </div>
@@ -7385,7 +7416,7 @@ function openAddTask(clientId){
     e.preventDefault();
     const f = new FormData(e.target);
     try{
-      await apiJson(`/api/crm/clients/${clientId}/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ title:f.get("title"), assignedTo:f.get("assignedTo"), dueAt:f.get("due") }) });
+      await apiJson(`/api/crm/clients/${clientId}/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ title:f.get("title"), ...assigneeFromSelect(e.target.elements.assignedTo), dueAt:f.get("due") }) });
       await loadTasks();
       toast("Task added"); closeModal(); openClientDetail(clientId);
     }catch(err){ toast(err.message || "Couldn't add task"); }
@@ -7446,7 +7477,7 @@ function openEditTask(id){
     <form id="f-edit-task"><div class="modal-body">
       <div><label class="field-label">Task</label><input class="field-input" name="title" required value="${esc(t.title)}"></div>
       <div class="field-row">
-        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${assignableEmployees().map(e=>`<option ${e.name===t.assignedTo?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Assignee</label><select class="field-input" name="assignedTo">${assignableEmployees().map(e=>`<option value="${esc(e.name)}" data-uid="${e.userId||''}" ${(e.userId?e.userId===t.assigneeUserId:e.name===t.assignedTo)?'selected':''}>${esc(e.name)}${e.userId?'':' (no login)'}</option>`).join('')}</select></div>
         <div><label class="field-label">Due</label><input class="field-input" type="date" name="due" value="${t.due}" required></div>
       </div>
       <div class="field-row">
@@ -7466,7 +7497,7 @@ function openEditTask(id){
     e.preventDefault();
     const f = new FormData(e.target);
     try{
-      await apiJson(`/api/crm/tasks/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ title:f.get("title"), assignedTo:f.get("assignedTo"), dueAt:f.get("due"), status:TASK_STATUS_TO_API[f.get("status")], revisions:Number(f.get("revisions"))||0 }) });
+      await apiJson(`/api/crm/tasks/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ title:f.get("title"), ...assigneeFromSelect(e.target.elements.assignedTo), dueAt:f.get("due"), status:TASK_STATUS_TO_API[f.get("status")], revisions:Number(f.get("revisions"))||0 }) });
       await loadTasks();
       toast("Task updated"); closeModal(); renderClientTaskBoard(t.clientId);
     }catch(err){ toast(err.message || "Couldn't update task"); }
@@ -8850,16 +8881,20 @@ Auth.init().then(async (authUser) => {
   // Finance data layer needs the real role list to know whether it's
   // talking to a Finance/Admin (full module) or Sales (narrow slice) login.
   emp.roles = authUser.roles || [];
+  emp.userId = authUser.sub || authUser.id || null;
   applyCurrentUser(emp);
   const crmContentJobs = [];
   const roles = emp.roles || [];
   if(emp.isAdmin || roles.includes('SALES') || roles.includes('SALES_HEAD')) crmContentJobs.push(loadCrmModule());
   else if(roles.includes('CLIENTS')) crmContentJobs.push(Promise.all([loadClients(), loadTasks()]));
+  else crmContentJobs.push(loadTasks().catch(err=>console.error("My tasks failed to load", err)));
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));
   crmContentJobs.push(loadCompanyEvents().catch(err=>console.error("Calendar events failed to load", err)));
   crmContentJobs.push(loadMyPrograms().catch(err=>console.error("Programs failed to load", err)));
   crmContentJobs.push(loadSocialStatus().catch(()=>{}));
+  crmContentJobs.push(loadNotifications().catch(()=>{}));
+  setInterval(()=>{ loadNotifications().catch(()=>{}); }, 60000);
   crmContentJobs.push(loadCalendarPrograms().catch(err=>console.error("Calendar programs failed to load", err)));
   crmContentJobs.push(loadDeptHeads().then(()=>Promise.all([loadActionPlans(), loadDeptScores().catch(()=>{})])).catch(err=>console.error("Department heads / action plans failed to load", err)));
   // Payment requests are a side feature for boot purposes: if their load fails

@@ -23,9 +23,9 @@ async function nextEmployeeCode(): Promise<string> {
 // Never send the linked User row itself (it carries passwordHash) — just
 // whether one exists, so Edit Employee can offer "grant access" vs "reset
 // password" without a second round trip.
-function withAccessFlag<T extends { user: { roles?: string[] } | null }>(e: T) {
+function withAccessFlag<T extends { user: { id?: string; roles?: string[] } | null }>(e: T) {
   const { user, ...rest } = e;
-  return { ...rest, hasErpAccess: !!user, erpRoles: user?.roles ?? [] };
+  return { ...rest, userId: user?.id ?? null, hasErpAccess: !!user, erpRoles: user?.roles ?? [] };
 }
 
 // HR can hand out module roles, but only an Admin may mint another Admin.
@@ -61,10 +61,10 @@ export const listEmployeeDirectory: RequestHandler = asyncHandler(async (req, re
   }
   const employees = await prisma.employee.findMany({
     where: { employmentStatus: { not: "LEFT" } },
-    select: { id: true, employeeCode: true, name: true, dept: true },
+    select: { id: true, employeeCode: true, name: true, dept: true, user: { select: { id: true } } },
     orderBy: { name: "asc" },
   });
-  res.json({ employees });
+  res.json({ employees: employees.map(({ user, ...e }) => ({ ...e, userId: user?.id ?? null })) });
 });
 
 export const getEmployee: RequestHandler = asyncHandler(async (req, res) => {
