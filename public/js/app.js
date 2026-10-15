@@ -6822,7 +6822,7 @@ function logAdMetricModal(forLabel, existing, save){
       ${existing?'':'<div class="subtext" style="font-size:12px;">Logging a date that already has numbers replaces them.</div>'}
       <div class="field-row">
         <div><label class="field-label">Spend</label><input class="field-input" type="number" step="0.01" min="0" name="spend" value="${esc(v.spend)}" required></div>
-        <div><label class="field-label">Revenue</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" required></div>
+        <div><label class="field-label">Revenue</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" placeholder="Optional — saved as 0"></div>
       </div>
       <div class="field-row">
         <div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" required></div>
