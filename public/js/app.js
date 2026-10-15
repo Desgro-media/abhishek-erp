@@ -858,9 +858,11 @@ let clientTasks = [];
 // Assignment is matched by login ID, never by display name.
 function isMyTask(t){ return !!currentUser && !!currentUser.userId && t.assigneeUserId===currentUser.userId; }
 function assigneeFromSelect(el){ const o=el.options[el.selectedIndex]; return { assignedTo:o.value, assigneeUserId:o.dataset.uid||undefined }; }
+// A plain Employee can't load the Clients list, so the client name travels with the task itself.
+function taskClientName(t){ const c = clientById(t.clientId); return (c&&c.name) || t.clientName || "Client"; }
 function mapTask(t){
   return {
-    id: t.id, clientId: t.clientId, title: t.title, assignedTo: t.assignedTo||"", assigneeUserId: t.assigneeUserId||null,
+    id: t.id, clientId: t.clientId, title: t.title, assignedTo: t.assignedTo||"", assigneeUserId: t.assigneeUserId||null, clientName: (t.client&&t.client.name)||"",
     due: isoDate(t.dueAt), status: TASK_STATUS_FROM_API[t.status] || t.status,
     revisions: t.revisions, doneDate: t.doneAt ? isoDate(t.doneAt) : undefined,
     attachments: (t.attachments||[]).map(a=>({id:a.id, name:a.name, size:a.size, addedDate:isoDate(a.addedAt)})),
@@ -3689,7 +3691,7 @@ function viewDashboard(){
     ...leaveRequests.filter(l=>l.status==="Pending").map(l=>({txt:`${byId(l.empId).name} requested ${l.days} day${l.days>1?'s':''} ${l.type.toLowerCase()} leave`, sub:`applied ${fmtDateShort(l.applied)}`})),
     ...advances.filter(a=>a.status==="Pending").map(a=>({txt:`${byId(a.empId).name} requested a ${inr(a.amount)} advance`, sub:esc(a.reason)})),
     ...invoices.filter(i=>invoiceStatus(i)==="Overdue").map(i=>({txt:`${clientById(i.clientId).name} — invoice ${i.invoiceNo} overdue`, sub:`${inr(invoiceBalance(i))} · due ${fmtDateShort(i.due)}`})),
-    ...clientTasks.filter(t=>t.status!=="Done" && t.due && t.due<TODAY).map(t=>({txt:`${t.title} is overdue`, sub:`${clientById(t.clientId).name} · ${t.assignedTo} · due ${fmtDateShort(t.due)}`})),
+    ...clientTasks.filter(t=>t.status!=="Done" && t.due && t.due<TODAY).map(t=>({txt:`${t.title} is overdue`, sub:`${taskClientName(t)} · ${t.assignedTo} · due ${fmtDateShort(t.due)}`})),
   ].slice(0,6);
 
   const deptCounts = DEPARTMENTS.map(d=>({d,n:employees.filter(e=>e.dept===d).length})).sort((a,b)=>b.n-a.n);
@@ -3891,7 +3893,7 @@ function workspaceOverview(){
   <div class="grid-2">
     <div class="panel">
       <div class="panel-head"><h3>Your tasks</h3></div>
-      <div class="panel-body">${openTasks.length ? openTasks.slice().sort((a,b)=>(a.due||'').localeCompare(b.due||'')).slice(0,6).map(t=>`<div class="feed-item row-click" onclick="openClientDetail('${t.clientId}')"><div class="feed-dot" style="${t.due&&t.due<TODAY?'background:var(--neg);':''}"></div><div><div class="feed-text"><strong>${esc(t.title)}</strong></div><div class="feed-time">${esc(clientById(t.clientId).name)} · due ${t.due?fmtDateShort(t.due):'no date'}</div></div></div>`).join("") : '<div class="empty">No open tasks.</div>'}</div>
+      <div class="panel-body">${openTasks.length ? openTasks.slice().sort((a,b)=>(a.due||'').localeCompare(b.due||'')).slice(0,6).map(t=>`<div class="feed-item row-click" onclick="openClientDetail('${t.clientId}')"><div class="feed-dot" style="${t.due&&t.due<TODAY?'background:var(--neg);':''}"></div><div><div class="feed-text"><strong>${esc(t.title)}</strong></div><div class="feed-time">${esc(taskClientName(t))} · due ${t.due?fmtDateShort(t.due):'no date'}</div></div></div>`).join("") : '<div class="empty">No open tasks.</div>'}</div>
     </div>
     <div class="panel">
       <div class="panel-head"><h3>Notices</h3><div class="sub">From administration and HR</div></div>
@@ -7303,7 +7305,7 @@ function clientsOverview(){
     </div>
     <div class="panel">
       <div class="panel-head"><h3>Overdue tasks</h3></div>
-      <div class="panel-body">${overdueTasks.length ? overdueTasks.map(t=>`<div class="feed-item row-click" onclick="openClientDetail('${t.clientId}')"><div class="feed-dot" style="background:var(--neg);"></div><div><div class="feed-text"><strong>${esc(t.title)}</strong></div><div class="feed-time">${clientById(t.clientId).name} · ${esc(t.assignedTo)} · due ${fmtDateShort(t.due)}</div></div></div>`).join("") : '<div class="empty">Nothing overdue.</div>'}</div>
+      <div class="panel-body">${overdueTasks.length ? overdueTasks.map(t=>`<div class="feed-item row-click" onclick="openClientDetail('${t.clientId}')"><div class="feed-dot" style="background:var(--neg);"></div><div><div class="feed-text"><strong>${esc(t.title)}</strong></div><div class="feed-time">${taskClientName(t)} · ${esc(t.assignedTo)} · due ${fmtDateShort(t.due)}</div></div></div>`).join("") : '<div class="empty">Nothing overdue.</div>'}</div>
     </div>
   </div>`;
 }
@@ -7316,7 +7318,7 @@ function taskCardHTML(t, showClient){
     ? `<span class="due published-on"><svg class="icon" style="width:10px;height:10px;display:inline;vertical-align:-1px"><use href="#i-check"/></svg> ${fmtDateShort(t.due)}</span>`
     : `<span class="due ${overdue?'overdue':''}">${overdue?'overdue · ':''}${fmtDateShort(t.due)}</span>`;
   const stageOptions = TASK_STAGES.map(s=>`<option value="${s}" ${s===t.status?'selected':''}>${s}</option>`).join('');
-  const clientTag = showClient ? `<span class="tag type">${esc(clientById(t.clientId).name)}</span>` : '';
+  const clientTag = showClient ? `<span class="tag type">${esc(taskClientName(t))}</span>` : '';
   return `
     <div class="card ${t.status==='Done'?'published':''}" draggable="true" data-id="${t.id}" ondragstart="onTaskDragStart(event,'${t.id}')">
       <div class="card-title">${esc(t.title)}</div>
@@ -7369,7 +7371,7 @@ function openTaskArchive(clientId){
     <div class="modal-head"><h3>Completed tasks archive</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
       ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Task</th>${clientId?'':'<th>Client</th>'}<th>Assignee</th><th>Completed</th></tr></thead>
-        <tbody>${list.map(t=>`<tr><td style="font-weight:700;">${esc(t.title)}</td>${clientId?'':`<td class="muted">${clientLink(t.clientId)}</td>`}<td class="muted">${esc(t.assignedTo)}</td><td class="muted">${fmtDateShort(t.doneDate)}</td></tr>`).join("")}</tbody>
+        <tbody>${list.map(t=>`<tr><td style="font-weight:700;">${esc(t.title)}</td>${clientId?'':`<td class="muted">${clientLink(t.clientId, t.clientName)}</td>`}<td class="muted">${esc(t.assignedTo)}</td><td class="muted">${fmtDateShort(t.doneDate)}</td></tr>`).join("")}</tbody>
       </table></div>` : `<div class="empty">Nothing archived yet — completed tasks move here 3 days after they're marked Done.</div>`}
     </div>
     <div class="modal-foot"><div></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
