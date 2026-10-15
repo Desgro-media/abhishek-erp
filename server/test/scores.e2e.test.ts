@@ -137,3 +137,20 @@ test("meta ads score: from the daily numbers, Admin/Content only", async () => {
   assert.equal(Math.round(part("tracking").v * 31), 4);
   assert.equal(r.body.now.score, 85);
 });
+
+test("sales overview: Sales access only; team table shows each person's month against the one before", async () => {
+  const sales = await prisma.user.create({ data: { name: `salesrole ${run}`, email: `salesrole-${run}@test.local`, passwordHash: "x", roles: ["SALES"] } });
+  created.users.push(sales.id);
+  const { signAccessToken } = await import("../src/utils/tokens");
+  const salesTok = signAccessToken({ sub: sales.id, email: sales.email, name: sales.name, roles: ["SALES"], department: null, employeeId: null });
+  assert.equal((await call("GET", `/scores/sales?month=${M}`, tok.plain)).status, 403);
+  assert.equal((await call("GET", `/scores/sales?month=${M}`, tok.content)).status, 403);
+  assert.equal((await call("GET", `/scores/sales?month=bad`, tok.admin)).status, 400);
+  const r = await call("GET", `/scores/sales?month=${M}`, salesTok);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.now.booked, 10000);
+  assert.equal(r.body.now.stats.leadsNew, 0);
+  const me = r.body.people.find((p: any) => p.name === `seller ${run}`);
+  assert.deepEqual({ billed: me.now.billed, revenue: me.now.revenue, invoices: me.now.invoices, meetings: me.now.meetings }, { billed: 10000, revenue: 3000, invoices: 1, meetings: 0 });
+  assert.equal(me.prev.billed, 0, "nothing the month before");
+});

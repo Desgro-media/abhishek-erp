@@ -108,6 +108,35 @@ export async function salesScore(month: string, t: Targets): Promise<Score & { b
   return { score: weightedScore(parts), parts, month, booked };
 }
 
+// What the Sales overview adds around the score: this month's new / won leads and each salesperson's month.
+// "Converted" counts leads that became a client, by the day the lead moved to Won.
+export async function salesMonthStats(month: string) {
+  const range = { gte: monthStart(month), lte: new Date(monthEnd(month).getTime() + 86399_000) };
+  const [leadsNew, won] = await Promise.all([
+    prisma.lead.count({ where: { createdAt: range } }),
+    prisma.lead.count({ where: { convertedClientId: { not: null }, stageChangedAt: range } }),
+  ]);
+  return { leadsNew, won };
+}
+export async function salesPeopleMonth(month: string) {
+  const range = { gte: monthStart(month), lte: new Date(monthEnd(month).getTime() + 86399_000) };
+  const dayRange = { gte: monthStart(month), lte: monthEnd(month) };
+  const names = (await prisma.employee.findMany({ where: { dept: "Sales", NOT: { employmentStatus: "LEFT" } }, select: { name: true } })).map((e) => e.name);
+  return Promise.all(names.map(async (name) => {
+    const [leads, converted, quotes, meetings, invs] = await Promise.all([
+      prisma.lead.count({ where: { leadOwner: name, createdAt: range } }),
+      prisma.lead.count({ where: { leadOwner: name, convertedClientId: { not: null }, stageChangedAt: range } }),
+      prisma.quote.count({ where: { createdBy: name, createdAt: range } }),
+      prisma.salesMeeting.count({ where: { by: name, date: dayRange } }),
+      prisma.invoice.findMany({ where: { client: { salesPerson: name }, OR: [{ issuedAt: dayRange }, { payments: { some: { paidDate: dayRange } } }] }, include: { items: true, payments: true } }),
+    ]);
+    const issued = invs.filter((i) => i.issuedAt >= dayRange.gte && i.issuedAt <= dayRange.lte);
+    const billed = issued.reduce((s, i) => s + i.items.reduce((a, it) => a + num(it.amount), 0), 0);
+    const revenue = invs.reduce((s, i) => s + i.payments.filter((p) => p.paidDate >= dayRange.gte && p.paidDate <= dayRange.lte).reduce((a, p) => a + num(p.amount), 0), 0);
+    return { name, leads, meetings, quotes, invoices: issued.length, billed, revenue, converted };
+  }));
+}
+
 // ---- Meta Ads (our own) ----
 export async function metaAdsScore(month: string, t: Targets): Promise<Score> {
   const rows = await prisma.ownAdMetric.findMany({ where: { date: { gte: monthStart(month), lte: monthEnd(month) } }, orderBy: { date: "asc" } });
