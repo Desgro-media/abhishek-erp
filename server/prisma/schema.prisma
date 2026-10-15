@@ -135,6 +135,8 @@ enum AttendanceStatus {
   WFH
   // Partially Paid WFH: always paid at 75% (a 25% cut), independent of the free-WFH allowance.
   WFH_PARTIAL
+  // Unpaid leave: every day is a full Loss of Pay day, regardless of the paid-leave allowance.
+  UNPAID_LEAVE
 }
 
 // Simplified from CASUAL/SICK/EARNED/UNPAID — Loss of Pay is now a monthly
@@ -147,6 +149,8 @@ enum LeaveType {
   CASUAL_SICK
   WFH
   PARTIAL_WFH
+  // Always Loss of Pay: every approved day is deducted, never drawn from the paid-leave allowance.
+  UNPAID_LEAVE
 }
 
 enum LeaveDuration {
