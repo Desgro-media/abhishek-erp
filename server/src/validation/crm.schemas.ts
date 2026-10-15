@@ -80,11 +80,13 @@ export const quoteConvertSchema = z.object({
 export const taskCreateSchema = z.object({
   title: z.string().min(1),
   assignedTo: z.string().optional(),
+  assigneeUserId: z.string().optional(),
   dueAt: dateStr,
 });
 export const taskUpdateSchema = z.object({
   title: z.string().min(1).optional(),
   assignedTo: z.string().optional(),
+  assigneeUserId: z.string().optional(),
   dueAt: dateStr.optional(),
   status: z.enum(["TODO", "IN_PROGRESS", "REVIEW", "DONE"]).optional(),
   revisions: z.number().int().min(0).optional(),
@@ -95,6 +97,7 @@ export const contentItemCreateSchema = z.object({
   type: z.string().min(1),
   platforms: z.array(z.string()).default([]),
   assignee: z.string().optional(),
+  assigneeUserId: z.string().optional(),
   stage: z.enum(["IDEA", "SCRIPTING", "PRODUCTION", "EDIT", "GRAPHIC", "REVIEW", "SCHEDULED", "PUBLISHED"]).default("IDEA"),
   dueAt: dateStr,
   notes: z.string().optional(),

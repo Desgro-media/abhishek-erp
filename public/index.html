@@ -432,7 +432,8 @@
           <div id="global-search-results" class="search-results" hidden></div>
         </div>
         <div class="icon-btn" id="theme-toggle" role="button" tabindex="0" onclick="toggleTheme()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleTheme();}" aria-label="Toggle light / dark theme" title="Toggle light / dark theme"><svg class="icon icon-moon"><use href="#i-moon"/></svg><svg class="icon icon-sun"><use href="#i-sun"/></svg></div>
-        <div class="icon-btn"><svg class="icon"><use href="#i-bell"/></svg></div>
+        <div class="icon-btn" id="bell-btn" role="button" tabindex="0" aria-label="Notifications" onclick="toggleNotifPanel(event)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleNotifPanel(event);}" style="position:relative;"><svg class="icon"><use href="#i-bell"/></svg><span id="bell-badge" hidden style="position:absolute;top:2px;right:2px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--neg,#e5252a);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;"></span>
+          <div id="notif-panel" hidden onclick="event.stopPropagation()" style="position:absolute;top:46px;right:0;width:320px;max-height:420px;overflow:auto;background:var(--card,#fff);color:var(--text,#111);border:1px solid var(--border,#ddd);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.18);z-index:60;text-align:left;cursor:default;"></div></div>
         <div class="avatar" id="topbar-avatar">TH</div>
       </div>
     </div>

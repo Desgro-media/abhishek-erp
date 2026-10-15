@@ -1182,6 +1182,9 @@ model ClientTask {
   client     Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
   title      String
   assignedTo String?          @map("assigned_to")
+  // Stable link to the assignee's login; assignedTo stays as the display name only. Null = no ERP login / legacy unmatched name.
+  assigneeUserId  String?     @map("assignee_user_id")
+  createdByUserId String?     @map("created_by_user_id")
   dueAt      DateTime         @map("due_at") @db.Date
   status     ClientTaskStatus @default(TODO)
   revisions  Int              @default(0)
@@ -1191,6 +1194,7 @@ model ClientTask {
 
   attachments TaskAttachment[]
 
+  @@index([assigneeUserId])
   @@map("client_tasks")
 }
 
@@ -1229,6 +1233,7 @@ model ContentItem {
   type      String
   platforms String[]
   assignee  String?
+  assigneeUserId String?  @map("assignee_user_id")
   stage     ContentStage @default(IDEA)
   dueAt     DateTime     @map("due_at") @db.Date
   notes     String?
@@ -1236,6 +1241,7 @@ model ContentItem {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@index([assigneeUserId])
   @@map("content_items")
 }
 
@@ -1706,4 +1712,20 @@ model MarketingSettings {
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@map("marketing_settings")
+}
+
+// In-app notifications (the bell). One row per recipient; readAt null = unread.
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  kind      String
+  title     String
+  body      String?
+  // Where clicking it goes, e.g. "workspace/tasks".
+  link      String?
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, readAt])
+  @@map("notifications")
 }

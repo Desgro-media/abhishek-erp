@@ -9,6 +9,7 @@ const router = Router();
 // Any signed-in employee can see the cards assigned to them (My Workspace > My Tasks), whether or
 // not they hold the Content role — scoped to the caller's own name, nothing else is exposed here.
 router.get("/items/mine", authenticate, items.listMyContentItems);
+router.patch("/items/mine/:id", authenticate, items.moveMyContentItem);
 
 // Everything below needs ADMIN or CONTENT, and the list is unfiltered: both see every card from every
 // creator and assignee.
