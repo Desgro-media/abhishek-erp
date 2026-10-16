@@ -1,7 +1,7 @@
 import { RequestHandler } from "express";
 import { prisma } from "../db/prisma";
 import { asyncHandler } from "../utils/asyncHandler";
-import { isCrmUser, seesWholeSalesTeam } from "../middleware/crmAccess";
+import { isCrmUser, isClientsUser, seesWholeSalesTeam, seesAllClients } from "../middleware/crmAccess";
 import { isFinanceAdmin } from "../middleware/financeAccess";
 import { isHRAdmin } from "../middleware/hrAccess";
 
@@ -25,12 +25,13 @@ export const globalSearch: RequestHandler = asyncHandler(async (req, res) => {
 
   const jobs: Promise<void>[] = [];
 
-  if (isCrmUser(roles)) {
-    const admin = seesWholeSalesTeam(roles);
+  // Clients: same scope as the Clients page itself (listClients) — a Clients-module login sees every client, so
+  // search must find every client too; a plain Sales rep only their own book.
+  if (isClientsUser(roles)) {
     jobs.push(
       prisma.client
         .findMany({
-          where: { OR: [{ name: insensitive }, { clientCode: insensitive }, { city: insensitive }], ...(admin ? {} : { salesPerson: name }) },
+          where: { OR: [{ name: insensitive }, { clientCode: insensitive }, { city: insensitive }], ...(seesAllClients(roles) ? {} : { salesPerson: name }) },
           take: RESULTS_PER_TYPE,
           orderBy: { name: "asc" },
         })
@@ -38,6 +39,10 @@ export const globalSearch: RequestHandler = asyncHandler(async (req, res) => {
           for (const c of rows) results.push({ type: "Client", id: c.id, title: c.name, subtitle: `${c.clientCode}${c.city ? " · " + c.city : ""}` });
         })
     );
+  }
+
+  if (isCrmUser(roles)) {
+    const admin = seesWholeSalesTeam(roles);
     jobs.push(
       prisma.lead
         .findMany({
