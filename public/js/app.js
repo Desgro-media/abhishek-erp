@@ -4436,10 +4436,18 @@ function hrOverview(){
 
 let employeeSearch = "", employeeDept = "All";
 function setDeptFilter(d){ employeeDept=d; render(); }
-function setEmployeeSearch(v){ employeeSearch=v; document.getElementById("content").innerHTML = hrDirectory(); }
+function setEmployeeSearch(v){
+  employeeSearch = v;
+  // The whole directory re-renders on each keystroke, which replaces the input itself — put the cursor back
+  // where it was, or the box loses focus after every character.
+  const box = document.activeElement, pos = box && box.id==="employee-search" ? box.selectionStart : null;
+  document.getElementById("content").innerHTML = hrDirectory();
+  const fresh = document.getElementById("employee-search");
+  if(fresh && pos!==null){ fresh.focus(); fresh.setSelectionRange(pos, pos); }
+}
 function hrDirectory(){
   let list = employees.filter(e=>{
-    const matchesSearch = (e.name+e.role+e.id).toLowerCase().includes(employeeSearch.toLowerCase());
+    const matchesSearch = [e.name, e.role, e.id, e.dept, e.email].join(" ").toLowerCase().includes(employeeSearch.trim().toLowerCase());
     const matchesDept = employeeDept==="All" || e.dept===employeeDept;
     return matchesSearch && matchesDept;
   }).sort((a,b)=>a.name.localeCompare(b.name));
@@ -4448,7 +4456,7 @@ function hrDirectory(){
   <div class="toolbar">
     <div class="filter-group"><span class="filter-label">Department</span>${chips}</div>
     <div class="filter-group">
-      <div class="search" style="width:200px;"><svg class="icon" style="width:14px;height:14px"><use href="#i-search"/></svg><input placeholder="Search name, role, ID" value="${esc(employeeSearch)}" oninput="setEmployeeSearch(this.value)"></div>
+      <div class="search" style="width:200px;"><svg class="icon" style="width:14px;height:14px"><use href="#i-search"/></svg><input id="employee-search" placeholder="Search name, role, ID" value="${esc(employeeSearch)}" oninput="setEmployeeSearch(this.value)"></div>
       ${archivedEmployees.length?`<button class="btn ghost" onclick="openEmployeeArchive()"><svg class="icon" style="width:13px;height:13px"><use href="#i-archive"/></svg>Archived (${archivedEmployees.length})</button>`:''}
       <button class="btn primary" onclick="openAddEmployee()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>Add employee</button>
     </div>
