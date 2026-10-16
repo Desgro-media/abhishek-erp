@@ -67,6 +67,25 @@ export const listEmployeeDirectory: RequestHandler = asyncHandler(async (req, re
   res.json({ employees: employees.map(({ user, ...e }) => ({ ...e, userId: user?.id ?? null })) });
 });
 
+// Who the caller can see on the calendar's staff filter: HR/Admin/Sales Head get every active employee, anyone
+// else only their own department. Name + department only — no salary or contact details.
+export const listColleagues: RequestHandler = asyncHandler(async (req, res) => {
+  const roles = req.user?.roles ?? [];
+  const seesAll = roles.includes("ADMIN") || roles.includes("HR") || roles.includes("SALES_HEAD");
+  let dept: string | undefined;
+  if (!seesAll) {
+    const me = await prisma.user.findUnique({ where: { id: req.user!.sub }, select: { employee: { select: { dept: true } } } });
+    if (!me?.employee) return res.json({ employees: [], dept: null });
+    dept = me.employee.dept;
+  }
+  const rows = await prisma.employee.findMany({
+    where: { employmentStatus: { not: "LEFT" }, ...(dept ? { dept } : {}) },
+    select: { id: true, employeeCode: true, name: true, dept: true, user: { select: { id: true } } },
+    orderBy: { name: "asc" },
+  });
+  res.json({ employees: rows.map(({ user, ...e }) => ({ ...e, userId: user?.id ?? null })), dept: dept ?? null });
+});
+
 export const getEmployee: RequestHandler = asyncHandler(async (req, res) => {
   const targetId = req.params.id;
   const scoped = resolveScopedEmployeeId(req, targetId);

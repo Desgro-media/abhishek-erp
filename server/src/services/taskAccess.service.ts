@@ -34,6 +34,32 @@ export function tasksForUser(user: AccessTokenPayload, extra: Prisma.ClientTaskW
   });
 }
 
+// ---- Department view (calendar): read-only sight of what the caller's own department is working on ----
+export async function departmentOfUser(userId: string): Promise<string | null> {
+  const u = await prisma.user.findUnique({ where: { id: userId }, select: { employee: { select: { dept: true } } } });
+  return u?.employee?.dept ?? null;
+}
+async function departmentUserIds(dept: string): Promise<string[]> {
+  const rows = await prisma.user.findMany({ where: { active: true, employee: { dept } }, select: { id: true } });
+  return rows.map((r) => r.id);
+}
+export async function departmentTasksForUser(user: AccessTokenPayload) {
+  const dept = await departmentOfUser(user.sub);
+  if (!dept) return [];
+  const ids = await departmentUserIds(dept);
+  return prisma.clientTask.findMany({
+    where: { assigneeUserId: { in: ids } },
+    include: { attachments: true, client: { select: { id: true, name: true } } },
+    orderBy: { dueAt: "asc" },
+  });
+}
+export async function departmentContentForUser(user: AccessTokenPayload) {
+  const dept = await departmentOfUser(user.sub);
+  if (!dept) return [];
+  const ids = await departmentUserIds(dept);
+  return prisma.contentItem.findMany({ where: { assigneeUserId: { in: ids } }, orderBy: { dueAt: "asc" } });
+}
+
 export function contentItemsForUser(user: AccessTokenPayload) {
   return prisma.contentItem.findMany({ where: { assigneeUserId: user.sub }, orderBy: { dueAt: "asc" } });
 }
