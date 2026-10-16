@@ -2,7 +2,7 @@ import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
-import { resolveAssignee, notifyUser, contentItemsForUser } from "../../services/taskAccess.service";
+import { resolveAssignee, notifyUser, contentItemsForUser, departmentContentForUser } from "../../services/taskAccess.service";
 import { contentItemCreateSchema, contentItemUpdateSchema } from "../../validation/crm.schemas";
 
 export const listContentItems: RequestHandler = asyncHandler(async (req, res) => {
@@ -11,6 +11,7 @@ export const listContentItems: RequestHandler = asyncHandler(async (req, res) =>
 });
 
 export const listMyContentItems: RequestHandler = asyncHandler(async (req, res) => {
+  if (req.query.scope === "department") return res.json({ items: await departmentContentForUser(req.user!) });
   res.json({ items: await contentItemsForUser(req.user!) });
 });
 

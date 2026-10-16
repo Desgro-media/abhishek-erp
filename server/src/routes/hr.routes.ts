@@ -22,6 +22,7 @@ router.use(authenticate);
 // Employees
 router.get("/employees", employees.listEmployees); // HR/Admin only (checked inside)
 router.get("/employees/directory", employees.listEmployeeDirectory); // HR/Admin/Sales — name+dept only (checked inside)
+router.get("/employees/colleagues", employees.listColleagues); // any signed-in user: own department (HR/Admin/Sales Head: everyone)
 router.get("/employees/me", employees.getMyEmployeeRecord);
 router.get("/employees/:id", employees.getEmployee); // self-or-HR (checked inside)
 router.post("/employees", requireHRAdmin, employees.createEmployee);

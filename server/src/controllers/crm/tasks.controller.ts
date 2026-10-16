@@ -2,12 +2,14 @@ import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { isCrmUser } from "../../middleware/crmAccess";
-import { tasksForUser, resolveAssignee, notifyUser } from "../../services/taskAccess.service";
+import { tasksForUser, departmentTasksForUser, resolveAssignee, notifyUser } from "../../services/taskAccess.service";
 import { recordAudit } from "../../services/audit.service";
 import { taskCreateSchema, taskUpdateSchema } from "../../validation/crm.schemas";
 
 // Open to every signed-in login; tasksForUser decides what each one gets (assignee / creator / book / all).
 export const listTasks: RequestHandler = asyncHandler(async (req, res) => {
+  // ?scope=department — everything assigned to people in the caller's own department (read-only; for the calendar).
+  if (req.query.scope === "department") return res.json({ tasks: await departmentTasksForUser(req.user!) });
   const tasks = await tasksForUser(req.user!, {
     clientId: (req.query.clientId as string) || undefined,
     assigneeUserId: (req.query.assigneeUserId as string) || undefined,
