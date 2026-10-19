@@ -8,6 +8,11 @@
 /* ===================== SHARED HELPERS ===================== */
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const inr = n => "₹" + Math.round(Number(n)||0).toLocaleString("en-IN");
+// Ad numbers can be tracked in a client's own currency (GCC clients). INR keeps the whole-rupee look; others show the
+// ISO code with 2 decimals, since per-lead costs there are small.
+const AD_CURRENCIES = ["INR","AED","SAR","QAR","KWD","BHD","OMR","USD"];
+const AD_CURRENCY_NAMES = {INR:"Indian Rupee (₹)",AED:"UAE Dirham (AED)",SAR:"Saudi Riyal (SAR)",QAR:"Qatari Riyal (QAR)",KWD:"Kuwaiti Dinar (KWD)",BHD:"Bahraini Dinar (BHD)",OMR:"Omani Rial (OMR)",USD:"US Dollar (USD)"};
+const adMoney = (n, cur) => (!cur || cur==="INR") ? inr(n) : cur+" "+(Number(n)||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = iso => iso ? new Date(iso+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}) : "—";
 const fmtDateShort = iso => iso ? new Date(iso+"T00:00:00").toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const initials = name => String(name||"").split(" ").map(p=>p[0]).filter(Boolean).slice(0,2).join("").toUpperCase();
@@ -6590,7 +6595,10 @@ function isPerformanceMarketingClient(c){ return !!(c && c.services && c.service
 async function loadClientCollab(id){
   try{
     clientCollab[id] = await apiJson(`/api/crm/clients/${id}/collab`);
-    if(isPerformanceMarketingClient(clientById(id))) clientCollab[id].adMetrics = (await apiJson(`/api/crm/clients/${id}/ad-metrics`)).metrics;
+    if(isPerformanceMarketingClient(clientById(id))){
+      const am = await apiJson(`/api/crm/clients/${id}/ad-metrics`);
+      clientCollab[id].adMetrics = am.metrics; clientCollab[id].adCurrency = am.currency || "INR";
+    }
   }catch(err){ clientCollab[id] = { error: err.message || "Couldn't load" }; }
   // Redraw only if the user is still looking at this client's page.
   if(nav.detail && nav.detail.type==='client' && nav.detail.id===id) render();
@@ -6623,7 +6631,13 @@ function brandAssetsSectionHTML(c, d){
 // "clientId|metricId" id so the shared edit/delete buttons know which client they belong to.
 function adPerformanceSectionHTML(c, d){
   const rows = (d.adMetrics||[]).slice(0,30).map(m=>({...m, id:`${c.id}|${m.id}`}));
-  return adDailyTrackerHTML(rows, "Ad Performance", {logFn:`openLogClientAdMetric('${c.id}')`, editFn:"openLogClientAdMetric", deleteKind:"clientAdMetric"});
+  return adDailyTrackerHTML(rows, "Ad Performance", {logFn:`openLogClientAdMetric('${c.id}')`, editFn:"openLogClientAdMetric", deleteKind:"clientAdMetric", currency:d.adCurrency, currencyFn:`setClientAdCurrency.bind(null,'${c.id}')`});
+}
+async function setClientAdCurrency(clientId, currency){
+  try{
+    await apiJson(`/api/crm/clients/${clientId}/ad-currency`, { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({currency}) });
+    toast(`Ad numbers now shown in ${currency}`); await loadClientCollab(clientId);
+  }catch(err){ toast(err.message || "Couldn't change currency"); await loadClientCollab(clientId); }
 }
 function openLogClientAdMetric(arg){
   const [clientId, metricId] = arg.split('|');
@@ -6632,7 +6646,7 @@ function openLogClientAdMetric(arg){
   logAdMetricModal(c ? c.name : "Client", existing, async payload=>{
     await apiJson(`/api/crm/clients/${clientId}/ad-metrics`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
     await loadClientCollab(clientId);
-  });
+  }, (clientCollab[clientId]||{}).adCurrency);
 }
 function adAccessSectionHTML(c, d){
   const a = d.adAccess;
@@ -6839,12 +6853,16 @@ function adDailyTrackerHTML(rows, label, opts){
   const avgCpl = t.leads>0 ? t.spend/t.leads : null;
   const avgCpa = t.purchases>0 ? t.spend/t.purchases : null;
   const roas = t.spend>0 ? t.revenue/t.spend : null;
+  const inr = n => adMoney(n, opts.currency);
   const dash = v => v==null ? '—' : inr(v);
   const hasActions = !!(opts.editFn || opts.deleteKind);
   return `
   <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
     <div>${esc(label)}<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;"> · ${rows.length} day${rows.length===1?'':'s'} shown</span></div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    ${opts.currencyFn?`<select class="field-input" style="width:auto;padding:4px 8px;font-size:12px;" title="Currency these numbers are in" onchange="${opts.currencyFn}(this.value)">${AD_CURRENCIES.map(k=>`<option value="${k}" ${k===(opts.currency||'INR')?'selected':''}>${esc(AD_CURRENCY_NAMES[k])}</option>`).join('')}</select>`:''}
     ${opts.logFn?`<button class="btn btn-sm ghost" onclick="${opts.logFn}"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log today's numbers</button>`:''}
+    </div>
   </div>
   ${rows.length ? `
   <div class="kpi-grid">
@@ -6859,7 +6877,7 @@ function adDailyTrackerHTML(rows, label, opts){
 }
 // Log (or correct) one day's numbers. Saving a date that already exists updates it. `save` receives the
 // validated payload and POSTs it; the server re-validates everything (no future dates, no negatives).
-function logAdMetricModal(forLabel, existing, save){
+function logAdMetricModal(forLabel, existing, save, currency){
   const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
   const v = existing || {date:local, spend:'', revenue:'', leads:'', purchases:''};
   showModal(`
@@ -6869,8 +6887,8 @@ function logAdMetricModal(forLabel, existing, save){
       <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(v.date)}" max="${local}" required ${existing?'readonly':''}></div>
       ${existing?'':'<div class="subtext" style="font-size:12px;">Logging a date that already has numbers replaces them.</div>'}
       <div class="field-row">
-        <div><label class="field-label">Spend</label><input class="field-input" type="number" step="0.01" min="0" name="spend" value="${esc(v.spend)}" required></div>
-        <div><label class="field-label">Revenue</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" placeholder="Optional — saved as 0"></div>
+        <div><label class="field-label">Spend${currency&&currency!=='INR'?` (${esc(currency)})`:''}</label><input class="field-input" type="number" step="0.01" min="0" name="spend" value="${esc(v.spend)}" required></div>
+        <div><label class="field-label">Revenue${currency&&currency!=='INR'?` (${esc(currency)})`:''}</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" placeholder="Optional — saved as 0"></div>
       </div>
       <div class="field-row">
         <div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" placeholder="Optional — saved as 0"></div>
@@ -7630,7 +7648,7 @@ function deleteWarningFor(kind, id){
   }
   if(kind==='clientAdMetric'){
     const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).adMetrics||[]).find(x=>x.id===mid); if(!m) return {label:"this entry", warning:fallback};
-    return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
+    return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${adMoney(m.spend, (clientCollab[cid]||{}).adCurrency)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
   }
   if(kind==='ownAdMetric'){
     const m = ownAdMetrics.find(x=>x.id===id); if(!m) return {label:"this entry", warning:fallback};

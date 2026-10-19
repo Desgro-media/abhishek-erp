@@ -52,6 +52,7 @@ router.delete("/clients/:id/brand-assets/:assetId", requireClientsUser, collab.r
 router.post("/clients/:id/meetings", requireClientsUser, collab.logMeeting);
 router.delete("/clients/:id/meetings/:meetingId", requireClientsUser, collab.deleteMeeting);
 router.get("/clients/:id/ad-metrics", requireClientsUser, adMetrics.listClientAdMetrics);
+router.put("/clients/:id/ad-currency", requireClientsUser, adMetrics.setClientAdCurrency);
 router.post("/clients/:id/ad-metrics", requireClientsUser, adMetrics.upsertClientAdMetric);
 router.delete("/clients/:id/ad-metrics/:metricId", requireClientsUser, adMetrics.deleteClientAdMetric);
 

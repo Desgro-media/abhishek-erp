@@ -2,7 +2,7 @@ import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
-import { clientAdMetricSchema } from "../../validation/crm.schemas";
+import { clientAdMetricSchema, adCurrencySchema } from "../../validation/crm.schemas";
 import { serializeAdMetric as serialize, parseMetricDate } from "../../services/adMetrics";
 import { loadClientFor, isPerformanceClient } from "./clientCollab.controller";
 
@@ -16,7 +16,21 @@ export const listClientAdMetrics: RequestHandler = asyncHandler(async (req, res)
   const client = await loadClientFor(req, res);
   if (!client) return;
   const rows = await prisma.clientAdMetric.findMany({ where: { clientId: client.id }, orderBy: { date: "desc" } });
-  res.json({ metrics: rows.map(serialize) });
+  res.json({ metrics: rows.map(serialize), currency: client.adCurrency });
+});
+
+// Which currency this client's numbers are in. Only relabels — existing rows are not converted.
+export const setClientAdCurrency: RequestHandler = asyncHandler(async (req, res) => {
+  const client = await loadClientFor(req, res);
+  if (!client) return;
+  const parsed = adCurrencySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  if (!isPerformanceClient(client)) return res.status(400).json({ error: "Ad numbers are only tracked for Performance Marketing clients" });
+  if (client.adCurrency !== parsed.data.currency) {
+    await prisma.client.update({ where: { id: client.id }, data: { adCurrency: parsed.data.currency } });
+    await recordAudit({ userId: req.user!.sub, action: "CRM_CLIENT_AD_CURRENCY_UPDATE", entityType: "Client", entityId: client.id, beforeData: { currency: client.adCurrency }, afterData: { currency: parsed.data.currency } });
+  }
+  res.json({ currency: parsed.data.currency });
 });
 
 // Re-logging a date replaces that day's numbers (one row per client per day) — the way to fix a typo.
