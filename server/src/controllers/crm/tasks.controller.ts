@@ -4,6 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { isCrmUser } from "../../middleware/crmAccess";
 import { tasksForUser, departmentTasksForUser, resolveAssignee, notifyUser } from "../../services/taskAccess.service";
 import { recordAudit } from "../../services/audit.service";
+import { stageForStatus } from "../../services/serviceBoards";
 import { taskCreateSchema, taskUpdateSchema } from "../../validation/crm.schemas";
 
 // Open to every signed-in login; tasksForUser decides what each one gets (assignee / creator / book / all).
@@ -65,7 +66,9 @@ export const updateTask: RequestHandler = asyncHandler(async (req, res) => {
 
   const task = await prisma.clientTask.update({
     where: { id: req.params.id },
-    data: { title: d.title, ...(who ? { assignedTo: who.name, assigneeUserId: who.userId } : {}), dueAt: d.dueAt ? new Date(d.dueAt) : undefined, status: d.status, revisions: d.revisions, doneAt },
+    data: { title: d.title, ...(who ? { assignedTo: who.name, assigneeUserId: who.userId } : {}), dueAt: d.dueAt ? new Date(d.dueAt) : undefined, status: d.status, revisions: d.revisions, doneAt,
+      // A service-board card moved by status (My Tasks) lands in the matching column.
+      ...(d.status && before.service ? { stage: stageForStatus(before.service, d.status, before.stage) } : {}) },
     include: { attachments: true },
   });
 

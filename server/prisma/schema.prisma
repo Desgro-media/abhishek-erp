@@ -1199,9 +1199,24 @@ model ClientTask {
   createdAt  DateTime         @default(now()) @map("created_at")
   updatedAt  DateTime         @updatedAt @map("updated_at")
 
+  // Service-board cards (Client > Services). All null/empty on an ordinary task. `stage` is a column of that service's board
+  // and always agrees with `status`; project* tie together the tasks one "Start project" created.
+  service        String?
+  stage          String?
+  taskType       String?  @map("task_type")
+  platforms      String[]
+  startAt        DateTime? @map("start_at") @db.Date
+  maxDays        Int?      @map("max_days")
+  projectId      String?   @map("project_id")
+  projectName    String?   @map("project_name")
+  projectKind    String?   @map("project_kind")
+  clientAssigned Boolean   @default(false) @map("client_assigned")
+  notes          String?
+
   attachments TaskAttachment[]
 
   @@index([assigneeUserId])
+  @@index([clientId, service])
   @@map("client_tasks")
 }
 

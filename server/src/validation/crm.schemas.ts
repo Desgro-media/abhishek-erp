@@ -201,3 +201,30 @@ export const leadConvertSchema = z.object({
   onboardedAt: dateStr.optional(),
 });
 export const leadSettingsSchema = z.object({ conversionThreshold: z.number().positive().max(100_000_000) });
+
+// ---- Service-board cards (Client > Services). Stage / type / platform names are checked against the service's board in the controller.
+const optDate = dateStr.nullable().optional();
+const cardFields = {
+  title: z.string().trim().min(1).max(200),
+  type: z.string().trim().max(80).optional(),
+  stage: z.string().trim().max(80).optional(),
+  platforms: z.array(z.string().max(60)).max(20).optional(),
+  assignedTo: z.string().trim().max(120).optional(),
+  assigneeUserId: z.string().optional(),
+  clientAssigned: z.boolean().optional(),
+  start: optDate,
+  due: optDate,
+  notes: z.string().trim().max(2000).optional(),
+};
+export const boardCardCreateSchema = z.object({ service: z.string().min(1).max(60), ...cardFields });
+export const boardCardUpdateSchema = z.object(cardFields).partial();
+export const boardProjectCreateSchema = z.object({
+  service: z.string().min(1).max(60),
+  type: z.string().min(1).max(80),
+  name: z.string().trim().min(1).max(160),
+  start: dateStr,
+  assignedTo: z.string().trim().max(120).optional(),
+  assigneeUserId: z.string().optional(),
+  // The dated schedule, worked out on the page from the working-day calendar; titles must match the type's task list.
+  tasks: z.array(z.object({ title: z.string().min(1).max(200), start: dateStr, due: dateStr })).min(1).max(40),
+});
