@@ -1835,6 +1835,7 @@ async function loadCompanyEvents(){ companyEvents = (await apiJson("/api/calenda
 const CAL_LAYERS = [
   {k:"tasks", label:"Client tasks", sw:"var(--ink-faint)"},
   {k:"events", label:"Events & meetings", sw:"var(--blue)"},
+  {k:"meetings", label:"Client meetings", sw:"var(--blue)"},
   {k:"programs", label:"HR programs", sw:"var(--pos)"},
   {k:"holidays", label:"Holidays", sw:"var(--neg)"},
   {k:"leave", label:"Leave & WFH", sw:"var(--ink-soft)"},
@@ -2004,6 +2005,7 @@ function calItemsOn(ds){
   if(calOn("holidays")) hrPolicy.holidays.filter(h=>h.date===ds).forEach(h=>out.push({kind:"Holiday", label:h.name, tip:"Holiday · "+h.name, cls:"holiday"}));
   if(calOn("events")) companyEvents.filter(e=>e.date===ds).forEach(e=>{ const k = EVENT_KINDS[e.kind]||"neutral";
     out.push({kind:e.kind, label:(e.time?e.time+" ":"")+e.title, tip:`${e.kind} · ${e.title}${e.time?" · "+e.time:""}${e.venue?" · "+e.venue:""}`, style:k==="neutral"?"background:var(--surface-sunk);color:var(--ink);":`background:var(--${k}-soft);color:var(--${k});`, onclick:`openCompanyEvent('${e.id}')`, sub:[e.time, e.venue].filter(Boolean).join(" · ")}); });
+  if(calOn("meetings")) calendarClientMeetings.filter(m=>m.date===ds).forEach(m=>out.push({kind:"Client meeting", label:(m.time?m.time+" ":"")+m.clientName.split(" ")[0]+" · "+m.service.split(" ")[0], tip:`Client meeting · ${m.clientName} · ${m.service}${m.time?" · "+m.time:""}${m.mode?" · "+m.mode:""} · ${m.status==='HELD'?'held':'scheduled'}`, style:m.status==='HELD'?"background:var(--surface-sunk);color:var(--ink-soft);":"background:var(--blue-soft);color:var(--blue);", onclick:`goToClient('${m.clientId}')`}));
   if(calOn("programs")) calendarPrograms.filter(pr=>pr.date===ds).forEach(pr=>{ const k = PROGRAM_TYPE_KIND[pr.type]; out.push({kind:pr.type, label:(pr.time?pr.time+" ":"")+pr.title, tip:`${pr.type} · ${pr.title} · ${pr.status}`, style:`background:var(--${k}-soft);color:var(--${k});`, onclick:canManagePrograms()?`setSub('hr','programs')`:"", sub:[pr.time, pr.mode, pr.venue].filter(Boolean).join(" · ")}); });
   if(calOn("people")) activeEmployees().forEach(e=>{
     if(e.dob && e.dob.slice(5)===ds.slice(5)) out.push({kind:"Birthday", label:"🎂 "+e.name.split(" ")[0], tip:e.name+"'s birthday", cls:"people", sub:e.name});
@@ -3561,7 +3563,7 @@ const TAB_REFRESH = {
   "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
-  "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
+  "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/attendance":[loadMyLeaveBalance], "hr/advances":[loadWithdrawalRequests],
@@ -6892,6 +6894,99 @@ function cycleSchedule(retained, startDate){
 }
 function deptDefaultOwner(svc){ const h = typeof deptHeads!=="undefined" && deptHeads[svc]; if(h) return h; const e = activeEmployees().find(x=>x.dept===svc); return e ? e.name : ""; }
 function nextWorkingDay(d){ let i = 0; while(!isPlanWorkingDay(d) && i++ < 30) d = addDays(d, 1); return d; }
+function serviceMeetingsHTML(c, service, readOnly, opts){
+  opts = opts || {};
+  const list = ((clientCollab[c.id]||{}).serviceMeetings||[]).filter(m=>m.service===service && (!opts.scheduledOnly || m.status==="SCHEDULED") && (!opts.month || (m.date||'').slice(0,7)===opts.month));
+  const upcoming = list.filter(m=>m.status==="SCHEDULED").sort((a,b)=>(a.date+(a.time||'')).localeCompare(b.date+(b.time||'')));
+  const held = list.filter(m=>m.status!=="SCHEDULED").sort((a,b)=>b.date.localeCompare(a.date));
+  const can = !readOnly && canEditBoard();
+  const card = m => `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;${m.status==='SCHEDULED'?'background:var(--blue-soft);border-color:transparent;':''}">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;"><b style="font-size:12.5px;${m.status==='CANCELLED'?'text-decoration:line-through;color:var(--ink-faint);':''}">${fmtDate(m.date)}${m.time?' · '+esc(m.time):''}${m.mode?` <span class="faint" style="font-weight:600;">· ${esc(m.mode)}</span>`:''}</b>
+      <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${m.status==='SCHEDULED'?pill(m.date<TODAY?'Minutes pending':'Scheduled', m.date<TODAY?'warn':'blue'):m.status==='CANCELLED'?pill('Cancelled','neutral'):pill(m.scheduledFor?'Held · was scheduled':'Held','pos')}${can&&m.status==='SCHEDULED'?`<button class="btn btn-sm primary" onclick="openServiceMeeting('${c.id}','${esc(service)}','${m.id}','held')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Mark as held</button><button class="btn btn-sm ghost" onclick="openServiceMeeting('${c.id}','${esc(service)}','${m.id}','reschedule')">Reschedule</button><button class="btn btn-sm ghost" onclick="cancelServiceMeeting('${c.id}','${m.id}')">Cancel</button>`:''}</span></div>
+    ${m.scheduledFor&&m.scheduledFor!==m.date?`<div class="faint" style="font-size:11px;margin-top:2px;">Originally scheduled for ${fmtDate(m.scheduledFor)}</div>`:''}
+    ${m.attendees?`<div class="subtext" style="margin-top:3px;">${esc(m.attendees)}</div>`:''}
+    ${m.agenda?`<div style="font-size:12.5px;margin-top:5px;"><b>Agenda:</b> ${esc(m.agenda)}</div>`:''}
+    ${m.notes?`<div style="font-size:12.5px;margin-top:5px;">${esc(m.notes)}</div>`:''}
+    ${m.actionItems?`<div style="font-size:12px;margin-top:5px;color:var(--ink-soft);"><b>Action items:</b> ${esc(m.actionItems)}</div>`:''}
+  </div>`;
+  return `<div style="display:flex;flex-direction:column;gap:8px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><b style="font-size:13px;">${opts.scheduledOnly?'Scheduled meetings':'Client meetings · '+esc(service)}</b>${can?`<span style="display:flex;gap:6px;"><button class="btn btn-sm ghost" onclick="openServiceMeeting('${c.id}','${esc(service)}',null,'schedule')"><svg class="icon" style="width:12px;height:12px"><use href="#i-calendar"/></svg>Schedule</button>${opts.scheduledOnly?'':`<button class="btn btn-sm ghost" onclick="openServiceMeeting('${c.id}','${esc(service)}',null,'log')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log meeting</button>`}</span>`:''}</div>
+    ${upcoming.map(card).join('')}${held.map(card).join('')}
+    ${!list.length?`<div class="empty" style="padding:10px;">${opts.scheduledOnly?'Nothing scheduled.':opts.month?`No ${esc(service.toLowerCase())} meetings in ${monthLabel(opts.month)}.`:`No ${esc(service.toLowerCase())} meetings yet.`}${can?' Schedule one — it shows in the Calendar, and you mark it as held with the minutes once it happens.':''}</div>`:''}
+  </div>`;
+}
+function webDetailsHTML(c, readOnly){
+  const d = (clientCollab[c.id]||{}).webDetails || {}, edit = !readOnly && canEditBoard();
+  if(!Object.values(d).some(Boolean) && !edit) return '';
+  const row = (k, v, link) => `<div style="display:grid;grid-template-columns:120px minmax(0,1fr);gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;"><span class="muted">${k}</span><span style="min-width:0;overflow-wrap:anywhere;">${v ? (link ? `<a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v)) : '<span class="faint">—</span>'}</span></div>`;
+  return `<div style="border:1px solid var(--line);border-radius:12px;padding:12px 16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:13px;">Website details</b>${edit?`<button class="btn btn-sm ghost" onclick="openWebDetails('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`:''}</div>
+    ${row('Staging link', d.stagingUrl, true)}${row('Live site', d.liveUrl, true)}${row('Domain', d.domain)}${row('Hosting', d.hosting)}${row('Platform', d.platform)}
+    ${d.notes?`<div style="font-size:12px;margin-top:8px;color:var(--ink-soft);"><b style="color:var(--ink);">Notes:</b> ${esc(d.notes)}</div>`:''}
+  </div>`;
+}
+
+// Schedule a meeting (shows in the Calendar), log one that happened, or add minutes to a scheduled one.
+function openServiceMeeting(clientId, service, meetingId, mode){
+  const c = clientById(clientId); if(!c || !canEditBoard()) return;
+  const m = meetingId ? ((clientCollab[clientId]||{}).serviceMeetings||[]).find(x=>x.id===meetingId) : null;
+  // schedule = new or rescheduled future meeting; otherwise we're recording one that happened (incl. marking a scheduled one as held)
+  const schedule = m ? mode==='reschedule' : mode==='schedule';
+  showModal(`
+    <div class="modal-head"><h3>${schedule?(m?'Reschedule meeting':'Schedule client meeting'):(m&&m.status==='SCHEDULED'?'Mark meeting as held':m?'Edit meeting minutes':'Log client meeting')}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-svc-meeting"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${esc(c.name)} · ${esc(service)}${schedule?' · shows in the Calendar until it happens':m&&m.status==='SCHEDULED'?` · scheduled for ${fmtDate(m.date)}${m.time?' '+esc(m.time):''} — confirm the actual date and add the minutes`:''}</div>
+      <div class="field-row cols-3">
+        <div><label class="field-label" for="sm2-date">Date</label><input class="field-input" type="date" id="sm2-date" name="date" required value="${m?(schedule||m.date<=TODAY?m.date:TODAY):TODAY}" ${schedule?`min="${TODAY}"`:`max="${TODAY}"`}></div>
+        <div><label class="field-label" for="sm2-time">Time</label><input class="field-input" type="time" id="sm2-time" name="time" value="${m&&m.time?m.time:'11:00'}"></div>
+        <div><label class="field-label" for="sm2-mode">How</label><select class="field-input" id="sm2-mode" name="mode">${["Google Meet","In person","Call"].map(x=>`<option ${m&&m.mode===x?'selected':''}>${x}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label" for="sm2-att">Attendees</label><input class="field-input" id="sm2-att" name="attendees" value="${esc(m?m.attendees||'':'')}" placeholder="e.g. Muhsin Ali, client founder"></div>
+      <div><label class="field-label" for="sm2-agenda">Agenda</label><input class="field-input" id="sm2-agenda" name="agenda" value="${esc(m?m.agenda||'':'')}" placeholder="What the meeting is for"></div>
+      ${schedule?'':`<div><label class="field-label" for="sm2-notes">Minutes of the meeting</label><textarea class="field-input" id="sm2-notes" name="notes" rows="3" required placeholder="What was reviewed, discussed and decided">${esc(m?m.notes||'':'')}</textarea></div>
+      <div><label class="field-label" for="sm2-ai">Action items</label><textarea class="field-input" id="sm2-ai" name="actionItems" rows="2" placeholder="Who does what, by when (optional)">${esc(m?m.actionItems||'':'')}</textarea></div>`}
+    </div>
+    <div class="modal-foot">${m?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="openConfirmDelete('serviceMeeting','${clientId}|${m.id}')">Delete</button>`:'<div></div>'}<div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${schedule?'Schedule':'Save minutes'}</button></div></div>
+    </form>`);
+  document.getElementById("f-svc-meeting").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const body = {service, status:schedule?"SCHEDULED":"HELD", date:f.get("date"), time:f.get("time")||"", mode:f.get("mode"), attendees:(f.get("attendees")||"").trim(), agenda:(f.get("agenda")||"").trim()};
+    if(!schedule){ body.notes = (f.get("notes")||"").trim(); body.actionItems = (f.get("actionItems")||"").trim(); }
+    try{
+      await apiJson(m ? `/api/crm/clients/${clientId}/service-meetings/${m.id}` : `/api/crm/clients/${clientId}/service-meetings`, {method:m?"PUT":"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      await Promise.all([loadClientCollab(clientId), loadCalendarClientMeetings()]);
+      toast(schedule?(m?"Meeting rescheduled — Calendar updated":"Meeting scheduled — it's on the Calendar"):(m&&m.status==='SCHEDULED'?"Recorded as held":"Meeting minutes saved")); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the meeting"); }
+  });
+}
+async function cancelServiceMeeting(clientId, id){
+  try{ await apiJson(`/api/crm/clients/${clientId}/service-meetings/${id}/cancel`, {method:"POST"}); await Promise.all([loadClientCollab(clientId), loadCalendarClientMeetings()]); toast("Meeting cancelled — removed from the Calendar"); render(); }
+  catch(err){ toast(err.message || "Couldn't cancel the meeting"); }
+}
+// Meetings on the Calendar: every scheduled or held service meeting on the clients this login can see (empty for logins without Clients access).
+let calendarClientMeetings = [];
+async function loadCalendarClientMeetings(){ try{ calendarClientMeetings = (await apiJson("/api/crm/client-meetings")).meetings; }catch(err){ calendarClientMeetings = []; } }
+function openWebDetails(clientId){
+  const c = clientById(clientId); if(!c || !canEditBoard()) return;
+  const d = (clientCollab[clientId]||{}).webDetails || {};
+  const f = (k, label, ph) => `<div><label class="field-label" for="wd-${k}">${label}</label><input class="field-input" id="wd-${k}" name="${k}" value="${esc(d[k]||'')}" placeholder="${ph}"></div>`;
+  showModal(`
+    <div class="modal-head"><h3>Website details</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-web-details"><div class="modal-body">
+      <div class="field-row">${f('stagingUrl','Staging link','https://…')}${f('liveUrl','Live site','https://…')}</div>
+      <div class="field-row">${f('domain','Domain','example.com')}${f('hosting','Hosting','e.g. Hostinger (client account)')}</div>
+      ${f('platform','Platform','e.g. WordPress + Elementor, Shopify')}
+      <div><label class="field-label" for="wd-notes">Notes</label><textarea class="field-input" id="wd-notes" name="notes" rows="2">${esc(d.notes||'')}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-web-details").addEventListener("submit", async e=>{
+    e.preventDefault(); const fd = new FormData(e.target);
+    const body = Object.fromEntries(["stagingUrl","liveUrl","domain","hosting","platform","notes"].map(k=>[k, (fd.get(k)||"").trim()]));
+    try{ await apiJson(`/api/crm/clients/${clientId}/web-details`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); await loadClientCollab(clientId); toast("Website details saved"); closeModal(); render(); }
+    catch(err){ toast(err.message || "Couldn't save the website details"); }
+  });
+}
 function clientServicesHTML(c){
   const svcs = c.services.filter(s=>SERVICE_BOARDS[s]);
   if(!svcs.length) return '';
@@ -6899,7 +6994,7 @@ function clientServicesHTML(c){
   return `<div class="section-label">Services</div>
   <div style="display:flex;gap:6px;flex-wrap:wrap;">${svcs.map(s=>{ const n = boardCards(c.id, s).filter(x=>x.status!=="Done").length;
     return `<button class="chip ${s===tab?'active':''}" onclick="setClientServiceTab('${c.id}','${esc(s)}')" style="display:inline-flex;align-items:center;gap:6px;">${esc(s)}${n?`<span class="mono" style="font-size:10.5px;opacity:.8;">${n} active</span>`:''}</button>`; }).join('')}</div>
-  <div style="display:flex;flex-direction:column;gap:12px;">${serviceBoardHTML(c, tab)}</div>`;
+  <div style="display:flex;flex-direction:column;gap:12px;">${serviceBoardHTML(c, tab)}${tab==="Web Development" ? webDetailsHTML(c, false) : ''}${serviceMeetingsHTML(c, tab, false)}</div>`;
 }
 let clientServiceTab = {};
 function setClientServiceTab(clientId, svc){ clientServiceTab[clientId] = svc; render(); }
@@ -7991,6 +8086,10 @@ function deleteWarningFor(kind, id){
     const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).meetings||[]).find(x=>x.id===mid); if(!m) return {label:"this meeting log", warning:fallback};
     return {label:"this meeting log", warning:`${fmtDate(m.date)} — ${esc(m.attendees)}. The notes are permanently removed. This can't be undone.`};
   }
+  if(kind==='serviceMeeting'){
+    const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).serviceMeetings||[]).find(x=>x.id===mid); if(!m) return {label:"this meeting", warning:fallback};
+    return {label:"this meeting", warning:`${fmtDate(m.date)}${m.time?' · '+esc(m.time):''} — ${esc(m.service)}. ${m.status==='HELD'?'The minutes are permanently removed. ':''}This can't be undone.`};
+  }
   if(kind==='boardCard'){
     const t = clientTasks.find(x=>x.id===id); if(!t) return {label:"this card", warning:fallback};
     return {label:"this card", warning:`${esc(t.title)}. It's removed from the board and from the assignee's My Tasks. This can't be undone.`};
@@ -8080,6 +8179,7 @@ async function performDelete(kind, id){
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
     // A bank-line journal entry also posted a real ledger row, so its removal changes account
     // balances — refresh banks and the finance reports (which read off the ledger) alongside it.
+    serviceMeeting: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/service-meetings/${mid}`, reload: async ()=>{ await Promise.all([loadClientCollab(cid), loadCalendarClientMeetings()]); }, label:"Meeting" }; })(),
     boardCard: { url:`/api/crm/board-cards/${id}`, reload: loadTasks, label:"Card" },
     boardProject: (()=>{ const [cid, pid, svc] = id.split('|'); return { url:`/api/crm/clients/${cid}/board-projects/${pid}`, reload: async ()=>{ await loadTasks(); bState(cid, svc).project = 'All'; }, label:"Project" }; })(),
     clientAdMetric: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/ad-metrics/${mid}`, reload: ()=>loadClientCollab(cid), label:"Ad performance entry" }; })(),

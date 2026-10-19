@@ -248,3 +248,25 @@ export const boardSetupSchema = z.object({
   monthlyTasks: z.array(z.object({ name: z.string().trim().min(1).max(200), days: z.number().int().min(1).max(60), type: nm.default("Other"), newOnly: z.boolean().optional() })).min(1).max(30).optional(),
   projectTasks: z.record(nm, z.array(z.object({ name: z.string().trim().min(1).max(200), days: z.number().int().min(1).max(60) })).min(1).max(40)).optional(),
 });
+
+// ---- Per-service client meetings (Client > Services). A scheduled one shows in the Calendar; a held one needs its minutes.
+const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Expected HH:MM");
+export const MEETING_MODES = ["Google Meet", "In person", "Call"] as const;
+export const serviceMeetingSchema = z.object({
+  service: z.string().min(1).max(60),
+  status: z.enum(["SCHEDULED", "HELD"]),
+  date: dateStr,
+  time: hhmm.or(z.literal("")).optional(),
+  mode: z.enum(MEETING_MODES).optional(),
+  attendees: z.string().trim().max(500).default(""),
+  agenda: z.string().trim().max(1000).default(""),
+  notes: z.string().trim().max(5000).default(""),
+  actionItems: z.string().trim().max(2000).default(""),
+});
+
+// ---- A website client's links and setup.
+const webUrl = z.string().trim().max(500).refine((u) => u === "" || /^https?:\/\/\S+$/i.test(u), "Must start with http:// or https://");
+export const webDetailsSchema = z.object({
+  stagingUrl: webUrl, liveUrl: webUrl,
+  domain: z.string().trim().max(200), hosting: z.string().trim().max(200), platform: z.string().trim().max(200), notes: z.string().trim().max(2000),
+});

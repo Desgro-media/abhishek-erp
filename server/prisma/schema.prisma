@@ -1032,6 +1032,7 @@ model Client {
   brandAssets   ClientBrandAsset[]
   meetings      ClientMeeting[]
   adMetrics     ClientAdMetric[]
+  webDetails    ClientWebDetails?
 
   @@map("clients")
   feedback      ClientFeedback[]
@@ -1359,6 +1360,12 @@ model ClientBrandAsset {
   @@map("client_brand_assets")
 }
 
+enum MeetingStatus {
+  SCHEDULED
+  HELD
+  CANCELLED
+}
+
 model ClientMeeting {
   id        String   @id @default(uuid())
   clientId  String   @map("client_id")
@@ -1368,9 +1375,22 @@ model ClientMeeting {
   notes     String
   loggedBy  String   @map("logged_by")
 
+  // Per-service meetings (Client > Services): `service` is null on the older weekly meeting log. A scheduled meeting shows in the
+  // Calendar until it's marked held with its minutes (`notes`) or cancelled.
+  service      String?
+  status       MeetingStatus @default(HELD)
+  time         String?
+  mode         String?
+  agenda       String?
+  actionItems  String?       @map("action_items")
+  scheduledFor DateTime?     @map("scheduled_for") @db.Date
+  cancelledOn  DateTime?     @map("cancelled_on") @db.Date
+  cancelledBy  String?       @map("cancelled_by")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([clientId, date])
+  @@index([service, date])
   @@map("client_meetings")
 }
 
@@ -1764,4 +1784,20 @@ model ServiceBoardConfig {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("service_board_configs")
+}
+
+// A website client's links and setup (Client > Services > Web Development).
+model ClientWebDetails {
+  clientId   String   @id @map("client_id")
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  stagingUrl String   @default("") @map("staging_url")
+  liveUrl    String   @default("") @map("live_url")
+  domain     String   @default("")
+  hosting    String   @default("")
+  platform   String   @default("")
+  notes      String   @default("")
+  updatedBy  String   @map("updated_by")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("client_web_details")
 }
