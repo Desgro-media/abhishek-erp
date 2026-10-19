@@ -69,7 +69,7 @@ const access = { platform: "Meta Business Manager", accountId: "act_123", access
 test("empty client: GET /collab returns the empty shape", async () => {
   const r = await call("GET", U(pm, "/collab"), tok.repA);
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { adAccess: null, campaignBrief: null, brandAssets: [], meetings: [] });
+  assert.deepEqual(r.body, { adAccess: null, campaignBrief: null, brandAssets: [], meetings: [], serviceMeetings: [], webDetails: null });
   assert.equal((await call("GET", U({ id: "00000000-0000-0000-0000-000000000000" }, "/collab"), tok.admin)).status, 404);
 });
 

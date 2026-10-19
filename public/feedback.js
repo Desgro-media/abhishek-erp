@@ -28,11 +28,12 @@ function render(d){
     <h1>How did we do in ${esc(M)}?</h1>
     <div class="muted">Rate each service from 1 (poor) to 5 (excellent). It takes under a minute, and it goes straight to the team handling that work.</div>
     <form id="f">
-      ${d.depts.map((dept, i) => `<fieldset><legend>${esc(dept)}</legend>
-        ${d.rated[dept] ? `<div class="note">You rated this ${d.rated[dept]} ★ already this month — rating again replaces it.</div>` : ""}
+      ${d.depts.map((dept, i) => { const proj = (d.projects || {})[dept]; return `<fieldset><legend>${esc(dept)}${proj ? ` · ${esc(proj.title)}` : ""}</legend>
+        ${proj ? `<div class="note">Delivered ${esc(proj.deliveredOn)} — one rating for the whole project.</div>` : ""}
+        ${d.rated[dept] ? `<div class="note">You rated this ${d.rated[dept]} ★ already${proj ? "" : " this month"} — rating again replaces it.</div>` : ""}
         <div class="stars" role="radiogroup" aria-label="${esc(dept)} rating">${[1,2,3,4,5].map(n => `<label class="star"><input type="radio" name="r${i}" value="${n}" ${d.rated[dept] === n ? "checked" : ""}><span class="s">${"★".repeat(n)}</span><span class="l">${LABELS[n-1]}</span></label>`).join("")}</div>
         <textarea name="c${i}" rows="2" maxlength="1000" placeholder="What worked, and what should we do better? (optional)"></textarea>
-      </fieldset>`).join("")}
+      </fieldset>`; }).join("")}
       <label class="f" for="nm">Your name (optional)</label>
       <input type="text" id="nm" name="name" maxlength="80" placeholder="So we know who to thank">
       <div id="err" class="err" hidden></div>

@@ -2934,30 +2934,48 @@ function clientFeedbackSectionHTML(c){
   const cur = list.filter(f=>f.month===month);
   const avg = cur.length ? cur.reduce((s,f)=>s+f.rating,0)/cur.length : null;
   return `<div class="section-label" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><span>Client feedback${avg!=null?` · ${monthLabel(month).split(' ')[0]} average ${avg.toFixed(1)} ★`:''}</span><span style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>${d.canLog?`<button class="btn btn-sm ghost" onclick="openClientFeedback('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log feedback</button>`:''}</span></div>
-  ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th>Service</th><th>Rating</th><th>Comment</th><th>Source</th></tr></thead><tbody>${list.slice(0,8).map(f=>`<tr><td class="muted" style="white-space:nowrap;">${monthLabel(f.month)}</td><td>${esc(f.dept)}</td><td style="white-space:nowrap;">${starBarHTML(f.rating, 12)} <b class="mono">${f.rating}</b></td><td class="muted">${f.comment?esc(f.comment):'—'}</td><td class="faint" style="font-size:11.5px;">${esc(f.via)}${f.by&&f.by!=="Client"&&!f.via.startsWith('Logged')?' · '+esc(f.by):''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">No feedback yet — send the client a feedback link.</div>`}`;
+  ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th>Service</th><th>Rating</th><th>Comment</th><th>Source</th></tr></thead><tbody>${list.slice(0,8).map(f=>`<tr><td class="muted" style="white-space:nowrap;">${monthLabel(f.month)}</td><td>${esc(f.dept)}${f.projectId?` <span class="faint" style="font-weight:600;">· ${esc((clientTasks.find(t=>t.project===f.projectId)||{}).projectName||'project')}</span>`:''}</td><td style="white-space:nowrap;">${starBarHTML(f.rating, 12)} <b class="mono">${f.rating}</b></td><td class="muted">${f.comment?esc(f.comment):'—'}</td><td class="faint" style="font-size:11.5px;">${esc(f.via)}${f.by&&f.by!=="Client"&&!f.via.startsWith('Logged')?' · '+esc(f.by):''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">No feedback yet — send the client a feedback link.</div>`}`;
+}
+// Web Development is a one-off project, not a monthly service: it is rated once, after the project is delivered, and that rating is
+// tied to the project. Every other service is rated monthly.
+const PROJECT_FEEDBACK_SERVICES = ["Web Development"];
+const isProjectFeedback = d => PROJECT_FEEDBACK_SERVICES.includes(d);
+// Projects with every task Done, newest delivery first: [{id, title, doneDate}]
+function deliveredProjects(clientId, dept){
+  return boardProjects(clientId, dept).filter(p=>p.tasks.length && p.tasks.every(t=>t.status==="Done"))
+    .map(p=>({id:p.id, title:p.title, doneDate:p.tasks.map(t=>t.doneDate||t.due).sort().pop()})).sort((a,b)=>(b.doneDate||'').localeCompare(a.doneDate||''));
+}
+// What one service's ask covers right now: the newest unrated delivered project, else the latest delivered one (re-rating); null = nothing to rate yet.
+function feedbackAsk(c, dept, fbList){
+  if(!isProjectFeedback(dept)) return {d:dept, project:null, existing:(fbList||[]).find(f=>f.dept===dept && f.month===TODAY.slice(0,7) && !f.projectId)||null};
+  const done = deliveredProjects(c.id, dept); if(!done.length) return null;
+  const p = done.find(x=>!(fbList||[]).some(f=>f.projectId===x.id)) || done[0];
+  return {d:dept, project:p, existing:(fbList||[]).find(f=>f.projectId===p.id)||null};
 }
 // Staff logging: what the client said this month, per service. Replaces any rating already logged for that service.
 function openClientFeedback(clientId){
   const c = clientById(clientId), d = clientFeedbackData[clientId]; if(!c || !d || !d.canLog) return;
   const month = TODAY.slice(0,7);
-  const depts = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s));
-  if(!depts.length){ toast("This client has no services to rate"); return; }
+  const asks = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s)).map(s=>feedbackAsk(c, s, d.feedback)).filter(Boolean);
+  if(!asks.length){ toast("Nothing to rate yet — website feedback opens once the project is delivered"); return; }
+  const depts = asks.map(a=>a.d);
   const stars = s => `<div style="display:flex;gap:6px;flex-wrap:wrap;">${[1,2,3,4,5].map(n=>`<label class="check-chip" style="min-width:44px;justify-content:center;"><input type="radio" name="r-${esc(s)}" value="${n}">${n} ★</label>`).join('')}<span class="faint" style="font-size:11px;align-self:center;">leave blank to skip</span></div>`;
   showModal(`
     <div class="modal-head"><h3>Log client feedback — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-client-feedback"><div class="modal-body">
-      <div class="subtext" style="font-size:12px;margin-top:0;">What ${esc(c.name)} said this month — on a call, in a meeting or on WhatsApp. Replaces any rating already logged for that service this month.</div>
-      ${depts.map(s=>{ const ex = d.feedback.find(f=>f.dept===s && f.month===month); return `<fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;display:flex;flex-direction:column;gap:8px;">
-        <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(s)}${ex?` <span class="faint" style="font-weight:600;">· currently ${ex.rating} ★</span>`:''}</legend>
+      <div class="subtext" style="font-size:12px;margin-top:0;">What ${esc(c.name)} said — on a call, in a meeting or on WhatsApp. Monthly services are rated for this month; a website is rated once, for the delivered project. Replaces any rating already logged.</div>
+      ${asks.map(a=>{ const s = a.d, ex = a.existing; return `<fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;display:flex;flex-direction:column;gap:8px;">
+        <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(s)}${a.project?` <span class="faint" style="font-weight:600;">· ${esc(a.project.title)}</span>`:''}${ex?` <span class="faint" style="font-weight:600;">· currently ${ex.rating} ★</span>`:''}</legend>
+        ${a.project?`<div class="faint" style="font-size:11.5px;">Delivered ${fmtDate(a.project.doneDate)} — one rating for the whole project.</div>`:''}
         ${stars(s)}
-        <input class="field-input" name="c-${esc(s)}" placeholder="Anything to add? (optional)" value="${ex?esc(ex.comment):''}">
+        <input class="field-input" name="c-${esc(s)}" placeholder="${a.project?'How was the project overall? (optional)':'Anything to add? (optional)'}" value="${ex?esc(ex.comment):''}">
       </fieldset>`; }).join('')}
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
     </form>`);
   document.getElementById("f-client-feedback").addEventListener("submit", async e=>{
     e.preventDefault(); const f = new FormData(e.target);
-    const ratings = depts.map(s=>({dept:s, rating:Number(f.get("r-"+s)), comment:(f.get("c-"+s)||"").trim()})).filter(x=>x.rating);
+    const ratings = asks.map(a=>({dept:a.d, rating:Number(f.get("r-"+a.d)), comment:(f.get("c-"+a.d)||"").trim(), ...(a.project?{projectId:a.project.id}:{})})).filter(x=>x.rating);
     if(!ratings.length){ toast("Pick a rating for at least one service"); return; }
     try{
       await apiJson(`/api/crm/clients/${clientId}/feedback`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ ratings }) });

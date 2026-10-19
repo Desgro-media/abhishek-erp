@@ -153,13 +153,28 @@ export const submitLeadPublic: RequestHandler = asyncHandler(async (req, res) =>
    The token is the only credential: it names one client and month, lists the services, and expires 7 days after the
    month ends. Only the client's name and the services are ever returned — never an id or anything about the account. */
 import { prisma as feedbackPrisma } from "../db/prisma";
-import { istMonth as _istMonth, linkClosesOn, linkIsOpen, saveRatings } from "../services/clientFeedback";
+import { istMonth as _istMonth, linkClosesOn, linkIsOpen, saveRatings, isProjectFeedback, projectToRate, pinProjects } from "../services/clientFeedback";
 
 const feedbackView = async (token: string) => {
   const link = await feedbackPrisma.clientFeedbackLink.findUnique({ where: { token }, include: { client: { select: { name: true, services: true } } } });
   if (!link) return null;
-  const existing = await feedbackPrisma.clientFeedback.findMany({ where: { clientId: link.clientId, month: link.month, dept: { in: link.depts } }, select: { dept: true, rating: true } });
-  return { link, view: { clientName: link.client.name, month: link.month, depts: link.depts.filter((d) => link.client.services.includes(d)), closesOn: linkClosesOn(link.month), open: linkIsOpen(link.month), rated: Object.fromEntries(existing.map((e) => [e.dept, e.rating])) } };
+  const wanted = link.depts.filter((d) => link.client.services.includes(d));
+  // A project service (the website) is rated once, after delivery — it's on the form only once something is delivered, and names the project.
+  const projects: Record<string, { title: string; deliveredOn: string }> = {};
+  const depts: string[] = [];
+  const rated: Record<string, number> = {};
+  for (const d of wanted) {
+    if (!isProjectFeedback(d)) { depts.push(d); continue; }
+    const p = await projectToRate(link.clientId, d);
+    if (!p) continue;
+    depts.push(d);
+    projects[d] = { title: p.title, deliveredOn: p.deliveredOn };
+    const ex = await feedbackPrisma.clientFeedback.findFirst({ where: { projectId: p.projectId }, select: { rating: true } });
+    if (ex) rated[d] = ex.rating;
+  }
+  const monthly = await feedbackPrisma.clientFeedback.findMany({ where: { clientId: link.clientId, month: link.month, projectId: null, dept: { in: depts.filter((d) => !isProjectFeedback(d)) } }, select: { dept: true, rating: true } });
+  for (const e of monthly) rated[e.dept] = e.rating;
+  return { link, view: { clientName: link.client.name, month: link.month, depts, projects, closesOn: linkClosesOn(link.month), open: linkIsOpen(link.month), rated } };
 };
 export const getClientFeedbackPublic: RequestHandler = async (req, res, next) => {
   try {
@@ -179,7 +194,9 @@ export const submitClientFeedbackPublic: RequestHandler = async (req, res, next)
       .filter((x) => r.view.depts.includes(x.dept) && Number.isInteger(x.rating) && x.rating >= 1 && x.rating <= 5);
     if (!ratings.length) return res.status(400).json({ error: "Please pick a rating for at least one service." });
     const name = String(body.name ?? "").trim().slice(0, 80);
-    await saveRatings(r.link.clientId, r.link.month, ratings, "Feedback link", name || "Client");
+    const pinned = await pinProjects(r.link.clientId, ratings);
+    if ("error" in pinned) return res.status(400).json({ error: pinned.error });
+    await saveRatings(r.link.clientId, r.link.month, pinned.ratings, "Feedback link", name || "Client");
     res.status(201).json({ ok: true, saved: ratings.length });
   } catch (e) { next(e); }
 };

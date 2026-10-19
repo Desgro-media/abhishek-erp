@@ -20,7 +20,7 @@ let server: Server;
 let base: string;
 let prisma: typeof import("../src/db/prisma").prisma;
 const run = `f${Date.now().toString(36)}`;
-const D1 = "Graphic Design", D2 = "Web Development";
+const D1 = "Graphic Design", D2 = "Performance Marketing";
 let tok: { admin: string; am: string; other: string; head: string };
 let clientId = "", amName = "";
 const created = { users: [] as string[], employees: [] as string[], clients: [] as string[] };
@@ -83,7 +83,7 @@ test("the client rates through the link with no sign-in; only listed services; r
   const token = (await call("POST", `/crm/clients/${clientId}/feedback-link`, tok.am, { depts: [D1, D2] })).body.link.token;
   const view = await call("GET", `/public/client-feedback/${token}`, null);
   assert.equal(view.status, 200);
-  assert.deepEqual(Object.keys(view.body).sort(), ["clientName", "closesOn", "depts", "month", "open", "rated"].sort(), "nothing about the account leaks");
+  assert.deepEqual(Object.keys(view.body).sort(), ["clientName", "closesOn", "depts", "month", "open", "projects", "rated"].sort(), "nothing about the account leaks");
   assert.equal((await call("POST", `/public/client-feedback/${token}`, null, { ratings: [{ dept: D1, rating: 9 }] })).status, 400);
   assert.equal((await call("POST", `/public/client-feedback/${token}`, null, { ratings: [{ dept: "Production", rating: 5 }] })).status, 400, "not on the link");
   const ok = await call("POST", `/public/client-feedback/${token}`, null, { ratings: [{ dept: D1, rating: 4, comment: "good" }, { dept: D2, rating: 2 }], name: "Anu" });

@@ -1603,9 +1603,14 @@ model ClientFeedback {
   // The client's own name if they gave one, else "Client", else the staff member who logged it.
   by        String
   date      DateTime @db.Date
+  // Set for a service rated once per delivered project (Web Development) instead of monthly; null for a monthly rating. The unique
+  // rules (one rating per client / service / month when there's no project, one per project otherwise) are partial indexes in the
+  // migration, which Prisma can't express.
+  projectId String?  @map("project_id")
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@unique([clientId, dept, month])
+  @@index([clientId, dept, month])
+  @@index([projectId])
   @@index([month])
   @@map("client_feedback")
 }
