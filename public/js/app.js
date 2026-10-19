@@ -568,7 +568,7 @@ async function loadEmployeeDirectory(){
 
 async function loadCrmModule(){
   // Let every loader finish even if one fails (a partial CRM beats none), then report the first failure.
-  const results = await Promise.allSettled([loadClients(), loadLeads(), loadQuotes(), loadTasks(), loadEmployeeDirectory()]);
+  const results = await Promise.allSettled([loadClients(), loadLeads(), loadQuotes(), loadTasks(), loadServiceBoards(), loadEmployeeDirectory()]);
   const failed = results.find(r=>r.status==="rejected");
   if(failed) throw failed.reason;
 }
@@ -874,6 +874,9 @@ function mapTask(t){
     due: isoDate(t.dueAt), status: TASK_STATUS_FROM_API[t.status] || t.status,
     revisions: t.revisions, doneDate: t.doneAt ? isoDate(t.doneAt) : undefined,
     attachments: (t.attachments||[]).map(a=>({id:a.id, name:a.name, size:a.size, addedDate:isoDate(a.addedAt)})),
+    // Service-board cards (Client > Services); all empty on an ordinary task.
+    service: t.service||null, stage: t.stage||null, type: t.taskType||'', platforms: t.platforms||[], start: t.startAt ? isoDate(t.startAt) : '', maxDays: t.maxDays||null,
+    cycle: t.cycle||null, retained: !!t.retained, project: t.projectId||null, projectName: t.projectName||'', projectType: t.projectKind||'', clientAssigned: !!t.clientAssigned, notes: t.notes||'',
   };
 }
 async function loadTasks(){ clientTasks = (await apiJson("/api/crm/tasks")).tasks.map(mapTask); }
@@ -1832,6 +1835,7 @@ async function loadCompanyEvents(){ companyEvents = (await apiJson("/api/calenda
 const CAL_LAYERS = [
   {k:"tasks", label:"Client tasks", sw:"var(--ink-faint)"},
   {k:"events", label:"Events & meetings", sw:"var(--blue)"},
+  {k:"meetings", label:"Client meetings", sw:"var(--blue)"},
   {k:"programs", label:"HR programs", sw:"var(--pos)"},
   {k:"holidays", label:"Holidays", sw:"var(--neg)"},
   {k:"leave", label:"Leave & WFH", sw:"var(--ink-soft)"},
@@ -2001,6 +2005,7 @@ function calItemsOn(ds){
   if(calOn("holidays")) hrPolicy.holidays.filter(h=>h.date===ds).forEach(h=>out.push({kind:"Holiday", label:h.name, tip:"Holiday · "+h.name, cls:"holiday"}));
   if(calOn("events")) companyEvents.filter(e=>e.date===ds).forEach(e=>{ const k = EVENT_KINDS[e.kind]||"neutral";
     out.push({kind:e.kind, label:(e.time?e.time+" ":"")+e.title, tip:`${e.kind} · ${e.title}${e.time?" · "+e.time:""}${e.venue?" · "+e.venue:""}`, style:k==="neutral"?"background:var(--surface-sunk);color:var(--ink);":`background:var(--${k}-soft);color:var(--${k});`, onclick:`openCompanyEvent('${e.id}')`, sub:[e.time, e.venue].filter(Boolean).join(" · ")}); });
+  if(calOn("meetings")) calendarClientMeetings.filter(m=>m.date===ds).forEach(m=>out.push({kind:"Client meeting", label:(m.time?m.time+" ":"")+m.clientName.split(" ")[0]+" · "+m.service.split(" ")[0], tip:`Client meeting · ${m.clientName} · ${m.service}${m.time?" · "+m.time:""}${m.mode?" · "+m.mode:""} · ${m.status==='HELD'?'held':'scheduled'}`, style:m.status==='HELD'?"background:var(--surface-sunk);color:var(--ink-soft);":"background:var(--blue-soft);color:var(--blue);", onclick:`goToClient('${m.clientId}')`}));
   if(calOn("programs")) calendarPrograms.filter(pr=>pr.date===ds).forEach(pr=>{ const k = PROGRAM_TYPE_KIND[pr.type]; out.push({kind:pr.type, label:(pr.time?pr.time+" ":"")+pr.title, tip:`${pr.type} · ${pr.title} · ${pr.status}`, style:`background:var(--${k}-soft);color:var(--${k});`, onclick:canManagePrograms()?`setSub('hr','programs')`:"", sub:[pr.time, pr.mode, pr.venue].filter(Boolean).join(" · ")}); });
   if(calOn("people")) activeEmployees().forEach(e=>{
     if(e.dob && e.dob.slice(5)===ds.slice(5)) out.push({kind:"Birthday", label:"🎂 "+e.name.split(" ")[0], tip:e.name+"'s birthday", cls:"people", sub:e.name});
@@ -2283,6 +2288,86 @@ function deptInsightsHTML(s){
       <div style="font-size:11px;margin-top:1px;">${deltaHTML(t.now, t.was, {neutral:t.neutral, fmt:t.dfmt, eps:t.label==="Payments"?1:0.5})} <span class="faint">vs ${P}</span></div>
     </div>`).join("")}</div>`;
 }
+
+/* ---- Departments → Board setup: the columns, work types and task lists a service's client boards use ---- */
+function canEditDeptItems(d){ return !!currentUser && !currentUser.isClient && (isLeadershipRole(currentUser) || headDeptOf(currentUser.name)===d); }
+function deptBoardPanelHTML(d){
+  const cfg = SERVICE_BOARDS[d], edit = canEditDeptItems(d);
+  const open = clientTasks.filter(t=>t.service===d && t.status!=="Done");
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Board setup</h3><div class="sub">The columns every ${esc(d.toLowerCase())} client board uses, and the types of work. The last column counts as done.</div></div>
+      ${edit?`<button class="btn btn-sm ghost" onclick="openDeptBoard('${esc(d)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`:''}</div>
+    <div class="panel-body" style="display:flex;flex-direction:column;gap:14px;">
+      <div><div class="kpi-label" style="margin-bottom:8px;">Stages</div><div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${cfg.stages.map((s2,i)=>{ const n = open.filter(t=>t.stage===s2).length, late = 0, max = null; return `${i?'<span class="faint">→</span>':''}<span class="chip" style="cursor:default;${i===cfg.stages.length-1?'border-color:var(--pos);color:var(--pos);':''}">${esc(s2)}${max?` <span class="mono" style="font-size:10.5px;font-weight:800;">${max}d</span>`:''}${n?` <span class="mono" style="font-size:10.5px;opacity:.75;">· ${n} open</span>`:''}${late?` <span style="font-size:10.5px;color:var(--neg);font-weight:800;">· ${late} delayed</span>`:''}</span>`; }).join('')}</div></div>
+      <div ${cfg.projectTasks?'hidden':''}><div class="kpi-label" style="margin-bottom:8px;">Types of work</div><div style="display:flex;flex-wrap:wrap;gap:6px;">${cfg.types.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>
+      ${cfg.monthlyTasks?`<div><div class="kpi-label" style="margin-bottom:8px;">Monthly tasks · created in Open for every client month</div><div class="table-wrap"><table class="data"><thead><tr><th>#</th><th>Task</th><th class="num">Max working days</th><th>For</th></tr></thead><tbody>${cfg.monthlyTasks.map((r,i)=>`<tr><td class="mono faint">${i+1}</td><td style="font-weight:700;">${esc(r.name)}</td><td class="num mono">${r.days}</td><td>${r.newOnly?pill('New clients only','warn'):pill('Every month','neutral')}</td></tr>`).join('')}</tbody></table></div><div class="subtext">Retained clients start from the first “every month” task. A task still open after its days is flagged on the client board.</div></div>`:''}
+      ${cfg.projectTasks?`<div><div class="kpi-label" style="margin-bottom:8px;">Task lists by project type · created in Open when a project starts</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;">${Object.entries(cfg.projectTasks).map(([ty,list],i)=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;"><div style="display:flex;justify-content:space-between;gap:6px;align-items:baseline;"><b style="font-size:13px;">${esc(ty)}${i===0?' <span class="faint" style="font-weight:600;font-size:11px;">· default</span>':''}</b><span class="faint mono" style="font-size:11px;">${list.reduce((n,x)=>n+x.days,0)}d</span></div><ol style="margin:6px 0 0;padding-left:18px;font-size:12px;display:flex;flex-direction:column;gap:2px;">${list.map(x=>`<li style="display:flex;justify-content:space-between;gap:6px;"><span>${esc(x.name)}</span><span class="mono faint">${x.days}d</span></li>`).join('')}</ol></div>`).join('')}</div><div class="subtext">The default type is used when this service is first added to a client. A task still open after its days is flagged on the client board.</div></div>`:''}
+      ${(cfg.platforms||[]).length?`<div><div class="kpi-label" style="margin-bottom:8px;">Platforms</div><div style="display:flex;flex-wrap:wrap;gap:6px;">${cfg.platforms.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>`:''}
+    </div>
+  </div>`;
+}
+function openDeptBoard(d){
+  const cfg = SERVICE_BOARDS[d]; if(!cfg || !canEditDeptItems(d)) return;
+  const row = (v, old) => `<div class="bs-row" data-old="${esc(old||'')}" style="display:grid;grid-template-columns:minmax(0,1fr) 30px;gap:6px;"><input class="field-input" name="stage" value="${esc(v)}" required placeholder="Stage name"><button type="button" class="btn btn-sm ghost" style="padding:4px;" title="Remove" onclick="this.closest('.bs-row').remove()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div>`;
+  window.__bsRow = row;
+  window.__mtRow = r => `<div class="mt-row" data-type="${esc(r.type||'Other')}" style="display:grid;grid-template-columns:minmax(0,1fr) 70px auto 30px;gap:6px;align-items:center;"><input class="field-input" name="mt-name" value="${esc(r.name)}" placeholder="Task" required><input class="field-input mono" name="mt-days" type="number" min="1" step="1" value="${r.days||1}" title="Most working days allowed"><label class="check-chip" style="padding:6px 9px;font-size:11.5px;"><input type="checkbox" name="mt-new" ${r.newOnly?'checked':''}>New only</label><button type="button" class="btn btn-sm ghost" style="padding:4px;" title="Remove" onclick="this.closest('.mt-row').remove()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div>`;
+  showModal(`
+    <div class="modal-head"><h3>Board setup — ${esc(d)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-dept-board"><div class="modal-body">
+      <div><span class="field-label">Stages, in order</span><div id="bs-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">${cfg.stages.map(s2=>row(s2, s2)).join('')}</div>
+        <button type="button" class="btn btn-sm ghost" style="margin-top:8px;" onclick="document.getElementById('bs-rows').insertAdjacentHTML('beforeend', window.__bsRow('', ''))"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add stage</button>
+        <div class="subtext">Renaming a stage moves its cards with it. Cards in a removed stage go to the stage before it. The last stage counts as done.</div></div>
+      ${cfg.monthlyTasks?`<div><span class="field-label">Monthly tasks, in order</span><div id="mt-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">${cfg.monthlyTasks.map(r=>window.__mtRow(r)).join('')}</div>
+        <button type="button" class="btn btn-sm ghost" style="margin-top:8px;" onclick="document.getElementById('mt-rows').insertAdjacentHTML('beforeend', window.__mtRow({name:'',days:1,type:'Other'}))"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add task</button>
+        <div class="subtext">Days = most working days allowed. “New only” tasks are skipped when a client is retained. Changes apply to months started from now on.</div></div>`:''}
+      ${cfg.projectTasks?`<div><span class="field-label">Task lists by project type</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"><select class="field-input" id="pt-type" style="flex:1;min-width:160px;" onchange="ptSwitch(this.value)"></select><button type="button" class="btn btn-sm ghost" onclick="ptAddType()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>New type</button><button type="button" class="btn btn-sm ghost" style="color:var(--neg);" onclick="ptRemoveType()">Remove type</button></div>
+        <div style="margin-top:8px;"><label class="field-label" for="pt-name">Type name</label><input class="field-input" id="pt-name"></div>
+        <div id="pt-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
+        <button type="button" class="btn btn-sm ghost" style="margin-top:8px;" onclick="ptAddRow()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add task</button>
+        <div class="subtext">Days = most working days allowed. The first type is the default. Changes apply to projects started from now on.</div></div>`:''}
+      <div ${cfg.projectTasks?'hidden':''}><label class="field-label" for="bs-types">Types of work</label><input class="field-input" id="bs-types" name="types" value="${esc(cfg.types.join(', '))}"><div class="subtext">Separate with commas.</div></div>
+      <div><label class="field-label" for="bs-plats">Platforms</label><input class="field-input" id="bs-plats" name="platforms" value="${esc((cfg.platforms||[]).join(', '))}" placeholder="Leave empty if not needed"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  if(cfg.projectTasks){ window.__pt = {work: JSON.parse(JSON.stringify(cfg.projectTasks)), order: Object.keys(cfg.projectTasks), sel: Object.keys(cfg.projectTasks)[0]}; ptRender(); }
+  document.getElementById("f-dept-board").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const body = {};
+    if(cfg.projectTasks){ if(!ptCollect()) return; const w = window.__pt, out = {}; w.order.forEach(k=>{ const l = (w.work[k]||[]).filter(r=>r.name); if(l.length) out[k] = l; }); if(!Object.keys(out).length){ toast("Keep at least one project type"); return; } body.projectTasks = out; }
+    const rows = [...document.querySelectorAll('#bs-rows .bs-row')].map(r=>({was:r.dataset.old||undefined, name:r.querySelector('input[name=stage]').value.trim()})).filter(r=>r.name);
+    const names = rows.map(r=>r.name);
+    if(names.length < 2){ toast("Keep at least two stages"); return; }
+    if(new Set(names).size !== names.length){ toast("Two stages have the same name"); return; }
+    body.stages = rows;
+    const list = k => (new FormData(e.target).get(k)||"").split(',').map(x=>x.trim()).filter(Boolean);
+    if(!cfg.projectTasks) body.types = list("types");
+    body.platforms = list("platforms");
+    if(cfg.monthlyTasks){ const mt = [...document.querySelectorAll('#mt-rows .mt-row')].map(r=>({name:r.querySelector('input[name=mt-name]').value.trim(), days:Math.max(1, Math.round(Number(r.querySelector('input[name=mt-days]').value))||1), type:r.dataset.type||'Other', newOnly:r.querySelector('input[name=mt-new]').checked})).filter(r=>r.name);
+      if(!mt.length){ toast("Keep at least one monthly task"); return; } body.monthlyTasks = mt; }
+    try{
+      await apiJson(`/api/crm/service-boards/${encodeURIComponent(d)}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      await Promise.all([loadServiceBoards(), loadTasks()]);
+      toast("Board updated"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the board"); }
+  });
+}
+// Board setup editor: one task list per project type (kept in window.__pt while the modal is open).
+function ptRowHTML(r){ return `<div class="pt-row" style="display:grid;grid-template-columns:minmax(0,1fr) 70px 30px;gap:6px;"><input class="field-input" name="pt-task" value="${esc(r.name||'')}" placeholder="Task"><input class="field-input mono" name="pt-days" type="number" min="1" step="1" value="${r.days||1}" title="Most working days allowed"><button type="button" class="btn btn-sm ghost" style="padding:4px;" title="Remove" onclick="this.closest('.pt-row').remove()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div>`; }
+function ptRender(){ const w = window.__pt; if(!w) return;
+  document.getElementById('pt-type').innerHTML = w.order.map((k,i)=>`<option value="${esc(k)}" ${k===w.sel?'selected':''}>${esc(k)}${i===0?' (default)':''}</option>`).join('');
+  document.getElementById('pt-name').value = w.sel || '';
+  document.getElementById('pt-rows').innerHTML = (w.work[w.sel]||[]).map(ptRowHTML).join(''); }
+function ptCollect(){ const w = window.__pt; if(!w || !w.sel) return true;
+  const rows = [...document.querySelectorAll('#pt-rows .pt-row')].map(r=>({name:r.querySelector('input[name=pt-task]').value.trim(), days:Math.max(1, Number(r.querySelector('input[name=pt-days]').value)||1)})).filter(r=>r.name);
+  const nm = document.getElementById('pt-name').value.trim() || w.sel;
+  if(nm!==w.sel && w.order.includes(nm)){ toast(`There's already a type called “${nm}”`); return false; }
+  delete w.work[w.sel]; w.work[nm] = rows; w.order = w.order.map(k=>k===w.sel?nm:k); w.sel = nm; return true; }
+function ptSwitch(v){ const w = window.__pt; const keep = v; if(!ptCollect()){ ptRender(); return; } w.sel = keep; ptRender(); }
+function ptAddType(){ const w = window.__pt; if(!ptCollect()) return; let n = 'New type', i = 2; while(w.order.includes(n)) n = 'New type '+(i++); w.order.push(n); w.work[n] = [{name:'Brief',days:1}]; w.sel = n; ptRender(); }
+function ptRemoveType(){ const w = window.__pt; if(w.order.length<=1){ toast("Keep at least one project type"); return; } w.order = w.order.filter(k=>k!==w.sel); delete w.work[w.sel]; w.sel = w.order[0]; ptRender(); }
+function ptAddRow(){ document.getElementById('pt-rows').insertAdjacentHTML('beforeend', ptRowHTML({name:'',days:1})); }
 function deptPage(d){
   if(!d || !canSeeDeptPage(d)) return `<div class="empty">You don't have access to this department.</div>`;
   const s = deptSummaries[d];
@@ -2332,7 +2417,7 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${teamPanel}`;
+  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
 }
 
 /* ===================== DEPARTMENT ACTION PLANS =====================
@@ -2849,30 +2934,48 @@ function clientFeedbackSectionHTML(c){
   const cur = list.filter(f=>f.month===month);
   const avg = cur.length ? cur.reduce((s,f)=>s+f.rating,0)/cur.length : null;
   return `<div class="section-label" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><span>Client feedback${avg!=null?` · ${monthLabel(month).split(' ')[0]} average ${avg.toFixed(1)} ★`:''}</span><span style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>${d.canLog?`<button class="btn btn-sm ghost" onclick="openClientFeedback('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log feedback</button>`:''}</span></div>
-  ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th>Service</th><th>Rating</th><th>Comment</th><th>Source</th></tr></thead><tbody>${list.slice(0,8).map(f=>`<tr><td class="muted" style="white-space:nowrap;">${monthLabel(f.month)}</td><td>${esc(f.dept)}</td><td style="white-space:nowrap;">${starBarHTML(f.rating, 12)} <b class="mono">${f.rating}</b></td><td class="muted">${f.comment?esc(f.comment):'—'}</td><td class="faint" style="font-size:11.5px;">${esc(f.via)}${f.by&&f.by!=="Client"&&!f.via.startsWith('Logged')?' · '+esc(f.by):''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">No feedback yet — send the client a feedback link.</div>`}`;
+  ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th>Service</th><th>Rating</th><th>Comment</th><th>Source</th></tr></thead><tbody>${list.slice(0,8).map(f=>`<tr><td class="muted" style="white-space:nowrap;">${monthLabel(f.month)}</td><td>${esc(f.dept)}${f.projectId?` <span class="faint" style="font-weight:600;">· ${esc((clientTasks.find(t=>t.project===f.projectId)||{}).projectName||'project')}</span>`:''}</td><td style="white-space:nowrap;">${starBarHTML(f.rating, 12)} <b class="mono">${f.rating}</b></td><td class="muted">${f.comment?esc(f.comment):'—'}</td><td class="faint" style="font-size:11.5px;">${esc(f.via)}${f.by&&f.by!=="Client"&&!f.via.startsWith('Logged')?' · '+esc(f.by):''}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">No feedback yet — send the client a feedback link.</div>`}`;
+}
+// Web Development is a one-off project, not a monthly service: it is rated once, after the project is delivered, and that rating is
+// tied to the project. Every other service is rated monthly.
+const PROJECT_FEEDBACK_SERVICES = ["Web Development"];
+const isProjectFeedback = d => PROJECT_FEEDBACK_SERVICES.includes(d);
+// Projects with every task Done, newest delivery first: [{id, title, doneDate}]
+function deliveredProjects(clientId, dept){
+  return boardProjects(clientId, dept).filter(p=>p.tasks.length && p.tasks.every(t=>t.status==="Done"))
+    .map(p=>({id:p.id, title:p.title, doneDate:p.tasks.map(t=>t.doneDate||t.due).sort().pop()})).sort((a,b)=>(b.doneDate||'').localeCompare(a.doneDate||''));
+}
+// What one service's ask covers right now: the newest unrated delivered project, else the latest delivered one (re-rating); null = nothing to rate yet.
+function feedbackAsk(c, dept, fbList){
+  if(!isProjectFeedback(dept)) return {d:dept, project:null, existing:(fbList||[]).find(f=>f.dept===dept && f.month===TODAY.slice(0,7) && !f.projectId)||null};
+  const done = deliveredProjects(c.id, dept); if(!done.length) return null;
+  const p = done.find(x=>!(fbList||[]).some(f=>f.projectId===x.id)) || done[0];
+  return {d:dept, project:p, existing:(fbList||[]).find(f=>f.projectId===p.id)||null};
 }
 // Staff logging: what the client said this month, per service. Replaces any rating already logged for that service.
 function openClientFeedback(clientId){
   const c = clientById(clientId), d = clientFeedbackData[clientId]; if(!c || !d || !d.canLog) return;
   const month = TODAY.slice(0,7);
-  const depts = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s));
-  if(!depts.length){ toast("This client has no services to rate"); return; }
+  const asks = c.services.filter(s=>SERVICE_DEPARTMENTS.includes(s)).map(s=>feedbackAsk(c, s, d.feedback)).filter(Boolean);
+  if(!asks.length){ toast("Nothing to rate yet — website feedback opens once the project is delivered"); return; }
+  const depts = asks.map(a=>a.d);
   const stars = s => `<div style="display:flex;gap:6px;flex-wrap:wrap;">${[1,2,3,4,5].map(n=>`<label class="check-chip" style="min-width:44px;justify-content:center;"><input type="radio" name="r-${esc(s)}" value="${n}">${n} ★</label>`).join('')}<span class="faint" style="font-size:11px;align-self:center;">leave blank to skip</span></div>`;
   showModal(`
     <div class="modal-head"><h3>Log client feedback — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-client-feedback"><div class="modal-body">
-      <div class="subtext" style="font-size:12px;margin-top:0;">What ${esc(c.name)} said this month — on a call, in a meeting or on WhatsApp. Replaces any rating already logged for that service this month.</div>
-      ${depts.map(s=>{ const ex = d.feedback.find(f=>f.dept===s && f.month===month); return `<fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;display:flex;flex-direction:column;gap:8px;">
-        <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(s)}${ex?` <span class="faint" style="font-weight:600;">· currently ${ex.rating} ★</span>`:''}</legend>
+      <div class="subtext" style="font-size:12px;margin-top:0;">What ${esc(c.name)} said — on a call, in a meeting or on WhatsApp. Monthly services are rated for this month; a website is rated once, for the delivered project. Replaces any rating already logged.</div>
+      ${asks.map(a=>{ const s = a.d, ex = a.existing; return `<fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;display:flex;flex-direction:column;gap:8px;">
+        <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(s)}${a.project?` <span class="faint" style="font-weight:600;">· ${esc(a.project.title)}</span>`:''}${ex?` <span class="faint" style="font-weight:600;">· currently ${ex.rating} ★</span>`:''}</legend>
+        ${a.project?`<div class="faint" style="font-size:11.5px;">Delivered ${fmtDate(a.project.doneDate)} — one rating for the whole project.</div>`:''}
         ${stars(s)}
-        <input class="field-input" name="c-${esc(s)}" placeholder="Anything to add? (optional)" value="${ex?esc(ex.comment):''}">
+        <input class="field-input" name="c-${esc(s)}" placeholder="${a.project?'How was the project overall? (optional)':'Anything to add? (optional)'}" value="${ex?esc(ex.comment):''}">
       </fieldset>`; }).join('')}
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
     </form>`);
   document.getElementById("f-client-feedback").addEventListener("submit", async e=>{
     e.preventDefault(); const f = new FormData(e.target);
-    const ratings = depts.map(s=>({dept:s, rating:Number(f.get("r-"+s)), comment:(f.get("c-"+s)||"").trim()})).filter(x=>x.rating);
+    const ratings = asks.map(a=>({dept:a.d, rating:Number(f.get("r-"+a.d)), comment:(f.get("c-"+a.d)||"").trim(), ...(a.project?{projectId:a.project.id}:{})})).filter(x=>x.rating);
     if(!ratings.length){ toast("Pick a rating for at least one service"); return; }
     try{
       await apiJson(`/api/crm/clients/${clientId}/feedback`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ ratings }) });
@@ -3478,7 +3581,7 @@ const TAB_REFRESH = {
   "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
-  "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
+  "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/attendance":[loadMyLeaveBalance], "hr/advances":[loadWithdrawalRequests],
@@ -6753,11 +6856,364 @@ function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (c
 function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); loadClientFeedback(id); { const c = clientById(id); if(c && isPerformanceMarketingClient(c)) loadClientReportLink(id); } }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
+
+/* ===================== CLIENT SERVICES — a board per service =====================
+   Each service the client takes (Production, Web Development, Graphic Design) gets a tab with a board of that service's work:
+   one card per deliverable / task, in that service's own columns. A card's status follows its column, so My Tasks, the Calendar
+   and the dashboards read the same cards. Columns, types and each project type's task list come from the server (/crm/service-boards). */
+let SERVICE_BOARDS = {};
+async function loadServiceBoards(){ SERVICE_BOARDS = (await apiJson("/api/crm/service-boards")).boards; }
+const boardStages = service => (SERVICE_BOARDS[service]||{}).stages || [];
+const boardLast = service => { const st = boardStages(service); return st[st.length-1]; };
+function boardStageStatus(service, stage){
+  const st = boardStages(service), i = st.indexOf(stage);
+  if(i === st.length-1) return "Done"; if(i <= 0) return "To Do";
+  return /review|approval/i.test(stage) ? "Review" : "In Progress";
+}
+// Server access is the client-page guard (a Sales rep's own book; Admin / Sales Head / Clients role see all).
+function canEditBoard(){ return !!currentUser && !currentUser.isClient; }
+// Swap a card the server returned into the task list.
+function putTask(raw){ const t = mapTask(raw), i = clientTasks.findIndex(x=>x.id===t.id); if(i>=0) clientTasks[i] = Object.assign(clientTasks[i], t); else clientTasks.push(t); }
+async function moveBoardCard(id, stage){
+  const t = clientTasks.find(x=>x.id===id); if(!t || t.stage===stage) return;
+  const prev = {stage:t.stage, status:t.status, doneDate:t.doneDate};
+  t.stage = stage; t.status = boardStageStatus(t.service, stage); t.doneDate = t.status==="Done" ? TODAY : undefined; render();   // optimistic
+  try{ putTask((await apiJson(`/api/crm/board-cards/${id}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify({stage})})).task); }
+  catch(err){ Object.assign(t, prev); toast(err.message || "Couldn't move this card"); }
+  render();
+}
+
+function wdInclusive(a, b){ return b < a ? 0 : workingDaysBetween(a, b) + (isPlanWorkingDay(a) ? 1 : 0); }
+function addWorkingDays(date, n){
+  let d = date; while(!isPlanWorkingDay(d)) d = addDays(d, 1);
+  let left = Math.max(0, Math.ceil(n) - 1);
+  while(left>0){ d = addDays(d, 1); if(isPlanWorkingDay(d)) left--; }
+  return d;
+}
+function workingDaysBetween(a, b){ // working days after a up to and including b (negative when b < a)
+  if(a===b) return 0; const sign = b>a ? 1 : -1; let d = a, n = 0;
+  while(d!==b){ d = addDays(d, sign); if(isPlanWorkingDay(d)) n += sign; }
+  return n;
+}
+// Working-day schedule for a project's tasks: back-to-back from the start date, each with its allowed days.
+function projectSchedule(svc, type, startDate){
+  let d = nextWorkingDay(startDate);
+  return SERVICE_BOARDS[svc].projectTasks[type].map(r=>{ const start = d, due = addWorkingDays(start, r.days); d = nextWorkingDay(addDays(due, 1)); return {title:r.name, start, due}; });
+}
+
+/* ---- Marketing Consultation: one cycle of tasks per client per month ---- */
+const MC_SVC = "Marketing Consultation";
+function mcCycles(clientId){ return [...new Set(clientTasks.filter(t=>t.clientId===clientId && t.service===MC_SVC && t.cycle).map(t=>t.cycle))].sort(); }
+function mcIsRetained(clientId, month){ return mcCycles(clientId).some(m=>m < month); }
+function mcCycleTasks(retained){ return ((SERVICE_BOARDS[MC_SVC]||{}).monthlyTasks||[]).filter(r=>!(retained && r.newOnly)); }
+function cycleSchedule(retained, startDate){
+  let d = nextWorkingDay(startDate);
+  return mcCycleTasks(retained).map(r=>{ const start = d, due = addWorkingDays(start, r.days); d = nextWorkingDay(addDays(due, 1)); return {title:r.name, start, due}; });
+}
+function deptDefaultOwner(svc){ const h = typeof deptHeads!=="undefined" && deptHeads[svc]; if(h) return h; const e = activeEmployees().find(x=>x.dept===svc); return e ? e.name : ""; }
+function nextWorkingDay(d){ let i = 0; while(!isPlanWorkingDay(d) && i++ < 30) d = addDays(d, 1); return d; }
+function serviceMeetingsHTML(c, service, readOnly, opts){
+  opts = opts || {};
+  const list = ((clientCollab[c.id]||{}).serviceMeetings||[]).filter(m=>m.service===service && (!opts.scheduledOnly || m.status==="SCHEDULED") && (!opts.month || (m.date||'').slice(0,7)===opts.month));
+  const upcoming = list.filter(m=>m.status==="SCHEDULED").sort((a,b)=>(a.date+(a.time||'')).localeCompare(b.date+(b.time||'')));
+  const held = list.filter(m=>m.status!=="SCHEDULED").sort((a,b)=>b.date.localeCompare(a.date));
+  const can = !readOnly && canEditBoard();
+  const card = m => `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;${m.status==='SCHEDULED'?'background:var(--blue-soft);border-color:transparent;':''}">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline;"><b style="font-size:12.5px;${m.status==='CANCELLED'?'text-decoration:line-through;color:var(--ink-faint);':''}">${fmtDate(m.date)}${m.time?' · '+esc(m.time):''}${m.mode?` <span class="faint" style="font-weight:600;">· ${esc(m.mode)}</span>`:''}</b>
+      <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${m.status==='SCHEDULED'?pill(m.date<TODAY?'Minutes pending':'Scheduled', m.date<TODAY?'warn':'blue'):m.status==='CANCELLED'?pill('Cancelled','neutral'):pill(m.scheduledFor?'Held · was scheduled':'Held','pos')}${can&&m.status==='SCHEDULED'?`<button class="btn btn-sm primary" onclick="openServiceMeeting('${c.id}','${esc(service)}','${m.id}','held')"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Mark as held</button><button class="btn btn-sm ghost" onclick="openServiceMeeting('${c.id}','${esc(service)}','${m.id}','reschedule')">Reschedule</button><button class="btn btn-sm ghost" onclick="cancelServiceMeeting('${c.id}','${m.id}')">Cancel</button>`:''}</span></div>
+    ${m.scheduledFor&&m.scheduledFor!==m.date?`<div class="faint" style="font-size:11px;margin-top:2px;">Originally scheduled for ${fmtDate(m.scheduledFor)}</div>`:''}
+    ${m.attendees?`<div class="subtext" style="margin-top:3px;">${esc(m.attendees)}</div>`:''}
+    ${m.agenda?`<div style="font-size:12.5px;margin-top:5px;"><b>Agenda:</b> ${esc(m.agenda)}</div>`:''}
+    ${m.notes?`<div style="font-size:12.5px;margin-top:5px;">${esc(m.notes)}</div>`:''}
+    ${m.actionItems?`<div style="font-size:12px;margin-top:5px;color:var(--ink-soft);"><b>Action items:</b> ${esc(m.actionItems)}</div>`:''}
+  </div>`;
+  return `<div style="display:flex;flex-direction:column;gap:8px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;"><b style="font-size:13px;">${opts.scheduledOnly?'Scheduled meetings':'Client meetings · '+esc(service)}</b>${can?`<span style="display:flex;gap:6px;"><button class="btn btn-sm ghost" onclick="openServiceMeeting('${c.id}','${esc(service)}',null,'schedule')"><svg class="icon" style="width:12px;height:12px"><use href="#i-calendar"/></svg>Schedule</button>${opts.scheduledOnly?'':`<button class="btn btn-sm ghost" onclick="openServiceMeeting('${c.id}','${esc(service)}',null,'log')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log meeting</button>`}</span>`:''}</div>
+    ${upcoming.map(card).join('')}${held.map(card).join('')}
+    ${!list.length?`<div class="empty" style="padding:10px;">${opts.scheduledOnly?'Nothing scheduled.':opts.month?`No ${esc(service.toLowerCase())} meetings in ${monthLabel(opts.month)}.`:`No ${esc(service.toLowerCase())} meetings yet.`}${can?' Schedule one — it shows in the Calendar, and you mark it as held with the minutes once it happens.':''}</div>`:''}
+  </div>`;
+}
+function webDetailsHTML(c, readOnly){
+  const d = (clientCollab[c.id]||{}).webDetails || {}, edit = !readOnly && canEditBoard();
+  if(!Object.values(d).some(Boolean) && !edit) return '';
+  const row = (k, v, link) => `<div style="display:grid;grid-template-columns:120px minmax(0,1fr);gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;"><span class="muted">${k}</span><span style="min-width:0;overflow-wrap:anywhere;">${v ? (link ? `<a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v)) : '<span class="faint">—</span>'}</span></div>`;
+  return `<div style="border:1px solid var(--line);border-radius:12px;padding:12px 16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;"><b style="font-size:13px;">Website details</b>${edit?`<button class="btn btn-sm ghost" onclick="openWebDetails('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`:''}</div>
+    ${row('Staging link', d.stagingUrl, true)}${row('Live site', d.liveUrl, true)}${row('Domain', d.domain)}${row('Hosting', d.hosting)}${row('Platform', d.platform)}
+    ${d.notes?`<div style="font-size:12px;margin-top:8px;color:var(--ink-soft);"><b style="color:var(--ink);">Notes:</b> ${esc(d.notes)}</div>`:''}
+  </div>`;
+}
+
+// Schedule a meeting (shows in the Calendar), log one that happened, or add minutes to a scheduled one.
+function openServiceMeeting(clientId, service, meetingId, mode){
+  const c = clientById(clientId); if(!c || !canEditBoard()) return;
+  const m = meetingId ? ((clientCollab[clientId]||{}).serviceMeetings||[]).find(x=>x.id===meetingId) : null;
+  // schedule = new or rescheduled future meeting; otherwise we're recording one that happened (incl. marking a scheduled one as held)
+  const schedule = m ? mode==='reschedule' : mode==='schedule';
+  showModal(`
+    <div class="modal-head"><h3>${schedule?(m?'Reschedule meeting':'Schedule client meeting'):(m&&m.status==='SCHEDULED'?'Mark meeting as held':m?'Edit meeting minutes':'Log client meeting')}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-svc-meeting"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${esc(c.name)} · ${esc(service)}${schedule?' · shows in the Calendar until it happens':m&&m.status==='SCHEDULED'?` · scheduled for ${fmtDate(m.date)}${m.time?' '+esc(m.time):''} — confirm the actual date and add the minutes`:''}</div>
+      <div class="field-row cols-3">
+        <div><label class="field-label" for="sm2-date">Date</label><input class="field-input" type="date" id="sm2-date" name="date" required value="${m?(schedule||m.date<=TODAY?m.date:TODAY):TODAY}" ${schedule?`min="${TODAY}"`:`max="${TODAY}"`}></div>
+        <div><label class="field-label" for="sm2-time">Time</label><input class="field-input" type="time" id="sm2-time" name="time" value="${m&&m.time?m.time:'11:00'}"></div>
+        <div><label class="field-label" for="sm2-mode">How</label><select class="field-input" id="sm2-mode" name="mode">${["Google Meet","In person","Call"].map(x=>`<option ${m&&m.mode===x?'selected':''}>${x}</option>`).join('')}</select></div>
+      </div>
+      <div><label class="field-label" for="sm2-att">Attendees</label><input class="field-input" id="sm2-att" name="attendees" value="${esc(m?m.attendees||'':'')}" placeholder="e.g. Muhsin Ali, client founder"></div>
+      <div><label class="field-label" for="sm2-agenda">Agenda</label><input class="field-input" id="sm2-agenda" name="agenda" value="${esc(m?m.agenda||'':'')}" placeholder="What the meeting is for"></div>
+      ${schedule?'':`<div><label class="field-label" for="sm2-notes">Minutes of the meeting</label><textarea class="field-input" id="sm2-notes" name="notes" rows="3" required placeholder="What was reviewed, discussed and decided">${esc(m?m.notes||'':'')}</textarea></div>
+      <div><label class="field-label" for="sm2-ai">Action items</label><textarea class="field-input" id="sm2-ai" name="actionItems" rows="2" placeholder="Who does what, by when (optional)">${esc(m?m.actionItems||'':'')}</textarea></div>`}
+    </div>
+    <div class="modal-foot">${m?`<button type="button" class="btn ghost" style="color:var(--neg);" onclick="openConfirmDelete('serviceMeeting','${clientId}|${m.id}')">Delete</button>`:'<div></div>'}<div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">${schedule?'Schedule':'Save minutes'}</button></div></div>
+    </form>`);
+  document.getElementById("f-svc-meeting").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    const body = {service, status:schedule?"SCHEDULED":"HELD", date:f.get("date"), time:f.get("time")||"", mode:f.get("mode"), attendees:(f.get("attendees")||"").trim(), agenda:(f.get("agenda")||"").trim()};
+    if(!schedule){ body.notes = (f.get("notes")||"").trim(); body.actionItems = (f.get("actionItems")||"").trim(); }
+    try{
+      await apiJson(m ? `/api/crm/clients/${clientId}/service-meetings/${m.id}` : `/api/crm/clients/${clientId}/service-meetings`, {method:m?"PUT":"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      await Promise.all([loadClientCollab(clientId), loadCalendarClientMeetings()]);
+      toast(schedule?(m?"Meeting rescheduled — Calendar updated":"Meeting scheduled — it's on the Calendar"):(m&&m.status==='SCHEDULED'?"Recorded as held":"Meeting minutes saved")); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the meeting"); }
+  });
+}
+async function cancelServiceMeeting(clientId, id){
+  try{ await apiJson(`/api/crm/clients/${clientId}/service-meetings/${id}/cancel`, {method:"POST"}); await Promise.all([loadClientCollab(clientId), loadCalendarClientMeetings()]); toast("Meeting cancelled — removed from the Calendar"); render(); }
+  catch(err){ toast(err.message || "Couldn't cancel the meeting"); }
+}
+// Meetings on the Calendar: every scheduled or held service meeting on the clients this login can see (empty for logins without Clients access).
+let calendarClientMeetings = [];
+async function loadCalendarClientMeetings(){ try{ calendarClientMeetings = (await apiJson("/api/crm/client-meetings")).meetings; }catch(err){ calendarClientMeetings = []; } }
+function openWebDetails(clientId){
+  const c = clientById(clientId); if(!c || !canEditBoard()) return;
+  const d = (clientCollab[clientId]||{}).webDetails || {};
+  const f = (k, label, ph) => `<div><label class="field-label" for="wd-${k}">${label}</label><input class="field-input" id="wd-${k}" name="${k}" value="${esc(d[k]||'')}" placeholder="${ph}"></div>`;
+  showModal(`
+    <div class="modal-head"><h3>Website details</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-web-details"><div class="modal-body">
+      <div class="field-row">${f('stagingUrl','Staging link','https://…')}${f('liveUrl','Live site','https://…')}</div>
+      <div class="field-row">${f('domain','Domain','example.com')}${f('hosting','Hosting','e.g. Hostinger (client account)')}</div>
+      ${f('platform','Platform','e.g. WordPress + Elementor, Shopify')}
+      <div><label class="field-label" for="wd-notes">Notes</label><textarea class="field-input" id="wd-notes" name="notes" rows="2">${esc(d.notes||'')}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-web-details").addEventListener("submit", async e=>{
+    e.preventDefault(); const fd = new FormData(e.target);
+    const body = Object.fromEntries(["stagingUrl","liveUrl","domain","hosting","platform","notes"].map(k=>[k, (fd.get(k)||"").trim()]));
+    try{ await apiJson(`/api/crm/clients/${clientId}/web-details`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); await loadClientCollab(clientId); toast("Website details saved"); closeModal(); render(); }
+    catch(err){ toast(err.message || "Couldn't save the website details"); }
+  });
+}
+function clientServicesHTML(c){
+  const svcs = c.services.filter(s=>SERVICE_BOARDS[s]);
+  if(!svcs.length) return '';
+  const tab = svcs.includes(clientServiceTab[c.id]) ? clientServiceTab[c.id] : svcs[0];
+  return `<div class="section-label">Services</div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;">${svcs.map(s=>{ const n = boardCards(c.id, s).filter(x=>x.status!=="Done").length;
+    return `<button class="chip ${s===tab?'active':''}" onclick="setClientServiceTab('${c.id}','${esc(s)}')" style="display:inline-flex;align-items:center;gap:6px;">${esc(s)}${n?`<span class="mono" style="font-size:10.5px;opacity:.8;">${n} active</span>`:''}</button>`; }).join('')}</div>
+  <div style="display:flex;flex-direction:column;gap:12px;">${serviceBoardHTML(c, tab)}${tab==="Web Development" ? webDetailsHTML(c, false) : ''}${serviceMeetingsHTML(c, tab, false)}</div>`;
+}
+let clientServiceTab = {};
+function setClientServiceTab(clientId, svc){ clientServiceTab[clientId] = svc; render(); }
+
+function boardProjects(clientId, svc){
+  const m = {}; clientTasks.filter(t=>t.clientId===clientId && t.service===svc && t.project).forEach(t=>{ const p = m[t.project] || (m[t.project] = {id:t.project, title:t.projectName||t.project, type:t.projectType||'', clientId, service:svc, tasks:[]}); p.tasks.push(t); });
+  return Object.values(m).map(p=>{ const done = p.tasks.every(t=>t.status==="Done"); return Object.assign(p, {done, doneDate: done ? p.tasks.map(t=>t.doneDate||t.due).sort().pop() : null, start: p.tasks.map(t=>t.start).filter(Boolean).sort()[0]}); }).sort((a,b)=>(b.start||'').localeCompare(a.start||''));
+}
+function boardCards(cid, service){ return clientTasks.filter(t=>t.clientId===cid && t.service===service); }
+let boardState = {};
+function bState(cid, svc){ const k = cid+'|'+svc; return boardState[k] || (boardState[k] = {month:TODAY.slice(0,7), platform:"All", assignee:"All", project:"All"}); }
+function setBoardFilter(cid, svc, k, v){ bState(cid, svc)[k] = v; render(); }
+function cardMonth(t){ return t.cycle || (t.due||'').slice(0,7); }
+function boardMonthList(cid, svc){
+  const ms = [...boardCards(cid, svc).map(cardMonth).filter(Boolean), TODAY.slice(0,7)].sort();
+  const out = []; let m = ms[0]; const last = ms[ms.length-1];
+  while(m <= last){ out.push(m); const [y,mm] = m.split('-').map(Number); m = new Date(Date.UTC(y, mm, 1)).toISOString().slice(0,7); }
+  return out.reverse();
+}
+function shiftBoardMonth(cid, svc, step){ const list = boardMonthList(cid, svc), i = list.indexOf(bState(cid, svc).month), j = i - step; if(j>=0 && j<list.length) setBoardFilter(cid, svc, 'month', list[j]); }
+function cardInMonth(t, month){
+  const due = cardMonth(t);
+  if(due===month) return true;
+  return month===TODAY.slice(0,7) && t.status!=="Done" && (!due || due < month);
+}
+function cardOverdue(t){ return t.status!=="Done" && t.due && t.due < TODAY; }
+let boardDragId = null;
+function boardDragStart(e, id){ boardDragId = id; e.dataTransfer.effectAllowed = 'move'; }
+function boardDrop(e, stage){ e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); if(boardDragId) moveBoardCard(boardDragId, stage); boardDragId = null; }
+
+function serviceBoardHTML(c, svc, readOnly){
+  const cfg = SERVICE_BOARDS[svc], stages = cfg.stages, last = stages[stages.length-1];
+  const st = bState(c.id, svc), list = boardMonthList(c.id, svc); if(!list.includes(st.month)) st.month = TODAY.slice(0,7);
+  const i = list.indexOf(st.month), M = monthLabel(st.month), prev = prevMonth(st.month);
+  const edit = !readOnly && canEditBoard(), q = s2 => esc(s2).replace(/'/g,"\\'");
+  const mine = boardCards(c.id, svc), plats = cfg.platforms||[];
+  const inMonth = mine.filter(x=>cardInMonth(x, st.month) || (cfg.projectTasks && st.project && st.project!=='All' && x.project===st.project));
+  const projs = cfg.projectTasks ? boardProjects(c.id, svc) : []; if(st.project && st.project!=='All' && !projs.some(p2=>p2.id===st.project)) st.project = 'All';
+  const shown = inMonth.filter(x=>(st.platform==='All' || (x.platforms||[]).includes(st.platform)) && (st.assignee==='All' || x.assignedTo===st.assignee) && (!st.project || st.project==='All' || x.project===st.project));
+  const doneNow = mine.filter(x=>x.status==="Done" && cardMonth(x)===st.month).length, donePrev = mine.filter(x=>x.status==="Done" && cardMonth(x)===prev).length;
+  const toDo = inMonth.filter(x=>x.status!=="Done"), overdue = toDo.filter(cardOverdue);
+  const team = [...new Set([...activeEmployees().filter(e=>e.dept===svc).map(e=>e.name), ...mine.map(x=>x.assignedTo).filter(Boolean)])];
+  const kpi = (label, v, sub) => `<div class="kpi-card" style="padding:12px 14px;"><div class="kpi-label">${label}</div><div class="kpi-value mono" style="font-size:20px;">${v}</div><div class="kpi-sub">${sub}</div></div>`;
+  const card = t => { const od = cardOverdue(t), done = t.status==="Done", k = null;
+    const lateBy = cfg.flagLate && od ? Math.max(1, wdInclusive(addDays(t.due,1), TODAY)) : 0, doneLate = cfg.flagLate && done && t.doneDate && t.due && t.doneDate > t.due;
+    return `
+    <div class="card ${done?'published':''}" ${edit?`draggable="true" ondragstart="boardDragStart(event,'${t.id}')"`:''} ${(k&&k.late)||lateBy?'data-delayed="1"':''} style="${(k&&k.late)||lateBy?'border-color:var(--neg);box-shadow:inset 3px 0 0 var(--neg);':''}${edit?'':'cursor:default;'}">
+      <div class="card-title">${esc(t.title)}</div>
+      ${lateBy?`<div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;font-weight:700;padding:5px 7px;border-radius:6px;background:var(--neg-soft);color:var(--neg);"><span>⚑ Delayed · was due ${fmtDateShort(t.due)}</span><span class="mono">+${lateBy}d</span></div>`:''}
+      ${doneLate?`<div style="font-size:11px;font-weight:700;color:var(--warn);">Finished ${Math.max(1, wdInclusive(addDays(t.due,1), t.doneDate))}d late</div>`:''}
+      ${k?`<div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;font-weight:700;padding:5px 7px;border-radius:6px;${k.late?'background:var(--neg-soft);color:var(--neg);':'background:var(--surface-sunk);color:var(--ink-soft);'}"><span>${k.late?'⚑ Delayed':'In stage'} · since ${fmtDateShort(k.start)}</span><span class="mono">${k.taken}${k.max?' / '+k.max:''}d</span></div>`:''}
+      <div class="card-meta">${t.projectName?`<span class="tag type">${esc(t.projectName)}</span>`:t.type?`<span class="tag type">${esc(t.type)}</span>`:''}${t.maxDays?`<span class="tag mono" title="Most working days allowed">${t.maxDays}d max</span>`:''}${t.clientAssigned?`<span class="tag type">Client action</span>`:''}${(t.platforms||[]).map(p2=>`<span class="tag">${esc(p2)}</span>`).join('')}</div>
+      <div class="card-foot"><span class="assignee"><span class="mini-avatar sm ${t.assignedTo?'':'unassigned'}">${t.clientAssigned?'CL':t.assignedTo?initials(t.assignedTo):'—'}</span>${esc(t.assignedTo||'Unassigned')}</span>${done?`<span class="due published-on"><svg class="icon" style="width:10px;height:10px;display:inline;vertical-align:-1px"><use href="#i-check"/></svg> ${fmtDateShort(t.doneDate||t.due)}</span>`:`<span class="due ${od?'overdue':''}">${od?'overdue · ':''}${t.start&&t.due&&t.start!==t.due?fmtDateShort(t.start)+' → '+fmtDateShort(t.due):t.due?fmtDateShort(t.due):'no date'}</span>`}</div>
+      ${edit?`<div class="card-move"><select onchange="moveBoardCard('${t.id}', this.value)">${stages.map(s2=>`<option value="${esc(s2)}" ${s2===t.stage?'selected':''}>${esc(s2)}</option>`).join('')}</select><button class="card-edit" title="Edit" onclick="openBoardCard('${c.id}','${q(svc)}','${t.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>`:''}
+    </div>`; };
+  return `
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:8px;"><span class="filter-label">Month</span>
+      <button class="btn btn-sm ghost" onclick="shiftBoardMonth('${c.id}','${q(svc)}',-1)" ${i>=list.length-1?'disabled':''} aria-label="Previous month">‹</button>
+      <select class="select-sm" onchange="setBoardFilter('${c.id}','${q(svc)}','month',this.value)">${list.map(m=>`<option value="${m}" ${m===st.month?'selected':''}>${monthLabel(m)}${m===TODAY.slice(0,7)?' (this month)':''}</option>`).join('')}</select>
+      <button class="btn btn-sm ghost" onclick="shiftBoardMonth('${c.id}','${q(svc)}',1)" ${i<=0?'disabled':''} aria-label="Next month">›</button></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${edit && cfg.monthlyTasks ? (()=>{ const cyc = mcCycles(c.id), has = cyc.includes(st.month), nm = (()=>{ const [y,m] = st.month.split('-').map(Number); return new Date(Date.UTC(y, m, 1)).toISOString().slice(0,7); })();
+        return has ? (!cyc.includes(nm) && st.month===list[0] ? `<button class="btn btn-sm ghost" onclick="openStartCycle('${c.id}','${nm}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-refresh"/></svg>Retain for ${monthLabel(nm).split(' ')[0]}</button>` : '')
+          : `<button class="btn btn-sm ghost" onclick="openStartCycle('${c.id}','${st.month}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-calendar"/></svg>Start ${monthLabel(st.month).split(' ')[0]} tasks</button>`; })() : ''}
+      ${edit && cfg.projectTasks ? `<button class="btn btn-sm ghost" onclick="openStartProject('${c.id}','${q(svc)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Start project</button>` : ''}
+      ${edit?`<button class="btn btn-sm primary" onclick="openBoardCard('${c.id}','${q(svc)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>New ${esc(cfg.noun)}</button>`:''}
+    </div>
+  </div>
+  <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
+    ${kpi(`${esc(last)} · ${M.split(' ')[0].slice(0,3)}`, doneNow, vsHTML(doneNow, donePrev, {mon:monthLabel(prev).slice(0,3)}))}
+    ${kpi('Still to deliver', toDo.length, overdue.length?`<span style="color:var(--neg);font-weight:600;">${overdue.length} overdue</span>`:'none overdue')}
+    ${kpi('In progress', inMonth.filter(x=>x.status==="In Progress").length, 'being worked on')}
+    ${kpi('In review', inMonth.filter(x=>x.status==="Review").length, 'waiting on sign-off')}
+    ${cfg.flagLate ? kpi('Delayed', `<span style="${overdue.length?'color:var(--neg);':''}">${overdue.length}</span>`, 'past their allowed days') : ''}
+  </div>
+  <div style="display:flex;justify-content:${plats.length?'space-between':'flex-end'};gap:10px;flex-wrap:wrap;align-items:center;">
+    ${plats.length?`<div class="filter-group"><span class="filter-label">Platform</span><div>${['All',...plats].map(p2=>`<button class="chip ${st.platform===p2?'active':''}" onclick="setBoardFilter('${c.id}','${q(svc)}','platform','${q(p2)}')">${esc(p2)}</button>`).join(' ')}</div></div>`:''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+    ${projs.length ? `<select class="select-sm" onchange="setBoardFilter('${c.id}','${q(svc)}','project',this.value)"><option value="All">All projects</option>${projs.map(p2=>`<option value="${esc(p2.id)}" ${st.project===p2.id?'selected':''}>${esc(p2.title)}${p2.done?' (done)':''}</option>`).join('')}</select>${edit && st.project && st.project!=='All' ? `<button class="btn btn-sm ghost" style="color:var(--neg);" onclick="openConfirmDelete('boardProject','${c.id}|${esc(st.project)}|${q(svc)}')">Remove project</button>` : ''}` : ''}
+    <select class="select-sm" onchange="setBoardFilter('${c.id}','${q(svc)}','assignee',this.value)"><option value="All">All assignees</option>${team.map(t2=>`<option ${st.assignee===t2?'selected':''}>${esc(t2)}</option>`).join('')}</select>
+    </div>
+  </div>
+  <div class="subtext" style="margin-top:-4px;">Showing work due in ${M}${st.month===TODAY.slice(0,7)?', plus anything unfinished from earlier':''}.${edit?' Drag a card between columns or use its dropdown.':''}</div>
+  <div class="board-scroll"><div class="board">${stages.map(stage=>{ const cards = shown.filter(x=>x.stage===stage); return `
+    <div class="col" data-stage="${esc(stage)}" ${edit?`ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="boardDrop(event,'${q(stage)}')"`:''}>
+      <div class="col-head"><span class="name">${esc(stage)}</span><span class="count">${cards.length}</span></div>
+      <div class="col-cards">${cards.map(card).join('')}</div>
+      ${edit?`<button class="col-add" onclick="openBoardCard('${c.id}','${q(svc)}',null,'${q(stage)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add</button>`:''}
+    </div>`; }).join('')}</div></div>`;
+}
+
+function openBoardCard(clientId, svc, id, presetStage){
+  const c = clientById(clientId), cfg = SERVICE_BOARDS[svc]; if(!c || !cfg || !canEditBoard()) return;
+  const it = id ? clientTasks.find(x=>x.id===id) : null;
+  const act = activeEmployees(), team = act.filter(e=>e.dept===svc), rest = act.filter(e=>e.dept!==svc);
+  const who = it ? it.assignedTo : '';
+  const opt = e => `<option value="${esc(e.name)}" ${e.name===who?'selected':''}>${esc(e.name)}</option>`;
+  showModal(`
+    <div class="modal-head"><h3>${it?'Edit':'New'} ${esc(cfg.noun)} — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-board-card"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${esc(svc)}</div>
+      <div><label class="field-label" for="bc-title">Title</label><input class="field-input" id="bc-title" name="title" required value="${it?esc(it.title):''}"></div>
+      <div class="field-row">
+        <div><label class="field-label" for="bc-type">Type</label><select class="field-input" id="bc-type" name="type">${[...new Set([...cfg.types, ...(it&&it.type?[it.type]:[])])].map(t=>`<option ${it&&it.type===t?'selected':''}>${esc(t)}</option>`).join('')}</select></div>
+        <div><label class="field-label" for="bc-stage">Stage</label><select class="field-input" id="bc-stage" name="stage">${cfg.stages.map(s2=>`<option ${(it?it.stage:(presetStage||cfg.stages[0]))===s2?'selected':''}>${esc(s2)}</option>`).join('')}</select></div>
+      </div>
+      ${(cfg.platforms||[]).length?`<div><label class="field-label">Platforms</label><div class="check-row">${cfg.platforms.map(p2=>`<label class="check-chip"><input type="checkbox" name="platforms" value="${esc(p2)}" ${it&&(it.platforms||[]).includes(p2)?'checked':''}>${esc(p2)}</label>`).join('')}</div></div>`:''}
+      <div><label class="field-label" for="bc-who">Assignee</label><select class="field-input" id="bc-who" name="assignedTo"><option value="">Unassigned</option><optgroup label="${esc(svc)} team">${team.map(opt).join('')}</optgroup><optgroup label="Others">${rest.map(opt).join('')}</optgroup><optgroup label="Client"><option value="${esc(c.name)}" ${it&&it.clientAssigned?'selected':''}>${esc(c.name)} (client action)</option></optgroup></select></div>
+      <div class="field-row">
+        <div><label class="field-label" for="bc-start">Start date</label><input class="field-input" type="date" id="bc-start" name="start" value="${it&&it.start?it.start:''}"></div>
+        <div><label class="field-label" for="bc-due">Due date</label><input class="field-input" type="date" id="bc-due" name="due" value="${it?it.due||'':''}"></div>
+      </div>
+      <div><label class="field-label" for="bc-notes">Brief / notes</label><textarea class="field-input" id="bc-notes" name="notes" rows="3">${it?esc(it.notes||''):''}</textarea></div>
+    </div>
+    <div class="modal-foot">${it?`<button type="button" class="btn danger" onclick="openConfirmDelete('boardCard','${it.id}')">Delete</button>`:'<div></div>'}<div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-board-card").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target);
+    if(f.get("start") && f.get("due") && f.get("due") < f.get("start")){ toast("Due date can't be before the start date"); return; }
+    const assignedTo = f.get("assignedTo")||"", clientAssigned = assignedTo===c.name;
+    const body = {title:(f.get("title")||"").trim(), type:f.get("type"), stage:f.get("stage"), platforms:f.getAll("platforms"), assignedTo, clientAssigned,
+      start:f.get("start")||null, notes:(f.get("notes")||"").trim()};
+    if(f.get("due")) body.due = f.get("due");
+    try{
+      const r = it ? await apiJson(`/api/crm/board-cards/${it.id}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)})
+                   : await apiJson(`/api/crm/clients/${clientId}/board-cards`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({...body, service:svc})});
+      putTask(r.task); toast(it ? "Saved" : `${cfg.noun[0].toUpperCase()+cfg.noun.slice(1)} added`); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
+}
+
+function openStartCycle(clientId, month){
+  const c = clientById(clientId); if(!c || !canEditBoard()) return;
+  const retained = mcIsRetained(clientId, month);
+  const first = month===c.onboarded.slice(0,7) && !retained ? c.onboarded : (month===TODAY.slice(0,7) && !retained ? TODAY : month+'-01');
+  const preview = r => `<ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px;font-size:12.5px;">${mcCycleTasks(r).map(x=>`<li>${esc(x.name)} <span class="faint mono">· ${x.days}d</span></li>`).join('')}</ol>`;
+  showModal(`
+    <div class="modal-head"><h3>${retained?'Retain':'Start'} consultation — ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-start-cycle"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${esc(c.name)}</div>
+      <div class="field-row">
+        <div><label class="field-label" for="cy-start">Start date</label><input class="field-input" type="date" id="cy-start" name="start" required value="${first}"></div>
+        <div><label class="field-label" for="cy-owner">Assign to</label><select class="field-input" id="cy-owner" name="owner">${activeEmployees().map(e=>`<option ${e.name===c.accountManager?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+      </div>
+      <label class="check-chip" style="align-self:flex-start;"><input type="checkbox" id="cy-ret" name="retained" ${retained?'checked':''}>Retained client — start from Plan presentation</label>
+      <div><span class="field-label">Tasks created in Open</span><div id="cy-preview">${preview(retained)}</div><div class="subtext">Dated back-to-back from the start date; each gets its allowed working days. Set the list in Departments → Marketing Consultation.</div></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Create tasks</button></div></div>
+    </form>`);
+  document.getElementById("cy-ret").addEventListener("change", e=>{ document.getElementById("cy-preview").innerHTML = preview(e.target.checked); });
+  document.getElementById("f-start-cycle").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target), start = f.get("start"), ret = !!f.get("retained");
+    if(start.slice(0,7)!==month){ toast(`Pick a date in ${monthLabel(month)}`); return; }
+    try{
+      const r = await apiJson(`/api/crm/clients/${clientId}/board-cycles`, {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({start, retained:ret, assignedTo:f.get("owner")||"", tasks:cycleSchedule(ret, start)})});
+      r.tasks.forEach(putTask); bState(clientId, MC_SVC).month = month; toast(`${monthLabel(month).split(' ')[0]} tasks created`); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't create the tasks"); }
+  });
+}
+function openStartProject(clientId, svc){
+  const c = clientById(clientId), cfg = SERVICE_BOARDS[svc]; if(!c || !cfg || !cfg.projectTasks || !canEditBoard()) return;
+  const types = Object.keys(cfg.projectTasks);
+  if(!types.length){ toast(`No project types set up — add them in Departments → ${svc}`); return; }
+  const preview = ty => `<ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px;font-size:12.5px;">${(cfg.projectTasks[ty]||[]).map(x=>`<li>${esc(x.name)} <span class="faint mono">· ${x.days}d</span></li>`).join('')}</ol><div class="faint" style="font-size:11.5px;margin-top:6px;">${(cfg.projectTasks[ty]||[]).length} tasks · about ${(cfg.projectTasks[ty]||[]).reduce((n,x)=>n+x.days,0)} working days</div>`;
+  showModal(`
+    <div class="modal-head"><h3>Start ${esc(svc.toLowerCase())} project</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-start-project"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${esc(c.name)}</div>
+      <div class="field-row">
+        <div><label class="field-label" for="pj-type">Type</label><select class="field-input" id="pj-type" name="type">${types.map(t=>`<option>${esc(t)}</option>`).join('')}</select></div>
+        <div><label class="field-label" for="pj-name">Project name</label><input class="field-input" id="pj-name" name="name" required value="${esc(types[0])}"></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label" for="pj-start">Start date</label><input class="field-input" type="date" id="pj-start" name="start" required value="${TODAY}"></div>
+        <div><label class="field-label" for="pj-owner">Assign to</label><select class="field-input" id="pj-owner" name="owner">${activeEmployees().map(e=>`<option ${e.name===deptDefaultOwner(svc)?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+      </div>
+      <div><span class="field-label">Tasks created in Open</span><div id="pj-preview">${preview(types[0])}</div><div class="subtext">Dated back-to-back from the start date; each gets its allowed working days. Set the lists in Departments → ${esc(svc)}.</div></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Create tasks</button></div></div>
+    </form>`);
+  let named = false;
+  document.getElementById("pj-name").addEventListener("input", ()=>{ named = true; });
+  document.getElementById("pj-type").addEventListener("change", e=>{ document.getElementById("pj-preview").innerHTML = preview(e.target.value); if(!named) document.getElementById("pj-name").value = e.target.value; });
+  document.getElementById("f-start-project").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target), type = f.get("type"), start = f.get("start");
+    const body = {service:svc, type, name:(f.get("name")||"").trim(), start, assignedTo:f.get("owner")||"", tasks:projectSchedule(svc, type, start)};
+    try{
+      const r = await apiJson(`/api/crm/clients/${clientId}/board-projects`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      r.tasks.forEach(putTask); const s2 = bState(clientId, svc); s2.project = r.projectId; s2.month = start.slice(0,7);
+      toast("Project tasks created"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't create the project"); }
+  });
+}
+
 function clientDetailPage(id){
   const c = clientById(id);
   const billingType = c.billingType || "Prepaid";
   const boardFilter = clientTaskBoardMonthFilter[id] || "All";
-  const boardTasks = tasksOf(id).filter(t=>!isTaskArchived(t));
+  const boardTasks = tasksOf(id).filter(t=>!t.service && !isTaskArchived(t));
   const boardTasksFiltered = boardTasks.filter(t=>matchesDateFilter(t.due, boardFilter));
   const clientInvoices = invoices.filter(i=>i.clientId===id).slice().sort((a,b)=>b.issued.localeCompare(a.issued));
   const billed = clientInvoices.reduce((s,i)=>s+invoiceTotal(i),0);
@@ -6794,6 +7250,7 @@ function clientDetailPage(id){
       <div class="table-wrap"><table class="data"><thead><tr><th>Quote</th><th>Services</th><th class="num">Total</th>${hidePayment?'':'<th class="num">Paid</th>'}<th>Status</th></tr></thead>
         <tbody>${cq.map(q=>`<tr><td style="font-weight:700;">${esc(q.title)}</td><td class="muted">${q.items.map(i=>esc(i.dept)).join(', ')}</td><td class="num mono">${inr(quoteTotal(q))}</td>${hidePayment?'':`<td class="num mono">${quoteApprovedPaid(q)>0?inr(quoteApprovedPaid(q)):'<span class="faint">—</span>'}</td>`}<td>${pill(q.status,quoteStatusKind(q.status))}</td></tr>`).join("")}</tbody>
       </table></div>` : ''; })()}
+      ${clientServicesHTML(c)}
       ${clientCollabHTML(c)}
       ${clientFeedbackSectionHTML(c)}
       <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
@@ -7404,7 +7861,7 @@ function renderClientTaskBoard(clientId){
   const board = document.getElementById('client-task-board');
   if(!board) return;
   const boardFilter = clientTaskBoardMonthFilter[clientId] || "All";
-  const tasks = tasksOf(clientId).filter(t=>!isTaskArchived(t)).filter(t=>matchesDateFilter(t.due, boardFilter));
+  const tasks = tasksOf(clientId).filter(t=>!t.service && !isTaskArchived(t)).filter(t=>matchesDateFilter(t.due, boardFilter));
   board.innerHTML = TASK_STAGES.map(stage=>{
     const inStage = tasks.filter(t=>t.status===stage);
     return `<div class="col" data-stage="${stage}" ondragover="onTaskDragOver(event)" ondrop="onTaskDrop(event,'${stage}','${clientId}')" ondragleave="onTaskDragLeave(event)">
@@ -7459,7 +7916,8 @@ async function moveTask(taskId, stage){
   else renderClientTaskBoard(t.clientId);
   renderNav(); // the "My Tasks" sidebar badge counts by status — refresh it alongside the board
   try{
-    await apiJson(`/api/crm/tasks/${taskId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ status: TASK_STATUS_TO_API[stage] }) });
+    const r = await apiJson(`/api/crm/tasks/${taskId}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ status: TASK_STATUS_TO_API[stage] }) });
+    if(t.service && r.task) t.stage = r.task.stage;   // a service-board card lands in the matching column
   }catch(err){
     t.status = prevStatus; t.doneDate = prevDone;
     toast(err.message || "Couldn't move task");
@@ -7646,6 +8104,18 @@ function deleteWarningFor(kind, id){
     const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).meetings||[]).find(x=>x.id===mid); if(!m) return {label:"this meeting log", warning:fallback};
     return {label:"this meeting log", warning:`${fmtDate(m.date)} — ${esc(m.attendees)}. The notes are permanently removed. This can't be undone.`};
   }
+  if(kind==='serviceMeeting'){
+    const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).serviceMeetings||[]).find(x=>x.id===mid); if(!m) return {label:"this meeting", warning:fallback};
+    return {label:"this meeting", warning:`${fmtDate(m.date)}${m.time?' · '+esc(m.time):''} — ${esc(m.service)}. ${m.status==='HELD'?'The minutes are permanently removed. ':''}This can't be undone.`};
+  }
+  if(kind==='boardCard'){
+    const t = clientTasks.find(x=>x.id===id); if(!t) return {label:"this card", warning:fallback};
+    return {label:"this card", warning:`${esc(t.title)}. It's removed from the board and from the assignee's My Tasks. This can't be undone.`};
+  }
+  if(kind==='boardProject'){
+    const pid = id.split('|')[1]; const n = clientTasks.filter(t=>t.project===pid).length, nm = (clientTasks.find(t=>t.project===pid)||{}).projectName||'this project';
+    return {label:"this project", warning:`${esc(nm)} and all ${n} of its tasks are removed, including any already done. This can't be undone.`};
+  }
   if(kind==='clientAdMetric'){
     const [cid, mid] = id.split('|'); const m = ((clientCollab[cid]||{}).adMetrics||[]).find(x=>x.id===mid); if(!m) return {label:"this entry", warning:fallback};
     return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${adMoney(m.spend, (clientCollab[cid]||{}).adCurrency)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
@@ -7727,6 +8197,9 @@ async function performDelete(kind, id){
     bank: { url:`/api/finance/bank-accounts/${id}`, reload: loadBankAccounts, label:"Bank account" },
     // A bank-line journal entry also posted a real ledger row, so its removal changes account
     // balances — refresh banks and the finance reports (which read off the ledger) alongside it.
+    serviceMeeting: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/service-meetings/${mid}`, reload: async ()=>{ await Promise.all([loadClientCollab(cid), loadCalendarClientMeetings()]); }, label:"Meeting" }; })(),
+    boardCard: { url:`/api/crm/board-cards/${id}`, reload: loadTasks, label:"Card" },
+    boardProject: (()=>{ const [cid, pid, svc] = id.split('|'); return { url:`/api/crm/clients/${cid}/board-projects/${pid}`, reload: async ()=>{ await loadTasks(); bState(cid, svc).project = 'All'; }, label:"Project" }; })(),
     clientAdMetric: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/ad-metrics/${mid}`, reload: ()=>loadClientCollab(cid), label:"Ad performance entry" }; })(),
     ownAdMetric: { url:`/api/content/own-ad-metrics/${id}`, reload: loadOwnAdMetrics, label:"Ad performance entry" },
     journal: { url:`/api/finance/journal/${id}`, reload: async ()=>{ await Promise.all([loadJournalEntries(), loadBankAccounts()]); await refreshFinanceReports(); }, label:"Journal entry" },
@@ -8954,7 +9427,7 @@ Auth.init().then(async (authUser) => {
   const crmContentJobs = [];
   const roles = emp.roles || [];
   if(emp.isAdmin || roles.includes('SALES') || roles.includes('SALES_HEAD')) crmContentJobs.push(loadCrmModule());
-  else if(roles.includes('CLIENTS')) crmContentJobs.push(Promise.all([loadClients(), loadTasks()]));
+  else if(roles.includes('CLIENTS')) crmContentJobs.push(Promise.all([loadClients(), loadTasks(), loadServiceBoards()]));
   else crmContentJobs.push(loadTasks().catch(err=>console.error("My tasks failed to load", err)));
   if(emp.isAdmin || roles.includes('CONTENT')) crmContentJobs.push(loadContentModule());
   crmContentJobs.push(loadMyContentItems().catch(err=>console.error("My content failed to load", err)));

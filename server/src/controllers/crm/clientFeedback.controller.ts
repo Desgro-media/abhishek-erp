@@ -4,10 +4,10 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { headedDepartments, isLeadership } from "../../services/departmentAccess";
-import { istMonth, linkClosesOn, linkIsOpen, newToken, saveRatings } from "../../services/clientFeedback";
+import { istMonth, linkClosesOn, linkIsOpen, newToken, saveRatings, pinProjects } from "../../services/clientFeedback";
 
 const ratingsSchema = z.object({
-  ratings: z.array(z.object({ dept: z.string().min(1), rating: z.number().int().min(1).max(5), comment: z.string().trim().max(1000).default("") })).min(1, "Pick a rating for at least one service"),
+  ratings: z.array(z.object({ dept: z.string().min(1), rating: z.number().int().min(1).max(5), comment: z.string().trim().max(1000).default(""), projectId: z.string().min(1).max(64).optional() })).min(1, "Pick a rating for at least one service"),
 });
 const linkSchema = z.object({ regenerate: z.boolean().optional(), depts: z.array(z.string().min(1)).min(1).optional() });
 
@@ -24,7 +24,7 @@ async function canLog(u: Caller, client: { accountManager: string | null }) {
   return (client.accountManager ?? "").trim().toLowerCase() === u.name.trim().toLowerCase();
 }
 const linkDto = (l: { token: string; depts: string[]; month: string }) => ({ token: l.token, depts: l.depts, month: l.month, closesOn: linkClosesOn(l.month), open: linkIsOpen(l.month) });
-const fbDto = (f: { id: string; dept: string; month: string; rating: number; comment: string; via: string; by: string; date: Date }) => ({ id: f.id, dept: f.dept, month: f.month, rating: f.rating, comment: f.comment, via: f.via, by: f.by, date: f.date.toISOString().slice(0, 10) });
+const fbDto = (f: { id: string; dept: string; month: string; rating: number; comment: string; via: string; by: string; date: Date; projectId: string | null }) => ({ id: f.id, projectId: f.projectId, dept: f.dept, month: f.month, rating: f.rating, comment: f.comment, via: f.via, by: f.by, date: f.date.toISOString().slice(0, 10) });
 
 export const getClientFeedback: RequestHandler = asyncHandler(async (req, res) => {
   const client = await prisma.client.findUnique({ where: { id: req.params.clientId }, select: { id: true, accountManager: true } });
@@ -45,8 +45,10 @@ export const logClientFeedback: RequestHandler = asyncHandler(async (req, res) =
   if (!(await canLog(req.user!, client))) return res.status(403).json({ error: "Forbidden — only the account manager or leadership can log feedback" });
   const bad = parsed.data.ratings.find((r) => !client.services.includes(r.dept));
   if (bad) return res.status(400).json({ error: `${bad.dept} isn't one of this client's services` });
-  await saveRatings(client.id, istMonth(), parsed.data.ratings, `Logged by ${req.user!.name}`, req.user!.name);
-  await recordAudit({ userId: req.user!.sub, action: "CLIENT_FEEDBACK_LOG", entityType: "Client", entityId: client.id, afterData: parsed.data.ratings, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  const pinned = await pinProjects(client.id, parsed.data.ratings);
+  if ("error" in pinned) return res.status(400).json({ error: pinned.error });
+  await saveRatings(client.id, istMonth(), pinned.ratings, `Logged by ${req.user!.name}`, req.user!.name);
+  await recordAudit({ userId: req.user!.sub, action: "CLIENT_FEEDBACK_LOG", entityType: "Client", entityId: client.id, afterData: pinned.ratings, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.status(201).json({ ok: true });
 });
 

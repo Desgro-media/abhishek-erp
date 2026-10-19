@@ -1,3 +1,4 @@
+import { autoStartServices } from "../../services/boardAutoStart";
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
@@ -231,6 +232,7 @@ export const convertLead: RequestHandler = asyncHandler(async (req, res) => {
     await recordAudit({ userId: req.user!.sub, action: "CRM_LEAD_CONVERTED", entityType: "Lead", entityId: lead.id, afterData: { clientId: res2.clientId, createdClient: res2.created, ...d } }, tx);
     return res2;
   });
+  if (result.created) await autoStartServices(result.clientId, undefined, req.user!.sub);
   res.status(201).json(result);
 });
 

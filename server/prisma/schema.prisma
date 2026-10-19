@@ -1032,6 +1032,7 @@ model Client {
   brandAssets   ClientBrandAsset[]
   meetings      ClientMeeting[]
   adMetrics     ClientAdMetric[]
+  webDetails    ClientWebDetails?
 
   @@map("clients")
   feedback      ClientFeedback[]
@@ -1199,9 +1200,27 @@ model ClientTask {
   createdAt  DateTime         @default(now()) @map("created_at")
   updatedAt  DateTime         @updatedAt @map("updated_at")
 
+  // Service-board cards (Client > Services). All null/empty on an ordinary task. `stage` is a column of that service's board
+  // and always agrees with `status`; project* tie together the tasks one "Start project" created.
+  service        String?
+  stage          String?
+  taskType       String?  @map("task_type")
+  platforms      String[]
+  startAt        DateTime? @map("start_at") @db.Date
+  maxDays        Int?      @map("max_days")
+  projectId      String?   @map("project_id")
+  projectName    String?   @map("project_name")
+  projectKind    String?   @map("project_kind")
+  clientAssigned Boolean   @default(false) @map("client_assigned")
+  notes          String?
+  // Marketing Consultation: the month ("2026-09") a monthly task belongs to; retained = the client was already with us that month.
+  cycle          String?
+  retained       Boolean?
+
   attachments TaskAttachment[]
 
   @@index([assigneeUserId])
+  @@index([clientId, service])
   @@map("client_tasks")
 }
 
@@ -1341,6 +1360,12 @@ model ClientBrandAsset {
   @@map("client_brand_assets")
 }
 
+enum MeetingStatus {
+  SCHEDULED
+  HELD
+  CANCELLED
+}
+
 model ClientMeeting {
   id        String   @id @default(uuid())
   clientId  String   @map("client_id")
@@ -1350,9 +1375,22 @@ model ClientMeeting {
   notes     String
   loggedBy  String   @map("logged_by")
 
+  // Per-service meetings (Client > Services): `service` is null on the older weekly meeting log. A scheduled meeting shows in the
+  // Calendar until it's marked held with its minutes (`notes`) or cancelled.
+  service      String?
+  status       MeetingStatus @default(HELD)
+  time         String?
+  mode         String?
+  agenda       String?
+  actionItems  String?       @map("action_items")
+  scheduledFor DateTime?     @map("scheduled_for") @db.Date
+  cancelledOn  DateTime?     @map("cancelled_on") @db.Date
+  cancelledBy  String?       @map("cancelled_by")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([clientId, date])
+  @@index([service, date])
   @@map("client_meetings")
 }
 
@@ -1565,9 +1603,14 @@ model ClientFeedback {
   // The client's own name if they gave one, else "Client", else the staff member who logged it.
   by        String
   date      DateTime @db.Date
+  // Set for a service rated once per delivered project (Web Development) instead of monthly; null for a monthly rating. The unique
+  // rules (one rating per client / service / month when there's no project, one per project otherwise) are partial indexes in the
+  // migration, which Prisma can't express.
+  projectId String?  @map("project_id")
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@unique([clientId, dept, month])
+  @@index([clientId, dept, month])
+  @@index([projectId])
   @@index([month])
   @@map("client_feedback")
 }
@@ -1735,4 +1778,31 @@ model Notification {
 
   @@index([userId, readAt])
   @@map("notifications")
+}
+
+// A department's own edits to its client board (Departments → Board setup): columns, work types, platforms, and for Web / Graphic the
+// task list per project type, for Consultation the monthly tasks. No row = the built-in defaults in services/serviceBoards.ts.
+model ServiceBoardConfig {
+  service   String   @id
+  config    Json
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("service_board_configs")
+}
+
+// A website client's links and setup (Client > Services > Web Development).
+model ClientWebDetails {
+  clientId   String   @id @map("client_id")
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  stagingUrl String   @default("") @map("staging_url")
+  liveUrl    String   @default("") @map("live_url")
+  domain     String   @default("")
+  hosting    String   @default("")
+  platform   String   @default("")
+  notes      String   @default("")
+  updatedBy  String   @map("updated_by")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("client_web_details")
 }

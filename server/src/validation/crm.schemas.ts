@@ -201,3 +201,72 @@ export const leadConvertSchema = z.object({
   onboardedAt: dateStr.optional(),
 });
 export const leadSettingsSchema = z.object({ conversionThreshold: z.number().positive().max(100_000_000) });
+
+// ---- Service-board cards (Client > Services). Stage / type / platform names are checked against the service's board in the controller.
+const optDate = dateStr.nullable().optional();
+const cardFields = {
+  title: z.string().trim().min(1).max(200),
+  type: z.string().trim().max(80).optional(),
+  stage: z.string().trim().max(80).optional(),
+  platforms: z.array(z.string().max(60)).max(20).optional(),
+  assignedTo: z.string().trim().max(120).optional(),
+  assigneeUserId: z.string().optional(),
+  clientAssigned: z.boolean().optional(),
+  start: optDate,
+  due: optDate,
+  notes: z.string().trim().max(2000).optional(),
+};
+export const boardCardCreateSchema = z.object({ service: z.string().min(1).max(60), ...cardFields });
+export const boardCardUpdateSchema = z.object(cardFields).partial();
+export const boardProjectCreateSchema = z.object({
+  service: z.string().min(1).max(60),
+  type: z.string().min(1).max(80),
+  name: z.string().trim().min(1).max(160),
+  start: dateStr,
+  assignedTo: z.string().trim().max(120).optional(),
+  assigneeUserId: z.string().optional(),
+  // The dated schedule, worked out on the page from the working-day calendar; titles must match the type's task list.
+  tasks: z.array(z.object({ title: z.string().min(1).max(200), start: dateStr, due: dateStr })).min(1).max(40),
+});
+
+// "Start / retain a consultation month": the dated schedule is worked out on the page; titles must match the month's task list.
+export const boardCycleCreateSchema = z.object({
+  start: dateStr,
+  retained: z.boolean(),
+  assignedTo: z.string().trim().max(120).optional(),
+  assigneeUserId: z.string().optional(),
+  tasks: z.array(z.object({ title: z.string().min(1).max(200), start: dateStr, due: dateStr })).min(1).max(40),
+});
+
+// A department's edit of its client board (Departments → Board setup). `was` on a stage names the column it used to be, so renaming
+// a column moves its cards with it; a column with no `was` is new; a column left out is removed (its cards fall back to the one before).
+const nm = z.string().trim().min(1).max(80);
+export const boardSetupSchema = z.object({
+  stages: z.array(z.object({ name: nm, was: nm.optional() })).min(2).max(12),
+  types: z.array(nm).max(30).optional(),
+  platforms: z.array(nm).max(20).optional(),
+  monthlyTasks: z.array(z.object({ name: z.string().trim().min(1).max(200), days: z.number().int().min(1).max(60), type: nm.default("Other"), newOnly: z.boolean().optional() })).min(1).max(30).optional(),
+  projectTasks: z.record(nm, z.array(z.object({ name: z.string().trim().min(1).max(200), days: z.number().int().min(1).max(60) })).min(1).max(40)).optional(),
+});
+
+// ---- Per-service client meetings (Client > Services). A scheduled one shows in the Calendar; a held one needs its minutes.
+const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Expected HH:MM");
+export const MEETING_MODES = ["Google Meet", "In person", "Call"] as const;
+export const serviceMeetingSchema = z.object({
+  service: z.string().min(1).max(60),
+  status: z.enum(["SCHEDULED", "HELD"]),
+  date: dateStr,
+  time: hhmm.or(z.literal("")).optional(),
+  mode: z.enum(MEETING_MODES).optional(),
+  attendees: z.string().trim().max(500).default(""),
+  agenda: z.string().trim().max(1000).default(""),
+  notes: z.string().trim().max(5000).default(""),
+  actionItems: z.string().trim().max(2000).default(""),
+});
+
+// ---- A website client's links and setup.
+const webUrl = z.string().trim().max(500).refine((u) => u === "" || /^https?:\/\/\S+$/i.test(u), "Must start with http:// or https://");
+export const webDetailsSchema = z.object({
+  stagingUrl: webUrl, liveUrl: webUrl,
+  domain: z.string().trim().max(200), hosting: z.string().trim().max(200), platform: z.string().trim().max(200), notes: z.string().trim().max(2000),
+});

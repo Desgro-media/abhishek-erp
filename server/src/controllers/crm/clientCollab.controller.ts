@@ -2,6 +2,7 @@ import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { seesAllClients, seesWholeSalesTeam } from "../../middleware/crmAccess";
+import { serializeServiceMeeting } from "./serviceMeetings.controller";
 import { recordAudit } from "../../services/audit.service";
 import { adAccessSchema, campaignBriefSchema, brandAssetSchema, clientMeetingSchema } from "../../validation/crm.schemas";
 
@@ -27,17 +28,20 @@ const dayString = (d: Date) => d.toISOString().slice(0, 10);
 const serializeMeeting = (m: { id: string; date: Date; attendees: string; notes: string; loggedBy: string; createdAt: Date }) => ({
   id: m.id, date: dayString(m.date), attendees: m.attendees, notes: m.notes, loggedBy: m.loggedBy, createdAt: m.createdAt,
 });
+// Per-service meetings carry their own shape (status, time, mode, agenda…) — the legacy weekly log above stays untouched.
 
 export const getClientCollab: RequestHandler = asyncHandler(async (req, res) => {
   const client = await loadClientFor(req, res);
   if (!client) return;
-  const [adAccess, campaignBrief, brandAssets, meetings] = await Promise.all([
+  const [adAccess, campaignBrief, brandAssets, meetings, serviceMeetings, webDetails] = await Promise.all([
     prisma.clientAdAccess.findUnique({ where: { clientId: client.id } }),
     prisma.clientCampaignBrief.findUnique({ where: { clientId: client.id } }),
     prisma.clientBrandAsset.findMany({ where: { clientId: client.id }, orderBy: { createdAt: "asc" } }),
-    prisma.clientMeeting.findMany({ where: { clientId: client.id }, orderBy: [{ date: "desc" }, { createdAt: "desc" }] }),
+    prisma.clientMeeting.findMany({ where: { clientId: client.id, service: null }, orderBy: [{ date: "desc" }, { createdAt: "desc" }] }),
+    prisma.clientMeeting.findMany({ where: { clientId: client.id, service: { not: null } }, orderBy: [{ date: "desc" }, { createdAt: "desc" }] }),
+    prisma.clientWebDetails.findUnique({ where: { clientId: client.id }, select: { stagingUrl: true, liveUrl: true, domain: true, hosting: true, platform: true, notes: true } }),
   ]);
-  res.json({ adAccess, campaignBrief, brandAssets, meetings: meetings.map(serializeMeeting) });
+  res.json({ adAccess, campaignBrief, brandAssets, meetings: meetings.map(serializeMeeting), serviceMeetings: serviceMeetings.map(serializeServiceMeeting), webDetails });
 });
 
 export const upsertAdAccess: RequestHandler = asyncHandler(async (req, res) => {
