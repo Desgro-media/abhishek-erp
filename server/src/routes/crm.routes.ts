@@ -58,6 +58,7 @@ router.post("/clients/:id/board-cards", requireClientsUser, boardCards.createBoa
 router.patch("/board-cards/:id", requireClientsUser, boardCards.updateBoardCard);
 router.delete("/board-cards/:id", requireClientsUser, boardCards.deleteBoardCard);
 router.post("/clients/:id/board-projects", requireClientsUser, boardCards.createBoardProject);
+router.post("/clients/:id/board-cycles", requireClientsUser, boardCards.createBoardCycle);
 router.delete("/clients/:id/board-projects/:projectId", requireClientsUser, boardCards.deleteBoardProject);
 router.put("/clients/:id/ad-currency", requireClientsUser, adMetrics.setClientAdCurrency);
 router.post("/clients/:id/ad-metrics", requireClientsUser, adMetrics.upsertClientAdMetric);

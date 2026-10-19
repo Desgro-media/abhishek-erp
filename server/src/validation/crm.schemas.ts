@@ -228,3 +228,12 @@ export const boardProjectCreateSchema = z.object({
   // The dated schedule, worked out on the page from the working-day calendar; titles must match the type's task list.
   tasks: z.array(z.object({ title: z.string().min(1).max(200), start: dateStr, due: dateStr })).min(1).max(40),
 });
+
+// "Start / retain a consultation month": the dated schedule is worked out on the page; titles must match the month's task list.
+export const boardCycleCreateSchema = z.object({
+  start: dateStr,
+  retained: z.boolean(),
+  assignedTo: z.string().trim().max(120).optional(),
+  assigneeUserId: z.string().optional(),
+  tasks: z.array(z.object({ title: z.string().min(1).max(200), start: dateStr, due: dateStr })).min(1).max(40),
+});

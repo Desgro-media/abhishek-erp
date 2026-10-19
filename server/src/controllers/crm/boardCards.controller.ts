@@ -4,8 +4,8 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { resolveAssignee, notifyUser } from "../../services/taskAccess.service";
-import { SERVICE_BOARDS, boardOf, boardStageStatus } from "../../services/serviceBoards";
-import { boardCardCreateSchema, boardCardUpdateSchema, boardProjectCreateSchema } from "../../validation/crm.schemas";
+import { SERVICE_BOARDS, boardOf, boardStageStatus, cycleTasks } from "../../services/serviceBoards";
+import { boardCardCreateSchema, boardCardUpdateSchema, boardProjectCreateSchema, boardCycleCreateSchema } from "../../validation/crm.schemas";
 import { loadClientFor } from "./clientCollab.controller";
 
 // The cards on a client's Services boards (Client > Services). A card is a ClientTask with a service and a column (stage); its
@@ -160,4 +160,38 @@ export const deleteBoardProject: RequestHandler = asyncHandler(async (req, res) 
   const { count } = await prisma.clientTask.deleteMany({ where });
   await recordAudit({ userId: req.user!.sub, action: "CRM_BOARD_PROJECT_DELETE", entityType: "Client", entityId: client.id, beforeData: { projectId: req.params.projectId, name: first.projectName, tasks: count } });
   res.status(204).send();
+});
+
+// "Start / retain a consultation month": that month's tasks (the "new clients only" ones skipped for a retained client), created in
+// the first column, back-to-back, all tagged with the month. One cycle per client per month.
+export const createBoardCycle: RequestHandler = asyncHandler(async (req, res) => {
+  const client = await loadClientFor(req, res);
+  if (!client) return;
+  const parsed = boardCycleCreateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
+  const d = parsed.data;
+  const service = "Marketing Consultation";
+  if (!client.services.includes(service)) return res.status(400).json({ error: `${client.name} doesn't take ${service}` });
+  const list = cycleTasks(d.retained);
+  if (d.tasks.length !== list.length || d.tasks.some((t, i) => t.title !== list[i].name)) return res.status(400).json({ error: "The tasks don't match this month's list" });
+  if (!realDate(d.start) || d.tasks.some((t) => !realDate(t.start) || !realDate(t.due) || t.due < t.start)) return res.status(400).json({ error: "Invalid date" });
+  const cycle = d.start.slice(0, 7);
+  if (await prisma.clientTask.findFirst({ where: { clientId: client.id, service, cycle } })) return res.status(409).json({ error: `${cycle} has already been started for this client` });
+  const who = await resolveAssignee({ assigneeUserId: d.assigneeUserId, name: d.assignedTo });
+  if (d.assigneeUserId && !who) return res.status(400).json({ error: "Assignee not found or inactive" });
+
+  const stage = SERVICE_BOARDS[service].stages[0];
+  const tasks = await prisma.$transaction(
+    d.tasks.map((t, i) => prisma.clientTask.create({
+      data: {
+        clientId: client.id, title: t.title, service, stage, status: boardStageStatus(service, stage), taskType: list[i].type, platforms: [],
+        assignedTo: who?.name ?? null, assigneeUserId: who?.userId ?? null, createdByUserId: req.user!.sub, startAt: toDate(t.start), dueAt: toDate(t.due)!,
+        maxDays: list[i].days, cycle, retained: d.retained,
+      },
+      include: { attachments: true },
+    })),
+  );
+  await notifyUser(who?.userId, { kind: "TASK_ASSIGNED", title: `${tasks.length} tasks assigned to you`, body: `${cycle} consultation — ${client.name}`, link: "workspace/tasks" }, req.user!.sub);
+  await recordAudit({ userId: req.user!.sub, action: "CRM_BOARD_CYCLE_CREATE", entityType: "Client", entityId: client.id, afterData: { cycle, retained: d.retained, tasks: tasks.length } });
+  res.status(201).json({ cycle, tasks: tasks.map(shape) });
 });

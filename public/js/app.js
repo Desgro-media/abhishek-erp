@@ -876,7 +876,7 @@ function mapTask(t){
     attachments: (t.attachments||[]).map(a=>({id:a.id, name:a.name, size:a.size, addedDate:isoDate(a.addedAt)})),
     // Service-board cards (Client > Services); all empty on an ordinary task.
     service: t.service||null, stage: t.stage||null, type: t.taskType||'', platforms: t.platforms||[], start: t.startAt ? isoDate(t.startAt) : '', maxDays: t.maxDays||null,
-    project: t.projectId||null, projectName: t.projectName||'', projectType: t.projectKind||'', clientAssigned: !!t.clientAssigned, notes: t.notes||'',
+    cycle: t.cycle||null, retained: !!t.retained, project: t.projectId||null, projectName: t.projectName||'', projectType: t.projectKind||'', clientAssigned: !!t.clientAssigned, notes: t.notes||'',
   };
 }
 async function loadTasks(){ clientTasks = (await apiJson("/api/crm/tasks")).tasks.map(mapTask); }
@@ -6800,6 +6800,16 @@ function projectSchedule(svc, type, startDate){
   let d = nextWorkingDay(startDate);
   return SERVICE_BOARDS[svc].projectTasks[type].map(r=>{ const start = d, due = addWorkingDays(start, r.days); d = nextWorkingDay(addDays(due, 1)); return {title:r.name, start, due}; });
 }
+
+/* ---- Marketing Consultation: one cycle of tasks per client per month ---- */
+const MC_SVC = "Marketing Consultation";
+function mcCycles(clientId){ return [...new Set(clientTasks.filter(t=>t.clientId===clientId && t.service===MC_SVC && t.cycle).map(t=>t.cycle))].sort(); }
+function mcIsRetained(clientId, month){ return mcCycles(clientId).some(m=>m < month); }
+function mcCycleTasks(retained){ return ((SERVICE_BOARDS[MC_SVC]||{}).monthlyTasks||[]).filter(r=>!(retained && r.newOnly)); }
+function cycleSchedule(retained, startDate){
+  let d = nextWorkingDay(startDate);
+  return mcCycleTasks(retained).map(r=>{ const start = d, due = addWorkingDays(start, r.days); d = nextWorkingDay(addDays(due, 1)); return {title:r.name, start, due}; });
+}
 function deptDefaultOwner(svc){ const h = typeof deptHeads!=="undefined" && deptHeads[svc]; if(h) return h; const e = activeEmployees().find(x=>x.dept===svc); return e ? e.name : ""; }
 function nextWorkingDay(d){ let i = 0; while(!isPlanWorkingDay(d) && i++ < 30) d = addDays(d, 1); return d; }
 function clientServicesHTML(c){
@@ -6872,6 +6882,9 @@ function serviceBoardHTML(c, svc, readOnly){
       <select class="select-sm" onchange="setBoardFilter('${c.id}','${q(svc)}','month',this.value)">${list.map(m=>`<option value="${m}" ${m===st.month?'selected':''}>${monthLabel(m)}${m===TODAY.slice(0,7)?' (this month)':''}</option>`).join('')}</select>
       <button class="btn btn-sm ghost" onclick="shiftBoardMonth('${c.id}','${q(svc)}',1)" ${i<=0?'disabled':''} aria-label="Next month">›</button></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${edit && cfg.monthlyTasks ? (()=>{ const cyc = mcCycles(c.id), has = cyc.includes(st.month), nm = (()=>{ const [y,m] = st.month.split('-').map(Number); return new Date(Date.UTC(y, m, 1)).toISOString().slice(0,7); })();
+        return has ? (!cyc.includes(nm) && st.month===list[0] ? `<button class="btn btn-sm ghost" onclick="openStartCycle('${c.id}','${nm}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-refresh"/></svg>Retain for ${monthLabel(nm).split(' ')[0]}</button>` : '')
+          : `<button class="btn btn-sm ghost" onclick="openStartCycle('${c.id}','${st.month}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-calendar"/></svg>Start ${monthLabel(st.month).split(' ')[0]} tasks</button>`; })() : ''}
       ${edit && cfg.projectTasks ? `<button class="btn btn-sm ghost" onclick="openStartProject('${c.id}','${q(svc)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Start project</button>` : ''}
       ${edit?`<button class="btn btn-sm primary" onclick="openBoardCard('${c.id}','${q(svc)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>New ${esc(cfg.noun)}</button>`:''}
     </div>
@@ -6939,6 +6952,35 @@ function openBoardCard(clientId, svc, id, presetStage){
   });
 }
 
+function openStartCycle(clientId, month){
+  const c = clientById(clientId); if(!c || !canEditBoard()) return;
+  const retained = mcIsRetained(clientId, month);
+  const first = month===c.onboarded.slice(0,7) && !retained ? c.onboarded : (month===TODAY.slice(0,7) && !retained ? TODAY : month+'-01');
+  const preview = r => `<ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px;font-size:12.5px;">${mcCycleTasks(r).map(x=>`<li>${esc(x.name)} <span class="faint mono">· ${x.days}d</span></li>`).join('')}</ol>`;
+  showModal(`
+    <div class="modal-head"><h3>${retained?'Retain':'Start'} consultation — ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-start-cycle"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">${esc(c.name)}</div>
+      <div class="field-row">
+        <div><label class="field-label" for="cy-start">Start date</label><input class="field-input" type="date" id="cy-start" name="start" required value="${first}"></div>
+        <div><label class="field-label" for="cy-owner">Assign to</label><select class="field-input" id="cy-owner" name="owner">${activeEmployees().map(e=>`<option ${e.name===c.accountManager?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
+      </div>
+      <label class="check-chip" style="align-self:flex-start;"><input type="checkbox" id="cy-ret" name="retained" ${retained?'checked':''}>Retained client — start from Plan presentation</label>
+      <div><span class="field-label">Tasks created in Open</span><div id="cy-preview">${preview(retained)}</div><div class="subtext">Dated back-to-back from the start date; each gets its allowed working days. Set the list in Departments → Marketing Consultation.</div></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Create tasks</button></div></div>
+    </form>`);
+  document.getElementById("cy-ret").addEventListener("change", e=>{ document.getElementById("cy-preview").innerHTML = preview(e.target.checked); });
+  document.getElementById("f-start-cycle").addEventListener("submit", async e=>{
+    e.preventDefault(); const f = new FormData(e.target), start = f.get("start"), ret = !!f.get("retained");
+    if(start.slice(0,7)!==month){ toast(`Pick a date in ${monthLabel(month)}`); return; }
+    try{
+      const r = await apiJson(`/api/crm/clients/${clientId}/board-cycles`, {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({start, retained:ret, assignedTo:f.get("owner")||"", tasks:cycleSchedule(ret, start)})});
+      r.tasks.forEach(putTask); bState(clientId, MC_SVC).month = month; toast(`${monthLabel(month).split(' ')[0]} tasks created`); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't create the tasks"); }
+  });
+}
 function openStartProject(clientId, svc){
   const c = clientById(clientId), cfg = SERVICE_BOARDS[svc]; if(!c || !cfg || !cfg.projectTasks || !canEditBoard()) return;
   const types = Object.keys(cfg.projectTasks);

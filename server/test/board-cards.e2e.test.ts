@@ -50,7 +50,7 @@ before(async () => {
   names = { repA: a.u.name, repB: b.u.name };
   const mkClient = (label: string, services: string[], salesPerson: string, n: number) =>
     prisma.client.create({ data: { clientCode: `CAM-${run}-${n}`, name: `${label} ${run}`, services, salesPerson, onboardedAt: new Date() } });
-  pm = await mkClient("PM client", ["Web Development", "Production"], names.repA, 1);
+  pm = await mkClient("PM client", ["Web Development", "Production", "Marketing Consultation"], names.repA, 1);
   plain = await mkClient("Plain client", ["Graphic Design"], names.repA, 2);
   other = await mkClient("Other rep PM", ["Web Development"], names.repB, 3);
   server = app.listen(0);
@@ -148,4 +148,42 @@ test("delete card: guarded like the client page; audited; the client's other car
   assert.equal((await call("DELETE", `/crm/board-cards/${card}`, tok.repA)).status, 404);
   assert.ok((await prisma.clientTask.count({ where: { clientId: pm.id } })) >= 1);
   assert.equal(await prisma.auditLog.count({ where: { entityId: card, action: "CRM_BOARD_CARD_DELETE" } }), 1);
+});
+
+test("consultation month: tasks must match the list (retained skips new-client-only ones); one cycle per month; dated + tagged", async () => {
+  const boards = (await call("GET", "/crm/service-boards", tok.repA)).body.boards;
+  const monthly: { name: string; days: number; newOnly?: boolean }[] = boards["Marketing Consultation"].monthlyTasks;
+  const sched = (list: { name: string }[]) => list.map((t, i) => ({ title: t.name, start: `2026-08-${String(3 + i).padStart(2, "0")}`, due: `2026-08-${String(3 + i).padStart(2, "0")}` }));
+  const full = { start: "2026-08-03", retained: false, tasks: sched(monthly) };
+  const cy = (c: { id: string }, b: unknown, t = tok.repA) => call("POST", C(c, "/board-cycles"), t, b);
+  assert.equal((await cy(pm, { ...full, tasks: sched(monthly.filter((m) => !m.newOnly)) })).status, 400, "a new client gets the full list");
+  assert.equal((await cy(plain, full)).status, 400, "client doesn't take consultation");
+  assert.equal((await cy(pm, full, tok.repB)).status, 403);
+  const r = await cy(pm, full);
+  assert.equal(r.status, 201);
+  assert.equal(r.body.cycle, "2026-08");
+  assert.ok(r.body.tasks.every((t: any) => t.cycle === "2026-08" && t.retained === false && t.stage === "Open" && t.service === "Marketing Consultation"));
+  assert.equal((await cy(pm, full)).status, 409, "that month is already started");
+  const ret = monthly.filter((m) => !m.newOnly);
+  const r2 = await cy(pm, { start: "2026-09-01", retained: true, tasks: sched(ret).map((t) => ({ ...t, start: "2026-09-01", due: "2026-09-02" })) });
+  assert.equal(r2.status, 201);
+  assert.equal(r2.body.tasks.length, ret.length);
+});
+
+test("a new client that takes consultation / web gets its board started; adding a service later starts only that one; existing cards are never duplicated", async () => {
+  const mk = await call("POST", "/crm/clients", tok.admin, { name: `Auto ${run}`, industry: "x", city: "y", services: ["Marketing Consultation", "Production"], accountManager: names.repA, salesPerson: names.repA });
+  assert.equal(mk.status, 201);
+  const id = mk.body.client.id;
+  try {
+    const mc = await prisma.clientTask.findMany({ where: { clientId: id, service: "Marketing Consultation" } });
+    assert.ok(mc.length >= 6 && mc.every((t) => t.cycle === new Date().toISOString().slice(0, 7) && t.stage === "Open" && t.assignedTo === names.repA));
+    assert.equal(await prisma.clientTask.count({ where: { clientId: id, service: "Production" } }), 0, "Production has no task list to start from");
+    await call("PATCH", `/crm/clients/${id}`, tok.admin, { services: ["Marketing Consultation", "Production", "Web Development"] });
+    const web = await prisma.clientTask.findMany({ where: { clientId: id, service: "Web Development" } });
+    assert.ok(web.length > 5 && new Set(web.map((t) => t.projectId)).size === 1);
+    await call("PATCH", `/crm/clients/${id}`, tok.admin, { name: `Auto ${run} b` });
+    assert.equal(await prisma.clientTask.count({ where: { clientId: id, service: "Marketing Consultation" } }), mc.length, "not duplicated");
+  } finally {
+    await prisma.client.deleteMany({ where: { id } });
+  }
 });

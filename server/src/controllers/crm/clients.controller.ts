@@ -1,3 +1,4 @@
+import { autoStartServices } from "../../services/boardAutoStart";
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
@@ -39,6 +40,7 @@ export const createClient: RequestHandler = asyncHandler(async (req, res) => {
     data: { clientCode: await nextClientCode(), name: d.name, industry: d.industry, city: d.city, services: d.services, accountManager: d.accountManager, salesPerson: d.salesPerson, billingType: d.billingType, onboardedAt: new Date() },
   });
 
+  await autoStartServices(client.id, undefined, req.user!.sub);
   await recordAudit({ userId: req.user!.sub, action: "CRM_CLIENT_CREATE", entityType: "Client", entityId: client.id, afterData: d });
   res.status(201).json({ client });
 });
@@ -54,6 +56,8 @@ export const updateClient: RequestHandler = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden — not your client" });
   }
   const client = await prisma.client.update({ where: { id: existing.id }, data: parsed.data });
+  const added = client.services.filter((x) => !existing.services.includes(x));
+  if (added.length) await autoStartServices(client.id, added, req.user!.sub);
 
   await recordAudit({ userId: req.user!.sub, action: "CRM_CLIENT_UPDATE", entityType: "Client", entityId: client.id, afterData: parsed.data });
   res.json({ client });

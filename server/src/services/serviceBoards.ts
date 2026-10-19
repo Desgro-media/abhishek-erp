@@ -1,6 +1,6 @@
 import type { ClientTaskStatus } from "@prisma/client";
 
-// Client work is tracked as cards on one board per service (Production, Web Development, Graphic Design). The columns, work types and,
+// Client work is tracked as cards on one board per service (Production, Marketing Consultation, Web Development, Graphic Design). The columns, work types and,
 // for Web and Graphic, the task list each project type starts with live here — the client page reads them from /crm/service-boards,
 // so there is one copy. A card's status (To Do / In Progress / Review / Done) always follows its column; My Tasks, the Calendar and the
 // dashboards read the status. Days on a project task = most working days it is allowed.
@@ -12,9 +12,74 @@ export type ServiceBoard = {
   platforms: string[];
   flagLate?: boolean;
   projectTasks?: Record<string, { name: string; days: number }[]>;
+  // Marketing Consultation: created for every month a client takes it. Retained clients skip the "new clients only" ones.
+  monthlyTasks?: { name: string; days: number; type: string; newOnly?: boolean }[];
 };
 
 export const SERVICE_BOARDS: Record<string, ServiceBoard> = {
+  "Marketing Consultation": {
+    "noun": "task",
+    "stages": [
+      "Open",
+      "In progress",
+      "Review",
+      "Done"
+    ],
+    "flagLate": true,
+    "types": [
+      "Briefing",
+      "Plan",
+      "Presentation",
+      "Follow-up meeting",
+      "Report",
+      "Other"
+    ],
+    "platforms": [],
+    "monthlyTasks": [
+      {
+        "name": "Client briefing",
+        "days": 1,
+        "type": "Briefing",
+        "newOnly": true
+      },
+      {
+        "name": "Marketing plan preparation",
+        "days": 3,
+        "type": "Plan",
+        "newOnly": true
+      },
+      {
+        "name": "Plan presentation",
+        "days": 1,
+        "type": "Presentation"
+      },
+      {
+        "name": "Week 1 follow-up meeting",
+        "days": 5,
+        "type": "Follow-up meeting"
+      },
+      {
+        "name": "Week 2 follow-up meeting",
+        "days": 5,
+        "type": "Follow-up meeting"
+      },
+      {
+        "name": "Week 3 follow-up meeting",
+        "days": 5,
+        "type": "Follow-up meeting"
+      },
+      {
+        "name": "Week 4 follow-up meeting",
+        "days": 5,
+        "type": "Follow-up meeting"
+      },
+      {
+        "name": "Report and feedback",
+        "days": 2,
+        "type": "Report"
+      }
+    ]
+  },
   "Production": {
     "noun": "deliverable",
     "stages": [
@@ -462,3 +527,6 @@ export function stageForStatus(service: string, status: ClientTaskStatus, cur: s
   if (!prog.length) return st[1];
   return [...prog].sort((a, b) => Math.abs(a[1] - ci) - Math.abs(b[1] - ci) || b[1] - a[1])[0][0];
 }
+
+// The tasks a consultation month starts with.
+export const cycleTasks = (retained: boolean) => (SERVICE_BOARDS["Marketing Consultation"].monthlyTasks ?? []).filter((r) => !(retained && r.newOnly));

@@ -1212,6 +1212,9 @@ model ClientTask {
   projectKind    String?   @map("project_kind")
   clientAssigned Boolean   @default(false) @map("client_assigned")
   notes          String?
+  // Marketing Consultation: the month ("2026-09") a monthly task belongs to; retained = the client was already with us that month.
+  cycle          String?
+  retained       Boolean?
 
   attachments TaskAttachment[]
 
