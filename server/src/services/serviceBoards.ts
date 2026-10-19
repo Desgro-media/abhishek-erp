@@ -1,4 +1,5 @@
 import type { ClientTaskStatus } from "@prisma/client";
+import { prisma } from "../db/prisma";
 
 // Client work is tracked as cards on one board per service (Production, Marketing Consultation, Web Development, Graphic Design). The columns, work types and,
 // for Web and Graphic, the task list each project type starts with live here — the client page reads them from /crm/service-boards,
@@ -16,7 +17,7 @@ export type ServiceBoard = {
   monthlyTasks?: { name: string; days: number; type: string; newOnly?: boolean }[];
 };
 
-export const SERVICE_BOARDS: Record<string, ServiceBoard> = {
+export const DEFAULT_BOARDS: Record<string, ServiceBoard> = {
   "Marketing Consultation": {
     "noun": "task",
     "stages": [
@@ -503,11 +504,20 @@ export const SERVICE_BOARDS: Record<string, ServiceBoard> = {
   }
 };
 
-export const boardOf = (service: string | null | undefined): ServiceBoard | null => (service ? SERVICE_BOARDS[service] ?? null : null);
+export type Boards = Record<string, ServiceBoard>;
+
+// What each service's board looks like right now: the defaults above, overridden by whatever its department saved (Departments →
+// Board setup). One small table, read per request, so an edit takes effect everywhere at once.
+export async function loadBoards(): Promise<Boards> {
+  const rows = await prisma.serviceBoardConfig.findMany();
+  const out: Boards = JSON.parse(JSON.stringify(DEFAULT_BOARDS));
+  for (const r of rows) if (out[r.service]) out[r.service] = { ...out[r.service], ...(r.config as Partial<ServiceBoard>) };
+  return out;
+}
 
 // First column = To Do, last = Done, a column named Review/Approval = Review, anything between = In Progress.
-export function boardStageStatus(service: string, stage: string): ClientTaskStatus {
-  const st = SERVICE_BOARDS[service]?.stages ?? [];
+export function boardStageStatus(board: ServiceBoard, stage: string): ClientTaskStatus {
+  const st = board.stages;
   const i = st.indexOf(stage);
   if (i === st.length - 1) return "DONE";
   if (i <= 0) return "TODO";
@@ -515,18 +525,18 @@ export function boardStageStatus(service: string, stage: string): ClientTaskStat
 }
 
 // My Tasks moves a card by status — find the column that matches (staying put if the card already is in one).
-export function stageForStatus(service: string, status: ClientTaskStatus, cur: string | null): string | null {
-  const st = SERVICE_BOARDS[service]?.stages ?? [];
+export function stageForStatus(board: ServiceBoard, status: ClientTaskStatus, cur: string | null): string | null {
+  const st = board.stages;
   if (!st.length) return cur;
-  if (cur && boardStageStatus(service, cur) === status) return cur;
+  if (cur && boardStageStatus(board, cur) === status) return cur;
   if (status === "DONE") return st[st.length - 1];
   if (status === "TODO") return st[0];
-  if (status === "REVIEW") return st.find((x) => boardStageStatus(service, x) === "REVIEW") ?? st[st.length - 2];
+  if (status === "REVIEW") return st.find((x) => boardStageStatus(board, x) === "REVIEW") ?? st[st.length - 2];
   const ci = cur ? st.indexOf(cur) : -1;
-  const prog = st.map((x, i) => [x, i] as const).filter(([x]) => boardStageStatus(service, x) === "IN_PROGRESS");
+  const prog = st.map((x, i) => [x, i] as const).filter(([x]) => boardStageStatus(board, x) === "IN_PROGRESS");
   if (!prog.length) return st[1];
   return [...prog].sort((a, b) => Math.abs(a[1] - ci) - Math.abs(b[1] - ci) || b[1] - a[1])[0][0];
 }
 
 // The tasks a consultation month starts with.
-export const cycleTasks = (retained: boolean) => (SERVICE_BOARDS["Marketing Consultation"].monthlyTasks ?? []).filter((r) => !(retained && r.newOnly));
+export const cycleTasks = (board: ServiceBoard, retained: boolean) => (board.monthlyTasks ?? []).filter((r) => !(retained && r.newOnly));

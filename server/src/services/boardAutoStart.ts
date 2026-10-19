@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../db/prisma";
-import { SERVICE_BOARDS, boardStageStatus, cycleTasks } from "./serviceBoards";
+import { loadBoards, boardStageStatus, cycleTasks } from "./serviceBoards";
 import { resolveAssignee } from "./taskAccess.service";
 
 // When a client starts taking a service, its board shouldn't be empty: Marketing Consultation gets its first month of tasks and
@@ -40,16 +40,17 @@ export async function autoStartServices(clientId: string, only?: string[], actor
     const client = await prisma.client.findUnique({ where: { id: clientId } });
     if (!client) return;
     const today = new Date().toISOString().slice(0, 10);
+    const boards = await loadBoards();
     for (const service of client.services.filter((s) => !only || only.includes(s))) {
-      const board = SERVICE_BOARDS[service];
+      const board = boards[service];
       if (!board || !(board.monthlyTasks || board.projectTasks)) continue;
       if (await prisma.clientTask.findFirst({ where: { clientId, service }, select: { id: true } })) continue;
-      const stage = board.stages[0], status = boardStageStatus(service, stage);
+      const stage = board.stages[0], status = boardStageStatus(board, stage);
       const who = await ownerFor(service, client.accountManager);
       const base = { clientId, service, stage, status, platforms: [] as string[], assignedTo: who.name, assigneeUserId: who.userId, createdByUserId: actorUserId ?? null };
       const toDate = (d: string) => new Date(`${d}T00:00:00.000Z`);
       if (board.monthlyTasks) {
-        const list = cycleTasks(false), dates = await scheduleTasks(list.map((r) => r.days), today);
+        const list = cycleTasks(board, false), dates = await scheduleTasks(list.map((r) => r.days), today);
         await prisma.clientTask.createMany({ data: list.map((r, i) => ({ ...base, title: r.name, taskType: r.type, startAt: toDate(dates[i].start), dueAt: toDate(dates[i].due), maxDays: r.days, cycle: today.slice(0, 7), retained: false })) });
       } else {
         const type = Object.keys(board.projectTasks!)[0], list = board.projectTasks![type], dates = await scheduleTasks(list.map((r) => r.days), today);

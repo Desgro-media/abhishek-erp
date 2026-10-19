@@ -2286,6 +2286,86 @@ function deptInsightsHTML(s){
       <div style="font-size:11px;margin-top:1px;">${deltaHTML(t.now, t.was, {neutral:t.neutral, fmt:t.dfmt, eps:t.label==="Payments"?1:0.5})} <span class="faint">vs ${P}</span></div>
     </div>`).join("")}</div>`;
 }
+
+/* ---- Departments → Board setup: the columns, work types and task lists a service's client boards use ---- */
+function canEditDeptItems(d){ return !!currentUser && !currentUser.isClient && (isLeadershipRole(currentUser) || headDeptOf(currentUser.name)===d); }
+function deptBoardPanelHTML(d){
+  const cfg = SERVICE_BOARDS[d], edit = canEditDeptItems(d);
+  const open = clientTasks.filter(t=>t.service===d && t.status!=="Done");
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Board setup</h3><div class="sub">The columns every ${esc(d.toLowerCase())} client board uses, and the types of work. The last column counts as done.</div></div>
+      ${edit?`<button class="btn btn-sm ghost" onclick="openDeptBoard('${esc(d)}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`:''}</div>
+    <div class="panel-body" style="display:flex;flex-direction:column;gap:14px;">
+      <div><div class="kpi-label" style="margin-bottom:8px;">Stages</div><div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">${cfg.stages.map((s2,i)=>{ const n = open.filter(t=>t.stage===s2).length, late = 0, max = null; return `${i?'<span class="faint">→</span>':''}<span class="chip" style="cursor:default;${i===cfg.stages.length-1?'border-color:var(--pos);color:var(--pos);':''}">${esc(s2)}${max?` <span class="mono" style="font-size:10.5px;font-weight:800;">${max}d</span>`:''}${n?` <span class="mono" style="font-size:10.5px;opacity:.75;">· ${n} open</span>`:''}${late?` <span style="font-size:10.5px;color:var(--neg);font-weight:800;">· ${late} delayed</span>`:''}</span>`; }).join('')}</div></div>
+      <div ${cfg.projectTasks?'hidden':''}><div class="kpi-label" style="margin-bottom:8px;">Types of work</div><div style="display:flex;flex-wrap:wrap;gap:6px;">${cfg.types.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>
+      ${cfg.monthlyTasks?`<div><div class="kpi-label" style="margin-bottom:8px;">Monthly tasks · created in Open for every client month</div><div class="table-wrap"><table class="data"><thead><tr><th>#</th><th>Task</th><th class="num">Max working days</th><th>For</th></tr></thead><tbody>${cfg.monthlyTasks.map((r,i)=>`<tr><td class="mono faint">${i+1}</td><td style="font-weight:700;">${esc(r.name)}</td><td class="num mono">${r.days}</td><td>${r.newOnly?pill('New clients only','warn'):pill('Every month','neutral')}</td></tr>`).join('')}</tbody></table></div><div class="subtext">Retained clients start from the first “every month” task. A task still open after its days is flagged on the client board.</div></div>`:''}
+      ${cfg.projectTasks?`<div><div class="kpi-label" style="margin-bottom:8px;">Task lists by project type · created in Open when a project starts</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;">${Object.entries(cfg.projectTasks).map(([ty,list],i)=>`<div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;"><div style="display:flex;justify-content:space-between;gap:6px;align-items:baseline;"><b style="font-size:13px;">${esc(ty)}${i===0?' <span class="faint" style="font-weight:600;font-size:11px;">· default</span>':''}</b><span class="faint mono" style="font-size:11px;">${list.reduce((n,x)=>n+x.days,0)}d</span></div><ol style="margin:6px 0 0;padding-left:18px;font-size:12px;display:flex;flex-direction:column;gap:2px;">${list.map(x=>`<li style="display:flex;justify-content:space-between;gap:6px;"><span>${esc(x.name)}</span><span class="mono faint">${x.days}d</span></li>`).join('')}</ol></div>`).join('')}</div><div class="subtext">The default type is used when this service is first added to a client. A task still open after its days is flagged on the client board.</div></div>`:''}
+      ${(cfg.platforms||[]).length?`<div><div class="kpi-label" style="margin-bottom:8px;">Platforms</div><div style="display:flex;flex-wrap:wrap;gap:6px;">${cfg.platforms.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>`:''}
+    </div>
+  </div>`;
+}
+function openDeptBoard(d){
+  const cfg = SERVICE_BOARDS[d]; if(!cfg || !canEditDeptItems(d)) return;
+  const row = (v, old) => `<div class="bs-row" data-old="${esc(old||'')}" style="display:grid;grid-template-columns:minmax(0,1fr) 30px;gap:6px;"><input class="field-input" name="stage" value="${esc(v)}" required placeholder="Stage name"><button type="button" class="btn btn-sm ghost" style="padding:4px;" title="Remove" onclick="this.closest('.bs-row').remove()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div>`;
+  window.__bsRow = row;
+  window.__mtRow = r => `<div class="mt-row" data-type="${esc(r.type||'Other')}" style="display:grid;grid-template-columns:minmax(0,1fr) 70px auto 30px;gap:6px;align-items:center;"><input class="field-input" name="mt-name" value="${esc(r.name)}" placeholder="Task" required><input class="field-input mono" name="mt-days" type="number" min="1" step="1" value="${r.days||1}" title="Most working days allowed"><label class="check-chip" style="padding:6px 9px;font-size:11.5px;"><input type="checkbox" name="mt-new" ${r.newOnly?'checked':''}>New only</label><button type="button" class="btn btn-sm ghost" style="padding:4px;" title="Remove" onclick="this.closest('.mt-row').remove()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div>`;
+  showModal(`
+    <div class="modal-head"><h3>Board setup — ${esc(d)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-dept-board"><div class="modal-body">
+      <div><span class="field-label">Stages, in order</span><div id="bs-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">${cfg.stages.map(s2=>row(s2, s2)).join('')}</div>
+        <button type="button" class="btn btn-sm ghost" style="margin-top:8px;" onclick="document.getElementById('bs-rows').insertAdjacentHTML('beforeend', window.__bsRow('', ''))"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add stage</button>
+        <div class="subtext">Renaming a stage moves its cards with it. Cards in a removed stage go to the stage before it. The last stage counts as done.</div></div>
+      ${cfg.monthlyTasks?`<div><span class="field-label">Monthly tasks, in order</span><div id="mt-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">${cfg.monthlyTasks.map(r=>window.__mtRow(r)).join('')}</div>
+        <button type="button" class="btn btn-sm ghost" style="margin-top:8px;" onclick="document.getElementById('mt-rows').insertAdjacentHTML('beforeend', window.__mtRow({name:'',days:1,type:'Other'}))"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add task</button>
+        <div class="subtext">Days = most working days allowed. “New only” tasks are skipped when a client is retained. Changes apply to months started from now on.</div></div>`:''}
+      ${cfg.projectTasks?`<div><span class="field-label">Task lists by project type</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"><select class="field-input" id="pt-type" style="flex:1;min-width:160px;" onchange="ptSwitch(this.value)"></select><button type="button" class="btn btn-sm ghost" onclick="ptAddType()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>New type</button><button type="button" class="btn btn-sm ghost" style="color:var(--neg);" onclick="ptRemoveType()">Remove type</button></div>
+        <div style="margin-top:8px;"><label class="field-label" for="pt-name">Type name</label><input class="field-input" id="pt-name"></div>
+        <div id="pt-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
+        <button type="button" class="btn btn-sm ghost" style="margin-top:8px;" onclick="ptAddRow()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add task</button>
+        <div class="subtext">Days = most working days allowed. The first type is the default. Changes apply to projects started from now on.</div></div>`:''}
+      <div ${cfg.projectTasks?'hidden':''}><label class="field-label" for="bs-types">Types of work</label><input class="field-input" id="bs-types" name="types" value="${esc(cfg.types.join(', '))}"><div class="subtext">Separate with commas.</div></div>
+      <div><label class="field-label" for="bs-plats">Platforms</label><input class="field-input" id="bs-plats" name="platforms" value="${esc((cfg.platforms||[]).join(', '))}" placeholder="Leave empty if not needed"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  if(cfg.projectTasks){ window.__pt = {work: JSON.parse(JSON.stringify(cfg.projectTasks)), order: Object.keys(cfg.projectTasks), sel: Object.keys(cfg.projectTasks)[0]}; ptRender(); }
+  document.getElementById("f-dept-board").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const body = {};
+    if(cfg.projectTasks){ if(!ptCollect()) return; const w = window.__pt, out = {}; w.order.forEach(k=>{ const l = (w.work[k]||[]).filter(r=>r.name); if(l.length) out[k] = l; }); if(!Object.keys(out).length){ toast("Keep at least one project type"); return; } body.projectTasks = out; }
+    const rows = [...document.querySelectorAll('#bs-rows .bs-row')].map(r=>({was:r.dataset.old||undefined, name:r.querySelector('input[name=stage]').value.trim()})).filter(r=>r.name);
+    const names = rows.map(r=>r.name);
+    if(names.length < 2){ toast("Keep at least two stages"); return; }
+    if(new Set(names).size !== names.length){ toast("Two stages have the same name"); return; }
+    body.stages = rows;
+    const list = k => (new FormData(e.target).get(k)||"").split(',').map(x=>x.trim()).filter(Boolean);
+    if(!cfg.projectTasks) body.types = list("types");
+    body.platforms = list("platforms");
+    if(cfg.monthlyTasks){ const mt = [...document.querySelectorAll('#mt-rows .mt-row')].map(r=>({name:r.querySelector('input[name=mt-name]').value.trim(), days:Math.max(1, Math.round(Number(r.querySelector('input[name=mt-days]').value))||1), type:r.dataset.type||'Other', newOnly:r.querySelector('input[name=mt-new]').checked})).filter(r=>r.name);
+      if(!mt.length){ toast("Keep at least one monthly task"); return; } body.monthlyTasks = mt; }
+    try{
+      await apiJson(`/api/crm/service-boards/${encodeURIComponent(d)}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      await Promise.all([loadServiceBoards(), loadTasks()]);
+      toast("Board updated"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the board"); }
+  });
+}
+// Board setup editor: one task list per project type (kept in window.__pt while the modal is open).
+function ptRowHTML(r){ return `<div class="pt-row" style="display:grid;grid-template-columns:minmax(0,1fr) 70px 30px;gap:6px;"><input class="field-input" name="pt-task" value="${esc(r.name||'')}" placeholder="Task"><input class="field-input mono" name="pt-days" type="number" min="1" step="1" value="${r.days||1}" title="Most working days allowed"><button type="button" class="btn btn-sm ghost" style="padding:4px;" title="Remove" onclick="this.closest('.pt-row').remove()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div>`; }
+function ptRender(){ const w = window.__pt; if(!w) return;
+  document.getElementById('pt-type').innerHTML = w.order.map((k,i)=>`<option value="${esc(k)}" ${k===w.sel?'selected':''}>${esc(k)}${i===0?' (default)':''}</option>`).join('');
+  document.getElementById('pt-name').value = w.sel || '';
+  document.getElementById('pt-rows').innerHTML = (w.work[w.sel]||[]).map(ptRowHTML).join(''); }
+function ptCollect(){ const w = window.__pt; if(!w || !w.sel) return true;
+  const rows = [...document.querySelectorAll('#pt-rows .pt-row')].map(r=>({name:r.querySelector('input[name=pt-task]').value.trim(), days:Math.max(1, Number(r.querySelector('input[name=pt-days]').value)||1)})).filter(r=>r.name);
+  const nm = document.getElementById('pt-name').value.trim() || w.sel;
+  if(nm!==w.sel && w.order.includes(nm)){ toast(`There's already a type called “${nm}”`); return false; }
+  delete w.work[w.sel]; w.work[nm] = rows; w.order = w.order.map(k=>k===w.sel?nm:k); w.sel = nm; return true; }
+function ptSwitch(v){ const w = window.__pt; const keep = v; if(!ptCollect()){ ptRender(); return; } w.sel = keep; ptRender(); }
+function ptAddType(){ const w = window.__pt; if(!ptCollect()) return; let n = 'New type', i = 2; while(w.order.includes(n)) n = 'New type '+(i++); w.order.push(n); w.work[n] = [{name:'Brief',days:1}]; w.sel = n; ptRender(); }
+function ptRemoveType(){ const w = window.__pt; if(w.order.length<=1){ toast("Keep at least one project type"); return; } w.order = w.order.filter(k=>k!==w.sel); delete w.work[w.sel]; w.sel = w.order[0]; ptRender(); }
+function ptAddRow(){ document.getElementById('pt-rows').insertAdjacentHTML('beforeend', ptRowHTML({name:'',days:1})); }
 function deptPage(d){
   if(!d || !canSeeDeptPage(d)) return `<div class="empty">You don't have access to this department.</div>`;
   const s = deptSummaries[d];
@@ -2335,7 +2415,7 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${teamPanel}`;
+  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
 }
 
 /* ===================== DEPARTMENT ACTION PLANS =====================

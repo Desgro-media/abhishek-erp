@@ -4,7 +4,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { resolveAssignee, notifyUser } from "../../services/taskAccess.service";
-import { SERVICE_BOARDS, boardOf, boardStageStatus, cycleTasks } from "../../services/serviceBoards";
+import { loadBoards, boardStageStatus, cycleTasks } from "../../services/serviceBoards";
 import { boardCardCreateSchema, boardCardUpdateSchema, boardProjectCreateSchema, boardCycleCreateSchema } from "../../validation/crm.schemas";
 import { loadClientFor } from "./clientCollab.controller";
 
@@ -12,7 +12,7 @@ import { loadClientFor } from "./clientCollab.controller";
 // status always follows the column. Guarded exactly like the client page (loadClientFor: Admin / Sales Head / Clients role see every
 // client, a plain Sales rep only their own).
 
-export const getServiceBoards: RequestHandler = (_req, res) => { res.json({ boards: SERVICE_BOARDS }); };
+export const getServiceBoards: RequestHandler = asyncHandler(async (_req, res) => { res.json({ boards: await loadBoards() }); });
 
 const toDate = (d: string | null | undefined) => (d ? new Date(`${d}T00:00:00.000Z`) : null);
 const realDate = (d: string) => { const x = new Date(`${d}T00:00:00.000Z`); return !Number.isNaN(x.getTime()) && x.toISOString().slice(0, 10) === d; };
@@ -35,7 +35,7 @@ export const createBoardCard: RequestHandler = asyncHandler(async (req, res) => 
   const parsed = boardCardCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
-  const board = boardOf(d.service);
+  const board = (await loadBoards())[d.service];
   if (!board) return res.status(400).json({ error: "That service has no board" });
   if (!client.services.includes(d.service)) return res.status(400).json({ error: `${client.name} doesn't take ${d.service}` });
   const stage = d.stage ?? board.stages[0];
@@ -47,7 +47,7 @@ export const createBoardCard: RequestHandler = asyncHandler(async (req, res) => 
   const who = await assigneeFor(client, d);
   if (who && !who.ok) return res.status(400).json({ error: "Assignee not found or inactive" });
 
-  const status = boardStageStatus(d.service, stage);
+  const status = boardStageStatus(board, stage);
   const task = await prisma.clientTask.create({
     data: {
       clientId: client.id, title: d.title, service: d.service, stage, status, taskType: d.type || null, platforms: d.platforms ?? [],
@@ -78,7 +78,7 @@ export const updateBoardCard: RequestHandler = asyncHandler(async (req, res) => 
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
   const service = before.service!;
-  const board = boardOf(service)!;
+  const board = (await loadBoards())[service]!;
   if (d.stage !== undefined && !board.stages.includes(d.stage)) return res.status(400).json({ error: "Unknown column" });
   if (d.type && !board.types.includes(d.type)) return res.status(400).json({ error: "Unknown type" });
   if ((d.platforms ?? []).some((p) => !board.platforms.includes(p))) return res.status(400).json({ error: "Unknown platform" });
@@ -90,7 +90,7 @@ export const updateBoardCard: RequestHandler = asyncHandler(async (req, res) => 
   if (who && !who.ok) return res.status(400).json({ error: "Assignee not found or inactive" });
 
   const stage = d.stage ?? before.stage ?? board.stages[0];
-  const status = boardStageStatus(service, stage);
+  const status = boardStageStatus(board, stage);
   const task = await prisma.clientTask.update({
     where: { id: cardId },
     data: {
@@ -124,7 +124,7 @@ export const createBoardProject: RequestHandler = asyncHandler(async (req, res) 
   const parsed = boardProjectCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
-  const board = boardOf(d.service);
+  const board = (await loadBoards())[d.service];
   const list = board?.projectTasks?.[d.type];
   if (!board || !list) return res.status(400).json({ error: "That service has no project of this type" });
   if (!client.services.includes(d.service)) return res.status(400).json({ error: `${client.name} doesn't take ${d.service}` });
@@ -138,7 +138,7 @@ export const createBoardProject: RequestHandler = asyncHandler(async (req, res) 
   const tasks = await prisma.$transaction(
     d.tasks.map((t, i) => prisma.clientTask.create({
       data: {
-        clientId: client.id, title: t.title, service: d.service, stage, status: boardStageStatus(d.service, stage), taskType: d.type, platforms: [],
+        clientId: client.id, title: t.title, service: d.service, stage, status: boardStageStatus(board, stage), taskType: d.type, platforms: [],
         assignedTo: who?.name ?? null, assigneeUserId: who?.userId ?? null, createdByUserId: req.user!.sub, startAt: toDate(t.start), dueAt: toDate(t.due)!,
         maxDays: list[i].days, projectId, projectName: d.name, projectKind: d.type,
       },
@@ -172,7 +172,8 @@ export const createBoardCycle: RequestHandler = asyncHandler(async (req, res) =>
   const d = parsed.data;
   const service = "Marketing Consultation";
   if (!client.services.includes(service)) return res.status(400).json({ error: `${client.name} doesn't take ${service}` });
-  const list = cycleTasks(d.retained);
+  const board = (await loadBoards())[service];
+  const list = cycleTasks(board, d.retained);
   if (d.tasks.length !== list.length || d.tasks.some((t, i) => t.title !== list[i].name)) return res.status(400).json({ error: "The tasks don't match this month's list" });
   if (!realDate(d.start) || d.tasks.some((t) => !realDate(t.start) || !realDate(t.due) || t.due < t.start)) return res.status(400).json({ error: "Invalid date" });
   const cycle = d.start.slice(0, 7);
@@ -180,11 +181,11 @@ export const createBoardCycle: RequestHandler = asyncHandler(async (req, res) =>
   const who = await resolveAssignee({ assigneeUserId: d.assigneeUserId, name: d.assignedTo });
   if (d.assigneeUserId && !who) return res.status(400).json({ error: "Assignee not found or inactive" });
 
-  const stage = SERVICE_BOARDS[service].stages[0];
+  const stage = board.stages[0];
   const tasks = await prisma.$transaction(
     d.tasks.map((t, i) => prisma.clientTask.create({
       data: {
-        clientId: client.id, title: t.title, service, stage, status: boardStageStatus(service, stage), taskType: list[i].type, platforms: [],
+        clientId: client.id, title: t.title, service, stage, status: boardStageStatus(board, stage), taskType: list[i].type, platforms: [],
         assignedTo: who?.name ?? null, assigneeUserId: who?.userId ?? null, createdByUserId: req.user!.sub, startAt: toDate(t.start), dueAt: toDate(t.due)!,
         maxDays: list[i].days, cycle, retained: d.retained,
       },

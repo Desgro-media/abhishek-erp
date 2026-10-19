@@ -9,6 +9,7 @@ import * as tasks from "../controllers/crm/tasks.controller";
 import * as collab from "../controllers/crm/clientCollab.controller";
 import * as adMetrics from "../controllers/crm/clientAdMetrics.controller";
 import * as boardCards from "../controllers/crm/boardCards.controller";
+import * as boardSetup from "../controllers/crm/boardSetup.controller";
 import * as clientFeedback from "../controllers/crm/clientFeedback.controller";
 import * as salesMeetings from "../controllers/crm/salesMeetings.controller";
 import * as clientReport from "../controllers/crm/clientReport.controller";
@@ -54,6 +55,7 @@ router.post("/clients/:id/meetings", requireClientsUser, collab.logMeeting);
 router.delete("/clients/:id/meetings/:meetingId", requireClientsUser, collab.deleteMeeting);
 router.get("/clients/:id/ad-metrics", requireClientsUser, adMetrics.listClientAdMetrics);
 router.get("/service-boards", boardCards.getServiceBoards);
+router.put("/service-boards/:service", boardSetup.saveBoardSetup); // leadership / the department head, checked inside
 router.post("/clients/:id/board-cards", requireClientsUser, boardCards.createBoardCard);
 router.patch("/board-cards/:id", requireClientsUser, boardCards.updateBoardCard);
 router.delete("/board-cards/:id", requireClientsUser, boardCards.deleteBoardCard);

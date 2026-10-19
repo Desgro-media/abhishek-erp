@@ -1754,3 +1754,14 @@ model Notification {
   @@index([userId, readAt])
   @@map("notifications")
 }
+
+// A department's own edits to its client board (Departments → Board setup): columns, work types, platforms, and for Web / Graphic the
+// task list per project type, for Consultation the monthly tasks. No row = the built-in defaults in services/serviceBoards.ts.
+model ServiceBoardConfig {
+  service   String   @id
+  config    Json
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("service_board_configs")
+}

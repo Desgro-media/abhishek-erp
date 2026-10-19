@@ -237,3 +237,14 @@ export const boardCycleCreateSchema = z.object({
   assigneeUserId: z.string().optional(),
   tasks: z.array(z.object({ title: z.string().min(1).max(200), start: dateStr, due: dateStr })).min(1).max(40),
 });
+
+// A department's edit of its client board (Departments → Board setup). `was` on a stage names the column it used to be, so renaming
+// a column moves its cards with it; a column with no `was` is new; a column left out is removed (its cards fall back to the one before).
+const nm = z.string().trim().min(1).max(80);
+export const boardSetupSchema = z.object({
+  stages: z.array(z.object({ name: nm, was: nm.optional() })).min(2).max(12),
+  types: z.array(nm).max(30).optional(),
+  platforms: z.array(nm).max(20).optional(),
+  monthlyTasks: z.array(z.object({ name: z.string().trim().min(1).max(200), days: z.number().int().min(1).max(60), type: nm.default("Other"), newOnly: z.boolean().optional() })).min(1).max(30).optional(),
+  projectTasks: z.record(nm, z.array(z.object({ name: z.string().trim().min(1).max(200), days: z.number().int().min(1).max(60) })).min(1).max(40)).optional(),
+});

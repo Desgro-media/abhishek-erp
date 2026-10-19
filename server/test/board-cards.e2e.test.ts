@@ -62,6 +62,7 @@ after(async () => {
   await prisma?.$disconnect();
 });
 
+const SETUP = "/crm/service-boards/Graphic Design";
 const C = (c: { id: string }, rest = "") => `/crm/clients/${c.id}${rest}`;
 let card: string;
 
@@ -185,5 +186,42 @@ test("a new client that takes consultation / web gets its board started; adding 
     assert.equal(await prisma.clientTask.count({ where: { clientId: id, service: "Marketing Consultation" } }), mc.length, "not duplicated");
   } finally {
     await prisma.client.deleteMany({ where: { id } });
+  }
+});
+
+test("board setup: leadership only; renames carry cards, removed columns fall back, status recomputed, doneAt kept; types/platforms edited", async () => {
+  const startedAt = new Date();
+  try {
+    const g = (await call("GET", "/crm/service-boards", tok.admin)).body.boards["Graphic Design"];
+    const cfg = (stages: { name: string; was?: string }[]) => ({ stages, types: g.types, platforms: ["Print"], projectTasks: g.projectTasks });
+    const same = g.stages.map((x: string) => ({ name: x, was: x }));
+    assert.equal((await call("PUT", SETUP, tok.repA, cfg(same))).status, 403, "a plain Sales login");
+    assert.equal((await call("PUT", "/crm/service-boards/Nonsense", tok.admin, cfg(same))).status, 404);
+    for (const bad of [cfg([{ name: "Only", was: "Open" }]), cfg([{ name: "A" }, { name: "A" }]), cfg([{ name: "A", was: "Ghost" }, { name: "B" }]), cfg([{ name: "A", was: "Open" }, { name: "B", was: "Open" }]), { ...cfg(same), projectTasks: {} }])
+      assert.equal((await call("PUT", SETUP, tok.admin, bad)).status, 400, JSON.stringify(bad));
+
+    const mk = (stage: string) => call("POST", C(plain, "/board-cards"), tok.admin, { service: "Graphic Design", title: `c-${stage}`, stage });
+    const [open, prog, rev, done] = await Promise.all(["Open", "In progress", "Review", "Done"].map(mk));
+    const doneAt = (await prisma.clientTask.findUniqueOrThrow({ where: { id: done.body.task.id } })).doneAt;
+    // Rename "In progress" -> "Designing", drop "Review", add "QA" before Done.
+    const r = await call("PUT", SETUP, tok.admin, cfg([{ name: "Open", was: "Open" }, { name: "Designing", was: "In progress" }, { name: "QA" }, { name: "Done", was: "Done" }]));
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.board.stages, ["Open", "Designing", "QA", "Done"]);
+    assert.deepEqual(r.body.board.platforms, ["Print"]);
+    const row = async (id: string) => prisma.clientTask.findUniqueOrThrow({ where: { id } });
+    assert.equal((await row(prog.body.task.id)).stage, "Designing");
+    assert.equal((await row(prog.body.task.id)).status, "IN_PROGRESS");
+    assert.equal((await row(rev.body.task.id)).stage, "Designing", "removed Review falls back to the column before it");
+    assert.equal((await row(rev.body.task.id)).status, "IN_PROGRESS");
+    assert.equal((await row(open.body.task.id)).stage, "Open");
+    assert.equal((await row(done.body.task.id)).doneAt?.getTime(), doneAt?.getTime(), "a finished card keeps its finish date");
+    // The board now validates against the new columns.
+    assert.equal((await call("POST", C(plain, "/board-cards"), tok.admin, { service: "Graphic Design", title: "x", stage: "Review" })).status, 400);
+    assert.equal((await call("POST", C(plain, "/board-cards"), tok.admin, { service: "Graphic Design", title: "x", stage: "QA", platforms: ["Print"] })).body.task.status, "IN_PROGRESS");
+    assert.equal((await call("GET", "/crm/service-boards", tok.finance)).body.boards["Graphic Design"].stages[2], "QA");
+    assert.equal(await prisma.auditLog.count({ where: { entityId: "Graphic Design", action: "CRM_BOARD_SETUP_UPDATE", createdAt: { gte: startedAt } } }), 1);
+  } finally {
+    await prisma.serviceBoardConfig.deleteMany({ where: { service: "Graphic Design" } });
+    await prisma.clientTask.deleteMany({ where: { clientId: plain.id } });
   }
 });
