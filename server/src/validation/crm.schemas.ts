@@ -173,6 +173,10 @@ export const ownAdMetricSchema = z.object({
 // A Performance Marketing client's daily ad numbers have exactly the shape of DesGro's own.
 export const clientAdMetricSchema = ownAdMetricSchema;
 
+// Currencies a client's ad numbers can be tracked in: India plus the GCC states (and USD, which GCC ad accounts often bill in).
+export const AD_CURRENCIES = ["INR", "AED", "SAR", "QAR", "KWD", "BHD", "OMR", "USD"] as const;
+export const adCurrencySchema = z.object({ currency: z.enum(AD_CURRENCIES) });
+
 // Moving a lead along the pipeline. WON isn't accepted (only a real conversion makes a lead Won) and LOST
 // has its own endpoint because it needs a reason.
 export const leadStageSchema = z.object({ stage: z.enum(MOVABLE_STAGES) });

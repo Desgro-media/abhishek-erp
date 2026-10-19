@@ -1015,6 +1015,9 @@ model Client {
   // List visibility, independent of `status` (Active/Paused/Churned describes the relationship;
   // this describes whether the client shows in the working lists). Null = not archived.
   archivedAt     DateTime?    @map("archived_at")
+  // ISO code the client's daily ad numbers are tracked in (INR for India, AED/SAR/... for GCC clients). A label only —
+  // no conversion happens anywhere.
+  adCurrency     String       @default("INR") @map("ad_currency")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

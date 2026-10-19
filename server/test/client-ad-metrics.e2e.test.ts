@@ -75,7 +75,7 @@ test("access: no token 401; Finance / Content-only 403; a rep sees only their ow
   assert.equal((await call("POST", U(other), tok.repA, good)).status, 403, "another rep's client");
   assert.equal(await prisma.clientAdMetric.count({ where: { clientId: other.id } }), 0);
   for (const t of [tok.admin, tok.clients]) assert.equal((await call("GET", U(other), t)).status, 200);
-  assert.deepEqual((await call("GET", U(pm), tok.repA)).body, { metrics: [] });
+  assert.deepEqual((await call("GET", U(pm), tok.repA)).body, { metrics: [], currency: "INR" });
   assert.equal((await call("GET", U({ id: "00000000-0000-0000-0000-000000000000" }), tok.admin)).status, 404);
 });
 
@@ -113,6 +113,19 @@ test("log -> derived CPL/CPA/ROAS; same date again updates (one row per client p
   assert.deepEqual(audits.map((x) => x.action), ["CRM_CLIENT_AD_METRIC_CREATE", "CRM_CLIENT_AD_METRIC_UPDATE"]);
   assert.equal((audits[1].beforeData as any).spend, 820.5);
   assert.equal((audits[1].afterData as any).spend, 1000);
+});
+
+test("currency: defaults to INR; GCC codes accepted, junk refused; only PM clients in your book; audited", async () => {
+  const C = (c: { id: string }) => `/crm/clients/${c.id}/ad-currency`;
+  assert.equal((await call("PUT", C(pm), tok.repA, { currency: "AED" })).status, 200);
+  assert.equal((await call("GET", U(pm), tok.repA)).body.currency, "AED");
+  for (const bad of [{ currency: "EUR" }, { currency: "aed" }, {}, { currency: 5 }]) assert.equal((await call("PUT", C(pm), tok.repA, bad)).status, 400, JSON.stringify(bad));
+  assert.equal((await call("PUT", C(plain), tok.repA, { currency: "SAR" })).status, 400, "not a Performance Marketing client");
+  assert.equal((await call("PUT", C(other), tok.repA, { currency: "SAR" })).status, 403, "another rep's client");
+  assert.equal((await call("PUT", C(pm), tok.finance, { currency: "SAR" })).status, 403);
+  assert.equal((await prisma.client.findUnique({ where: { id: pm.id } }))!.adCurrency, "AED");
+  assert.equal(await prisma.auditLog.count({ where: { entityId: pm.id, action: "CRM_CLIENT_AD_CURRENCY_UPDATE" } }), 1);
+  await call("PUT", C(pm), tok.repA, { currency: "INR" });
 });
 
 test("the same date for two different clients is two separate rows (one row per client per day)", async () => {

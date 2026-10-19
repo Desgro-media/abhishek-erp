@@ -49,7 +49,7 @@ const totalsOf = (rows: { spend: unknown; leads: number; purchases: number; reve
 // log. Never ad-account access details, invoices, payments, quotes, tasks or the names of staff who logged anything.
 export const getClientReportPublic: RequestHandler = async (req, res, next) => {
   try {
-    const link = await prisma.clientReportLink.findUnique({ where: { token: String(req.params.token) }, include: { client: { select: { id: true, name: true } } } });
+    const link = await prisma.clientReportLink.findUnique({ where: { token: String(req.params.token) }, include: { client: { select: { id: true, name: true, adCurrency: true } } } });
     if (!link) return res.status(404).json({ error: "This link isn't valid — it may have been replaced or switched off." });
     const cid = link.client.id;
     const all = await prisma.clientAdMetric.findMany({ where: { clientId: cid }, select: { date: true }, orderBy: { date: "desc" } });
@@ -62,7 +62,7 @@ export const getClientReportPublic: RequestHandler = async (req, res, next) => {
       prisma.clientMeeting.findMany({ where: { clientId: cid }, orderBy: [{ date: "desc" }, { createdAt: "desc" }], take: 20 }),
     ]);
     res.json({
-      clientName: link.client.name, month, months: months.length ? months : [month],
+      clientName: link.client.name, currency: link.client.adCurrency, month, months: months.length ? months : [month],
       totals: totalsOf(rows), prevTotals: totalsOf(prevRows),
       daily: rows.map((r) => ({ date: r.date.toISOString().slice(0, 10), spend: num(r.spend), leads: r.leads, purchases: r.purchases, revenue: num(r.revenue) })),
       brief: brief && (brief.objective || brief.audience || brief.budget) ? { objective: brief.objective, audience: brief.audience, budget: brief.budget } : null,

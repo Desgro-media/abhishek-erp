@@ -6,7 +6,8 @@ const token = (new URLSearchParams(location.search).get("t") || "").trim();
 const root = document.getElementById("root");
 const monthName = m => new Date(m + "-01T00:00:00Z").toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 const dayName = d => new Date(d + "T00:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
-const inr = n => "₹" + Math.round(n).toLocaleString("en-IN");
+let currency = "INR"; // the client's ad currency, set from each report load; INR keeps whole rupees, others show the code with 2 decimals
+const inr = n => currency === "INR" ? "₹" + Math.round(n).toLocaleString("en-IN") : currency + " " + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const msg = (t, b) => `<div class="panel"><h1>${esc(t)}</h1><div class="muted">${esc(b)}</div></div>`;
 
 async function load(month){
@@ -25,6 +26,7 @@ function change(now, was, lowerIsBetter){
   return `<span class="d"><span class="${good ? "up" : "down"}">${pct > 0 ? "▲" : "▼"} ${Math.abs(pct)}%</span> vs last month</span>`;
 }
 function render(d){
+  currency = d.currency || "INR";
   const t = d.totals, p = d.prevTotals;
   const kpi = (l, v, sub) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div>${sub || ""}</div>`;
   const has = t.days > 0;
