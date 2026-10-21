@@ -67,7 +67,7 @@ export const updateTask: RequestHandler = asyncHandler(async (req, res) => {
   const board = d.status && before.service ? (await loadBoards())[before.service] : undefined;
   const task = await prisma.clientTask.update({
     where: { id: req.params.id },
-    data: { title: d.title, ...(who ? { assignedTo: who.name, assigneeUserId: who.userId } : {}), dueAt: d.dueAt ? new Date(d.dueAt) : undefined, status: d.status, revisions: d.revisions, doneAt,
+    data: { title: d.title, ...(who ? { assignedTo: who.name, assigneeUserId: who.userId, clientAssigned: false } : {}), dueAt: d.dueAt ? new Date(d.dueAt) : undefined, status: d.status, revisions: d.revisions, doneAt,
       // A service-board card moved by status (My Tasks) lands in the matching column.
       ...(d.status && board ? { stage: stageForStatus(board, d.status, before.stage) } : {}) },
     include: { attachments: true },
