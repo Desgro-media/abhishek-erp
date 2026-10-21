@@ -1861,6 +1861,9 @@ let taskCalMonth = TODAY.slice(0,7);
 let taskCalWeekStart = addDays(TODAY, -new Date(TODAY+"T00:00:00").getDay());
 let taskCalPerson = null;
 let taskCalClient = "All";
+let taskCalService = "All";   // "All", a service name, or "Content" (DesGro's own content)
+// Two-letter service codes shown on every client-work chip, so the calendar says at a glance what kind of work it is.
+const SERVICE_SHORT = {"Content":"CT","Marketing Consultation":"MC","Web Development":"WD","Graphic Design":"GD","Production":"PR","Performance Marketing":"PM"};
 let taskCalHideDone = false;
 let taskCalSelected = TODAY;
 // Calendar "Staff" filter value: "All", a person's name, or "dept:<Department>" (everyone in that department).
@@ -1875,7 +1878,7 @@ function taskCalPersonValue(){
 let colleagues = [], deptTasks = [], deptContent = [];
 function calPeople(){ return employees.length ? employees : (employeeDirectory.length ? employeeDirectory : colleagues); }
 function calDeptOf(name){ const e = calPeople().find(x=>x.name===name); return e ? e.dept : null; }
-function calPersonMatch(name, p){ return p==="All" || (p.startsWith("dept:") ? (calDeptOf(name)===p.slice(5) || (currentUser && name===currentUser.name && currentUser.dept===p.slice(5))) : name===p); }
+function calPersonMatch(name, p){ return p==="All" || p==="__client__" || (p.startsWith("dept:") ? (calDeptOf(name)===p.slice(5) || (currentUser && name===currentUser.name && currentUser.dept===p.slice(5))) : name===p); }
 function calPersonLabel(p){ return p==="All" ? "whole team" : (p.startsWith("dept:") ? p.slice(5)+" department" : p); }
 // Read-only sight of what the signed-in user's own department is working on (client tasks + content cards).
 async function loadCalendarDept(){
@@ -1895,6 +1898,7 @@ function setTaskCal(k, v){
   if(k==="view") taskCalView = v;
   else if(k==="person") taskCalPerson = v;
   else if(k==="client") taskCalClient = v;
+  else if(k==="service") taskCalService = v;
   else if(k==="hideDone") taskCalHideDone = !!v;
   else if(k==="select") taskCalSelected = v;
   render();
@@ -1907,8 +1911,10 @@ function shiftTaskCal(delta){
 function taskCalToday(){ taskCalMonth = TODAY.slice(0,7); taskCalWeekStart = addDays(TODAY, -new Date(TODAY+"T00:00:00").getDay()); taskCalSelected = TODAY; render(); }
 function taskCalTasks(){
   const person = taskCalPersonValue();
+  if(taskCalService==="Content") return [];   // only DesGro's own content is wanted; it shows as calendar items
   return calTaskSource().filter(t=>t.due
-    && calPersonMatch(t.assignedTo, person)
+    && (person==="__client__" ? t.clientAssigned : calPersonMatch(t.assignedTo, person))
+    && (taskCalService==="All" || t.service===taskCalService)
     && (taskCalClient==="All" || t.clientId===taskCalClient)
     && (!taskCalHideDone || t.status!=="Done"));
 }
@@ -1920,10 +1926,11 @@ function taskCalChipClass(t){
 function clientShortName(c){ const w = c ? c.name.split(" ") : []; return w.slice(0, w[0] && w[0].length<=3 ? 2 : 1).join(" "); }
 function taskCalChip(t, showWho, showClient){
   const c = clientById(t.clientId);
-  const who = initials(t.assignedTo);
+  const who = t.clientAssigned ? "Client" : initials(t.assignedTo);
   const cname = c ? c.name : (t.clientName||"");
-  const label = `${showWho?who+" · ":""}${showClient&&cname?clientShortName({name:cname})+" · ":""}${t.title}`;
-  const tip = `${t.title} — ${cname} · ${t.assignedTo} · ${t.status}${t.status!=="Done"&&t.due<TODAY?" · overdue":""}`;
+  const svc = t.service ? (SERVICE_SHORT[t.service] || t.service.slice(0,2).toUpperCase()) : "";
+  const label = `${svc?svc+" · ":""}${showWho?who+" · ":""}${showClient&&cname?clientShortName({name:cname})+" · ":""}${t.title}`;
+  const tip = `${t.title} — ${cname} · ${t.service||""}${t.projectName?" › "+t.projectName:""}${t.cycle?" › "+monthLabel(t.cycle):""} · ${t.stage?"stage: "+t.stage:t.status} · ${t.assignedTo}${t.status!=="Done"&&t.due<TODAY?" · overdue":""}`;
   const canMove = canMoveCalTasks();
   return `<span class="tcal-chip ${taskCalChipClass(t)}" title="${esc(tip)}" ${canMove?`draggable="true" ondragstart="taskCalDragStart(event,'${t.id}')"`:''} ${canMove?`onclick="event.stopPropagation();openEditTask('${t.id}')"`:''}>${esc(label)}</span>`;
 }
@@ -1941,12 +1948,12 @@ function taskCalDrop(e, date, person){
 async function moveTaskOnCalendar(t, date, person){
   const body = {}; const changes = [];
   if(t.due!==date){ body.dueAt = date; changes.push("moved to "+fmtDateShort(date)); }
-  if(person && t.assignedTo!==person){ body.assignedTo = person; changes.push("assigned to "+person); }
+  if(person && person!=="__client__" && t.assignedTo!==person){ body.assignedTo = person; changes.push("assigned to "+person); }
   if(!changes.length) return;
   try{
     await apiJson(`/api/crm/tasks/${t.id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
     if(body.dueAt) t.due = body.dueAt;
-    if(body.assignedTo) t.assignedTo = body.assignedTo;
+    if(body.assignedTo){ t.assignedTo = body.assignedTo; t.clientAssigned = false; }
     toast(t.title+" "+changes.join(", "));
   }catch(err){ toast(err.message || "Couldn't move the task"); }
   render();
@@ -1974,7 +1981,9 @@ function taskCalFilterBar(){
         ${myDept?`<option value="dept:${esc(myDept)}" ${p==="dept:"+myDept?'selected':''}>My department (${esc(myDept)})</option>`:''}
         ${depts.filter(d=>d!==myDept).map(d=>`<option value="dept:${esc(d)}" ${p==="dept:"+d?'selected':''}>Department: ${esc(d)}</option>`).join('')}
         ${people.filter(n=>n!==me).map(n=>`<option value="${esc(n)}" ${p===n?'selected':''}>${esc(n)}</option>`).join('')}
+        <option value="__client__" ${p==="__client__"?'selected':''}>Client actions</option>
       </select></div>
+      <div class="filter-group"><span class="filter-label">Service</span><select class="select-sm" onchange="setTaskCal('service', this.value)"><option value="All">All services</option>${Object.keys(SERVICE_BOARDS).map(sv=>`<option value="${esc(sv)}" ${taskCalService===sv?'selected':''}>${esc(sv)}</option>`).join('')}<option value="Content" ${taskCalService==="Content"?'selected':''}>Content (DesGro's own)</option></select></div>
       <div class="filter-group"><span class="filter-label">Client</span><select class="select-sm" onchange="setTaskCal('client', this.value)"><option value="All">All clients</option>${clientOpts.map(c=>`<option value="${c.id}" ${taskCalClient===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
       <label class="check-chip" style="padding:5px 9px;"><input type="checkbox" ${taskCalHideDone?'checked':''} onchange="setTaskCal('hideDone', this.checked)">Hide done</label>
       <div style="display:flex;gap:4px;"><button class="btn btn-sm ${taskCalView==='month'?'primary':'ghost'}" onclick="setTaskCal('view','month')">Month</button><button class="btn btn-sm ${taskCalView==='team'?'primary':'ghost'}" onclick="setTaskCal('view','team')">Team week</button></div>
@@ -1987,11 +1996,12 @@ function taskCalAgendaHTML(date, tasks){
   return `
   <div class="panel">
     <div class="panel-head"><div><h3>Tasks due</h3><div class="sub">${list.length} task${list.length===1?'':'s'}</div></div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Task</th><th>Client</th><th>Assigned to</th><th>Status</th><th></th></tr></thead><tbody>${list.map(t=>{ const c=clientById(t.clientId); return `<tr>
-      <td style="font-weight:700;">${esc(t.title)}${t.status!=="Done"&&t.due<TODAY?' '+pill('Overdue','neg'):''}</td>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Task</th><th>Client</th><th>Service</th><th>Assigned to</th><th>Stage</th><th></th></tr></thead><tbody>${list.map(t=>{ const c=clientById(t.clientId); return `<tr>
+      <td><div style="font-weight:700;">${esc(t.title)}${t.status!=="Done"&&t.due<TODAY?' '+pill('Overdue','neg'):''}</div>${t.projectName||t.cycle?`<div class="faint" style="font-size:11px;">${esc(t.projectName||monthLabel(t.cycle)+' month')}</div>`:''}</td>
       <td class="muted">${c?esc(c.name):(t.clientName?esc(t.clientName):'—')}</td>
-      <td><span class="assignee"><span class="mini-avatar sm">${initials(t.assignedTo)}</span>${esc(t.assignedTo)}</span></td>
-      <td>${pill(t.status, TASK_STATUS_KIND[t.status]||'neutral')}</td>
+      <td style="white-space:nowrap;"><b class="mono" style="font-size:11px;">${SERVICE_SHORT[t.service]||''}</b> <span class="muted" style="font-size:12.5px;">${esc(t.service||'—')}</span></td>
+      <td>${t.clientAssigned?pill('Client action','warn'):`<span class="assignee"><span class="mini-avatar sm">${initials(t.assignedTo)}</span>${esc(t.assignedTo)}</span>`}</td>
+      <td>${pill(t.stage||t.status, TASK_STATUS_KIND[t.status]||'neutral')}</td>
       <td class="num"><div style="display:flex;gap:6px;justify-content:flex-end;">${canMoveCalTasks()?`<button class="btn btn-sm ghost" onclick="openEditTask('${t.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`:''}${c&&canMoveCalTasks()?`<button class="btn btn-sm ghost" onclick="goToClient('${t.clientId}')">Open client</button>`:''}</div></td>
     </tr>`; }).join('')}</tbody></table></div>
   </div>`;
@@ -2011,7 +2021,7 @@ function calItemsOn(ds){
   });
   if(calOn("leave")) leaveRequests.filter(l=>l.from<=ds && l.to>=ds && (l.status==="Approved" || (l.status==="Pending" && (canManageHolidays() || (currentUser && l.empId===currentUser.id))))).forEach(l=>{ const e = byId(l.empId); if(!e || !personOk(e.name)) return;
     const wfh = l.type==="WFH" || /WFH/.test(l.type); out.push({kind:wfh?"WFH":"Leave", label:`${wfh?"WFH":"Off"} · ${e.name.split(" ")[0]}${l.status==="Pending"?" (pending)":""}`, tip:`${e.name} · ${wfh?"work from home":"leave"} · ${l.status}`, cls:"leave"+(l.status==="Pending"?" pending":""), sub:`${e.name} · ${l.status}`}); });
-  if(calOn("content")) calContentSource().filter(c=>c.due===ds && personOk(c.assignee)).forEach(c=>out.push({kind:"Content", label:(c.stage==="Published"?"✓ ":"")+c.title, tip:`Content · ${c.title} · ${c.stage}${c.assignee?" · "+c.assignee:""}`, cls:"ci-content", sub:`${c.type} · ${c.stage}${c.assignee?" · "+c.assignee:""}`}));
+  if(calOn("content") && (taskCalService==="All" || taskCalService==="Content")) calContentSource().filter(c=>c.due===ds && personOk(c.assignee)).forEach(c=>out.push({kind:"Content", label:(c.stage==="Published"?"✓ ":"")+c.title, tip:`Content · ${c.title} · ${c.stage}${c.assignee?" · "+c.assignee:""}`, cls:"ci-content", sub:`${c.type} · ${c.stage}${c.assignee?" · "+c.assignee:""}`}));
   return out;
 }
 function calItemChip(it){
@@ -2028,7 +2038,7 @@ function calKpisHTML(days, tasks, rangeLabel){
   return `<div class="kpi-grid cols-5">
     <div class="kpi-card"><div class="kpi-label">Tasks ${rangeLabel}</div><div class="kpi-value mono">${tasks.length}</div><div class="kpi-sub">${open.length} open</div></div>
     <div class="kpi-card"><div class="kpi-label">Overdue tasks</div><div class="kpi-value mono ${overdue.length?"neg":""}">${overdue.length}</div><div class="kpi-sub">past due, not done</div></div>
-    <div class="kpi-card"><div class="kpi-label">Events</div><div class="kpi-value mono">${evs}</div><div class="kpi-sub">${rangeLabel}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Events & programs</div><div class="kpi-value mono">${evs}</div><div class="kpi-sub">${rangeLabel}</div></div>
     <div class="kpi-card"><div class="kpi-label">Holidays</div><div class="kpi-value mono">${hols.length}</div><div class="kpi-sub">${hols.length?hols.map(d=>fmtDateShort(d)).join(", "):rangeLabel}</div></div>
     <div class="kpi-card"><div class="kpi-label">Off today</div><div class="kpi-value mono">${offToday}</div><div class="kpi-sub">on approved leave</div></div>
   </div>`;
@@ -2036,7 +2046,7 @@ function calKpisHTML(days, tasks, rangeLabel){
 function calMonthHTML(){
   const month = taskCalMonth;
   const tasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due.slice(0,7)===month) : [];
-  const p = taskCalPersonValue(), showWho = p==="All" || p.startsWith("dept:");
+  const p = taskCalPersonValue(), showWho = p==="All" || p==="__client__" || p.startsWith("dept:");
   const [y,m] = month.split("-").map(Number);
   const daysIn = new Date(Date.UTC(y, m, 0)).getUTCDate();
   const firstDow = new Date(`${month}-01T00:00:00`).getDay();
@@ -2078,8 +2088,13 @@ function calTeamHTML(){
   const tasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due>=days[0] && t.due<=days[6]) : [];
   const p = taskCalPersonValue();
   let rows = [];
-  if(calOn("tasks")) rows = (p==="All" || p.startsWith("dept:")) ? [...new Set(tasks.map(t=>t.assignedTo))].sort().map(n=>({key:n, label:n})) : [{key:p, label:p}];
-  const rowTasks = r => tasks.filter(t=>t.assignedTo===r.key);
+  if(calOn("tasks")){
+    if(p==="All" || p.startsWith("dept:")){
+      rows = [...new Set(tasks.filter(t=>!t.clientAssigned).map(t=>t.assignedTo))].sort().map(n=>({key:n, label:n}));
+      if(tasks.some(t=>t.clientAssigned)) rows.push({key:"__client__", label:"Client actions"});   // work waiting on the client, not on staff
+    } else rows = [{key:p, label:p==="__client__"?"Client actions":p}];
+  }
+  const rowTasks = r => tasks.filter(t=> r.key==="__client__" ? t.clientAssigned : (!t.clientAssigned && t.assignedTo===r.key));
   const head = `<div class="tcal-head">Who</div>${days.map(d=>`<div class="tcal-head ${d===TODAY?"today":""}">${WEEKDAY_NAMES[new Date(d+"T00:00:00").getDay()].slice(0,3)} ${Number(d.slice(8))}</div>`).join("")}`;
   const company = `<div class="tcal-person"><span style="font-weight:800;">Company</span><span class="faint" style="font-size:11px;font-weight:600;">events, leave, holidays</span></div>
     ${days.map(d=>`<div class="tcal-cell ${!isPlanWorkingDay(d)?"off":""} ${d===TODAY?"today":""}">${calItemsOn(d).map(calItemChip).join("")}</div>`).join("")}`;
@@ -2118,7 +2133,11 @@ function calendarView(){
   const undated = 0;
   return `
   ${taskCalFilterBar()}
-  <div class="panel" style="padding:12px 16px;"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="filter-label">Show</span>${calLayerBarHTML()}</div></div>
+  <div class="panel" style="padding:12px 16px;"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><span class="filter-label">Show</span>${calLayerBarHTML()}</div>
+    ${calOn("tasks")||calOn("content")?`<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:11.5px;color:var(--ink-soft);">
+      <span class="filter-label">Client work codes</span>
+      <span>${[...Object.keys(SERVICE_BOARDS),"Content"].map(sv=>`<b class="mono" style="color:var(--ink);">${SERVICE_SHORT[sv]||sv}</b> ${sv==="Content"?"DesGro content":esc(sv)}`).join(' &nbsp;·&nbsp; ')}</span>
+    </div>`:""}</div>
   ${taskCalView==="month" ? calMonthHTML() : calTeamHTML()}`;
 }
 function openCompanyEvent(id, date){
@@ -3579,7 +3598,7 @@ const TAB_REFRESH = {
   "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
-  "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
+  "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadServiceBoards().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/attendance":[loadMyLeaveBalance], "hr/advances":[loadWithdrawalRequests],

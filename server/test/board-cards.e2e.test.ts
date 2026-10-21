@@ -117,6 +117,14 @@ test("move: column sets status (To Do / In Progress / Review / Done) and stamps 
   assert.equal(e.body.task.stage, "Scripting", "an edit that names no column leaves it where it is");
 });
 
+test("handing a client-action card to a person (e.g. dragged on the calendar) clears the client-action flag", async () => {
+  const c = await call("POST", C(pm, "/board-cards"), tok.repA, { service: "Production", title: "Awaiting photos", clientAssigned: true });
+  assert.equal(c.body.task.clientAssigned, true);
+  const r = await call("PATCH", `/crm/tasks/${c.body.task.id}`, tok.admin, { assignedTo: names.repA });
+  assert.equal(r.body.task.clientAssigned, false);
+  assert.equal(r.body.task.assignedTo, names.repA);
+});
+
 test("a card moved by status elsewhere (My Tasks) lands in the matching column", async () => {
   const r = await call("PATCH", `/crm/tasks/${card}`, tok.admin, { status: "DONE" });
   assert.equal(r.status, 200);
