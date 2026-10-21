@@ -163,6 +163,8 @@ enum LeaveStatus {
   PENDING
   APPROVED
   REJECTED
+  // Withdrawn by the employee (or HR) while it was still pending.
+  CANCELLED
 }
 
 enum AdvanceStatus {

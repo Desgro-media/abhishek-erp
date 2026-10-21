@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
+import { loadWorkingDayCheck, requestLoad } from "./leaveDays";
 
 function monthRange(month: string): { start: Date; end: Date } {
   const [y, m] = month.split("-").map(Number);
@@ -11,7 +12,28 @@ function monthRange(month: string): { start: Date; end: Date } {
 const num = (d: Decimal | number | null | undefined) => (d == null ? 0 : Number(d));
 export function nextMonth(m: string): string { const [y, mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7); }
 export function prevMonth(m: string): string { const [y, mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7); }
-export function thisMonth(): string { return new Date().toISOString().slice(0, 7); }
+// The company's "this month" is IST: between midnight and 5:30 am on the 1st it is already the new month.
+export function thisMonth(): string { return new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 7); }
+
+// Half-day and quarter-day requests don't write an attendance record (there is no fractional status), so once approved they are counted
+// from the requests themselves: 0.5 / 0.25 of a day against the same allowance as a full day of that type. Returns, per month
+// (YYYY-MM), the fractional days of each kind.
+export type PartialUsage = { leave: number; wfh: number; partialWfh: number; unpaid: number };
+export async function partialUsageByMonth(employeeId: string, start: Date, end: Date, db: Prisma.TransactionClient = prisma): Promise<Record<string, PartialUsage>> {
+  const rows = await db.leaveRequest.findMany({
+    where: { employeeId, status: "APPROVED", duration: { not: "FULL_DAY" }, fromDate: { gte: start, lt: end } },
+    select: { type: true, fromDate: true, days: true },
+  });
+  const out: Record<string, PartialUsage> = {};
+  for (const r of rows) {
+    const m = r.fromDate.toISOString().slice(0, 7);
+    const u = out[m] ?? (out[m] = { leave: 0, wfh: 0, partialWfh: 0, unpaid: 0 });
+    const days = num(r.days);
+    if (r.type === "CASUAL_SICK") u.leave += days; else if (r.type === "WFH") u.wfh += days; else if (r.type === "PARTIAL_WFH") u.partialWfh += days; else u.unpaid += days;
+  }
+  return out;
+}
+const noPartial: PartialUsage = { leave: 0, wfh: 0, partialWfh: 0, unpaid: 0 };
 
 // ---- Carry-forward ledger -------------------------------------------------------------------
 // Unused paid-leave days from a closed month roll into the next month's cap, up to
@@ -54,6 +76,7 @@ export async function ensureCarryForward(
   });
   const used: Record<string, number> = {};
   for (const r of leaveRecords) { const k = r.date.toISOString().slice(0, 7); used[k] = (used[k] ?? 0) + 1; }
+  for (const [k, u] of Object.entries(await partialUsageByMonth(employeeId, start, end, db))) used[k] = (used[k] ?? 0) + u.leave;
 
   const toCreate: Prisma.LeaveLedgerEntryCreateManyInput[] = [];
   const toSupersede: string[] = [];
@@ -132,7 +155,8 @@ export async function computeLopDays(employeeId: string, month: string, db: Pris
     where: { employeeId, status: "UNPAID_LEAVE", date: { gte: start, lt: end } },
   });
 
-  return Math.max(0, leaveCount - cap) + unpaidCount;
+  const partial = (await partialUsageByMonth(employeeId, start, end, db))[month] ?? noPartial;
+  return Math.max(0, leaveCount + partial.leave - cap) + unpaidCount + partial.unpaid;
 }
 
 // WFH days beyond hrPolicy.paidWfhPerMonth in a given payroll month (plus every Partially Paid WFH day), paid at
@@ -150,7 +174,8 @@ export async function computeWfhExcessDays(employeeId: string, month: string, db
 
   // Partially Paid WFH days are always cut 25% and don't use up the free allowance, so they're
   // added on top of the plain-WFH excess — one figure, one 25% formula, in payroll and every preview.
-  return Math.max(0, wfhCount - cap) + partialCount;
+  const partial = (await partialUsageByMonth(employeeId, start, end, db))[month] ?? noPartial;
+  return Math.max(0, wfhCount + partial.wfh - cap) + partialCount + partial.partialWfh;
 }
 
 // Both leave and WFH usage for a month in one shot, against the org-wide
@@ -170,20 +195,23 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
     where: { employeeId, status: { in: ["ON_LEAVE", "WFH", "WFH_PARTIAL", "UNPAID_LEAVE"] }, date: { gte: start, lt: end } },
     _count: { _all: true },
   });
-  const leaveDays = grouped.find((g) => g.status === "ON_LEAVE")?._count._all ?? 0;
-  const wfhDays = grouped.find((g) => g.status === "WFH")?._count._all ?? 0;
-  const partialWfhDays = grouped.find((g) => g.status === "WFH_PARTIAL")?._count._all ?? 0;
-  const unpaidLeaveDays = grouped.find((g) => g.status === "UNPAID_LEAVE")?._count._all ?? 0;
+  const part = (await partialUsageByMonth(employeeId, start, end, db))[month] ?? noPartial;
+  const leaveDays = (grouped.find((g) => g.status === "ON_LEAVE")?._count._all ?? 0) + part.leave;
+  const wfhDays = (grouped.find((g) => g.status === "WFH")?._count._all ?? 0) + part.wfh;
+  const partialWfhDays = (grouped.find((g) => g.status === "WFH_PARTIAL")?._count._all ?? 0) + part.partialWfh;
+  const unpaidLeaveDays = (grouped.find((g) => g.status === "UNPAID_LEAVE")?._count._all ?? 0) + part.unpaid;
 
   // Requests still awaiting a decision — shown beside the balance, never deducted from it until approved.
   const pendingReqs = await db.leaveRequest.findMany({
     where: { employeeId, status: "PENDING", fromDate: { lt: end }, toDate: { gte: start } },
     select: { type: true, duration: true, fromDate: true, toDate: true, days: true },
   });
+  const isWorking = await loadWorkingDayCheck(db);
+  const monthKey = (ds: string) => ds.slice(0, 7);
   let pendingLeaveDays = 0, pendingWfhDays = 0;
   for (const r of pendingReqs) {
-    const lo = Math.max(r.fromDate.getTime(), start.getTime()), hi = Math.min(r.toDate.getTime(), end.getTime() - 86400000);
-    const inMonth = r.duration === "FULL_DAY" ? Math.max(0, Math.round((hi - lo) / 86400000) + 1) : num(r.days);
+    // Only this month's share of the request, and only its working days.
+    const inMonth = Object.entries(requestLoad(r, isWorking)).filter(([ds]) => monthKey(ds) === month).reduce((sum, [, w]) => sum + w, 0);
     if (r.type === "CASUAL_SICK" || r.type === "UNPAID_LEAVE") pendingLeaveDays += inMonth; else pendingWfhDays += inMonth;
   }
 
@@ -236,6 +264,7 @@ export async function getLeaveLedger(employeeId: string, months = 6, db: Prisma.
   const leaveRecords = await db.attendanceRecord.findMany({ where: { employeeId, status: "ON_LEAVE", date: { gte: start, lt: end } }, select: { date: true } });
   const used: Record<string, number> = {};
   for (const r of leaveRecords) { const k = r.date.toISOString().slice(0, 7); used[k] = (used[k] ?? 0) + 1; }
+  for (const [k, u] of Object.entries(await partialUsageByMonth(employeeId, start, end, db))) used[k] = (used[k] ?? 0) + u.leave;
 
   const live = entries.filter((e) => !e.supersededAt);
   const rows = [];

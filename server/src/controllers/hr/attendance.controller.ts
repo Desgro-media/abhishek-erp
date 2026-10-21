@@ -62,9 +62,9 @@ export const markAttendance: RequestHandler = asyncHandler(async (req, res) => {
 // not a replacement for either.
 export const getMonthlySummary: RequestHandler = asyncHandler(async (req, res) => {
   const month = (req.query.month as string) || todayStr().slice(0, 7);
-  const start = new Date(`${month}-01`);
-  const end = new Date(start);
-  end.setMonth(end.getMonth() + 1);
+  const [my, mm] = month.split("-").map(Number);
+  const start = new Date(Date.UTC(my, mm - 1, 1));
+  const end = new Date(Date.UTC(my, mm, 1));
 
   const grouped = await prisma.attendanceRecord.groupBy({
     by: ["employeeId", "status"],
@@ -79,6 +79,14 @@ export const getMonthlySummary: RequestHandler = asyncHandler(async (req, res) =
     else if (row.status === "UNPAID_LEAVE") byEmployee[row.employeeId].unpaidLeave = row._count._all;
     else if (row.status === "WFH_PARTIAL") byEmployee[row.employeeId].partialWfh = row._count._all;
     else byEmployee[row.employeeId].wfh = row._count._all;
+  }
+
+  // Approved half / quarter days aren't attendance records; they count as fractions, the same as payroll and the balance card.
+  const partials = await prisma.leaveRequest.findMany({ where: { status: "APPROVED", duration: { not: "FULL_DAY" }, fromDate: { gte: start, lt: end } }, select: { employeeId: true, type: true, days: true } });
+  for (const r of partials) {
+    const row = (byEmployee[r.employeeId] ??= { leave: 0, wfh: 0, partialWfh: 0, unpaidLeave: 0 });
+    const n = Number(r.days);
+    if (r.type === "CASUAL_SICK") row.leave += n; else if (r.type === "WFH") row.wfh += n; else if (r.type === "PARTIAL_WFH") row.partialWfh += n; else row.unpaidLeave += n;
   }
 
   // Effective paid-leave cap per employee that differs from the org default (carried-in days / HR

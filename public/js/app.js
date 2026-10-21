@@ -173,7 +173,7 @@ function mapPayrollRow(r){
 async function apiJson(url, opts){
   const res = await Auth.apiFetch(url, opts);
   const data = await res.json().catch(()=>({}));
-  if(!res.ok) throw new Error(data.error || "Request failed");
+  if(!res.ok){ const err = new Error(data.error || "Request failed"); err.data = data; throw err; }
   return data;
 }
 
@@ -361,14 +361,12 @@ const WEEKDAY_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Frida
 // configured weekly off or a date marked as a holiday in HR Settings — mark a holiday there and every
 // attendance/leave/payroll calculation below picks it up automatically.
 function isHolidayDate(dateStr){ return hrPolicy.holidays.some(h=>h.date===dateStr); }
+// UTC throughout: stepping a local-midnight date and reading it back with toISOString() gives the PREVIOUS day in India, so holidays
+// were matched against the wrong date.
 function workingDaysInRange(startStr, endStr){
   let count = 0;
-  let d = new Date(startStr+"T00:00:00");
-  const end = new Date(endStr+"T00:00:00");
-  while(d<=end){
-    const ds = d.toISOString().slice(0,10);
-    if(d.getDay()!==hrPolicy.weeklyOff && !isHolidayDate(ds)) count++;
-    d.setDate(d.getDate()+1);
+  for(let d = new Date(startStr+"T00:00:00Z"), end = new Date(endStr+"T00:00:00Z"); d<=end; d = new Date(d.getTime()+86400000)){
+    if(d.getUTCDay()!==hrPolicy.weeklyOff && !isHolidayDate(d.toISOString().slice(0,10))) count++;
   }
   return count;
 }
@@ -4269,7 +4267,7 @@ function openUpdateBalances(id, month){
 }
 function workspaceLeave(){
   if(!currentUser) return '';
-  const mine = leaveRequests.filter(l=>l.empId===currentUser.id).slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
+  const mine = leaveRequests.filter(l=>l.empId===currentUser.id).slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2,Cancelled:3}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
   const bal = leaveBalance(currentUser.id);
   const hasImpact = bal.lopDays>0 || bal.wfhExcessDays>0;
   return `
@@ -4296,7 +4294,7 @@ function workspaceLeave(){
   <div class="panel">
     <div class="panel-head"><h3>Your requests</h3></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Type</th><th>Dates</th><th class="num">Days</th><th>Reason</th><th>Status</th></tr></thead>
-      <tbody>${mine.length ? mine.map(l=>{ const range = l.from===l.to ? fmtDateShort(l.from) : `${fmtDateShort(l.from)} – ${fmtDateShort(l.to)}`; return `<tr><td>${esc(l.type)}${l.duration && l.duration!=="Full Day" ? ` <span class="faint">· ${esc(l.duration)}</span>` : ""}</td><td class="muted">${range}</td><td class="num">${l.days}</td><td class="muted">${esc(l.reason)}</td><td>${pill(l.status,statusKind(l.status))}</td></tr>`; }).join("") : `<tr><td colspan="5"><div class="empty">No leave requests yet.</div></td></tr>`}</tbody>
+      <tbody>${mine.length ? mine.map(l=>{ const range = l.from===l.to ? fmtDateShort(l.from) : `${fmtDateShort(l.from)} – ${fmtDateShort(l.to)}`; return `<tr><td>${esc(l.type)}${l.duration && l.duration!=="Full Day" ? ` <span class="faint">· ${esc(l.duration)}</span>` : ""}</td><td class="muted">${range}</td><td class="num">${l.days}</td><td class="muted">${esc(l.reason)}</td><td>${pill(l.status,statusKind(l.status))}${l.status==="Pending"?` <button class="btn btn-sm ghost" style="padding:2px 8px;" onclick="cancelLeave('${l.id}')">Cancel</button>`:''}</td></tr>`; }).join("") : `<tr><td colspan="5"><div class="empty">No leave requests yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4314,7 +4312,7 @@ function openApplyLeave(){
         <div><label class="field-label">From</label><input class="field-input" id="leave-from" type="date" name="from" value="${TODAY}" required onchange="updateLeaveImpactNote()"></div>
         <div><label class="field-label">To</label><input class="field-input" id="leave-to" type="date" name="to" value="${TODAY}" required onchange="updateLeaveImpactNote()"></div>
       </div>
-      <div class="subtext">Half Day and Quarter Day apply only when From and To are the same date — a multi-day range is always counted as full days.</div>
+      <div class="subtext">Half Day and Quarter Day apply only when From and To are the same date — a multi-day range is counted as full days. Weekly offs and holidays inside a range aren't counted.</div>
       <div id="leave-impact-note"></div>
       <div><label class="field-label">Reason</label><textarea class="field-input" name="reason" required placeholder="Brief reason for the request"></textarea></div>
     </div>
@@ -4342,9 +4340,8 @@ function openApplyLeave(){
 // Type/From/To/Duration change so staff see the Loss of Pay/WFH pay-cut consequence before they
 // submit, not after HR approves it. Computed the same way the real deduction is: days already marked
 // in Attendance this month (per computeMonthlyLeaveUsage) plus the newly requested days, split by
-// calendar month in case the range straddles a month boundary, against the org-wide monthly cap. Only
-// Full Day requests are previewed — Half/Quarter Day never touch Attendance (see decideLeaveRequest),
-// so they never affect this. The real deduction still only applies once HR approves the request.
+// calendar month in case the range straddles a month boundary, against the org-wide monthly cap. Half and
+// Quarter Day requests count as 0.5 / 0.25 of a day. The real deduction still only applies once HR approves the request.
 let applyLeaveMonthUsage = {}; // month -> {leaveDays,leaveCap,wfhDays,wfhCap,...} for the signed-in employee, cached for this modal
 async function updateLeaveImpactNote(){
   const fromEl = document.getElementById('leave-from');
@@ -4359,14 +4356,6 @@ async function updateLeaveImpactNote(){
   const isUnpaid = typeEl ? typeEl.value === 'Unpaid Leave' : false;
   const isWfh = isPartial || (typeEl ? typeEl.value === 'WFH' : false);
   if(!from || !to || to<from){ noteEl.innerHTML = ''; return; }
-  if(from===to && duration!=='Full Day'){
-    noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;">
-      <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-      <div>Half Day and Quarter Day requests don't affect Loss of Pay or the WFH pay-cut — only Full Day requests do.</div>
-    </div>`;
-    return;
-  }
-
   if(isUnpaid){
     noteEl.innerHTML = `<div class="banner" style="margin-top:2px;margin-bottom:10px;">
       <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
@@ -4375,13 +4364,21 @@ async function updateLeaveImpactNote(){
     return;
   }
 
-  // Split the requested (new) days by calendar month.
+  // Split the requested (new) days by calendar month — working days only (a weekly off or holiday isn't a day taken), and a single-day
+  // Half / Quarter Day counts as that fraction of a day.
+  const fraction = duration==='Half Day' ? 0.5 : duration==='Quarter Day' ? 0.25 : 1;
   const newDaysByMonth = {};
   for(let d=new Date(from+"T00:00:00Z"), end=new Date(to+"T00:00:00Z"); d<=end; d=new Date(d.getTime()+86400000)){
-    const m = d.toISOString().slice(0,7);
-    newDaysByMonth[m] = (newDaysByMonth[m]||0) + 1;
+    const ds = d.toISOString().slice(0,10);
+    if(!isPlanWorkingDay(ds)) continue;
+    const m = ds.slice(0,7);
+    newDaysByMonth[m] = (newDaysByMonth[m]||0) + (from===to ? fraction : 1);
   }
   const months = Object.keys(newDaysByMonth);
+  if(!months.length){
+    noteEl.innerHTML = `<div class="banner" style="margin-top:2px;margin-bottom:10px;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Nothing to apply for.</b> ${from===to?'That day is':'Every day in that range is'} a weekly off or holiday.</div></div>`;
+    return;
+  }
 
   noteEl.innerHTML = `<div class="banner muted" style="margin-top:2px;margin-bottom:10px;"><div>Checking your allowance…</div></div>`;
   await Promise.all(months.map(async m=>{
@@ -4495,7 +4492,7 @@ function openRequestAdvance(){
 /* ===================== HR ===================== */
 function statusKind(s){
   const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Work From Home":"blue","Partially Paid WFH":"blue","Unpaid Leave":"neg",
-    Approved:"pos",Pending:"warn",Rejected:"neg",Recovering:"warn",Recovered:"pos",Paid:"pos",Open:"blue",Interview:"warn",Offer:"pos",Hired:"pos",Applied:"neutral",
+    Approved:"pos",Pending:"warn",Rejected:"neg",Cancelled:"neutral",Recovering:"warn",Recovered:"pos",Paid:"pos",Open:"blue",Interview:"warn",Offer:"pos",Hired:"pos",Applied:"neutral",
     Permanent:"pos",Probation:"warn",
     Unpaid:"neg",Overpaid:"neg","Partially Paid":"warn","Payments pending":"warn","Adding entries":"neutral",
     New:"warn",Reviewed:"blue",Resolved:"pos"};
@@ -4746,7 +4743,7 @@ async function setLeaveRequestsMonthFilter(v){
 // The two halves of the merged Attendance & Leave page: the requests list, and each employee's leave / WFH month.
 function hrLeaveParts(){
   const filtered = leaveRequests.filter(l=>matchesDateFilter(l.from, leaveRequestsMonthFilter));
-  const sorted = filtered.slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
+  const sorted = filtered.slice().sort((a,b)=>{ const order={Pending:0,Approved:1,Rejected:2,Cancelled:3}; if(order[a.status]!==order[b.status]) return order[a.status]-order[b.status]; return b.applied.localeCompare(a.applied); });
   const requests = `
   <div class="panel">
     <div class="panel-head" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;"><div><h3>Leave requests</h3><div class="sub">${leaveRequests.filter(l=>l.status==="Pending").length} pending · ${filtered.length} of ${leaveRequests.length}${dateFilterSuffix(leaveRequestsMonthFilter,'starting in')}</div></div>
@@ -5676,7 +5673,7 @@ function openAddLeave(){
         <div><label class="field-label">From</label><input class="field-input" type="date" name="from" value="${TODAY}" required></div>
         <div><label class="field-label">To</label><input class="field-input" type="date" name="to" value="${TODAY}" required></div>
       </div>
-      <div class="subtext">Half Day and Quarter Day apply only when From and To are the same date — a multi-day range is always counted as full days.</div>
+      <div class="subtext">Half Day and Quarter Day apply only when From and To are the same date — a multi-day range is counted as full days. Weekly offs and holidays inside a range aren't counted.</div>
       <div><label class="field-label">Reason</label><textarea class="field-input" name="reason" required placeholder="Brief reason for the request"></textarea></div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Submit request</button></div></div>
@@ -6024,12 +6021,31 @@ async function setPayrollMonth(m){
   await Promise.all(jobs);
   render();
 }
-async function decideLeave(id,decision){
+async function decideLeave(id,decision,overwriteAttendance){
   try{
-    await apiJson(`/api/hr/leave-requests/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ status: TITLECASE_TO_API(decision) }) });
+    await apiJson(`/api/hr/leave-requests/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ status: TITLECASE_TO_API(decision), ...(overwriteAttendance?{overwriteAttendance:true}:{}) }) });
     await Promise.all([loadLeaveRequests(), loadLeaveBalances()]);
-    toast(`Leave request ${decision.toLowerCase()}`); render();
-  }catch(err){ toast(err.message || "Couldn't update leave request"); }
+    toast(`Leave request ${decision.toLowerCase()}`); closeModal(); render();
+  }catch(err){
+    // The employee is marked Present / Late / Half day on a day this leave covers: HR decides whether the leave replaces that.
+    if(err.data && err.data.code==="ATTENDANCE_CONFLICT"){
+      showModal(`
+        <div class="modal-head"><h3>Replace attendance?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+        <div class="modal-body"><div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(err.data.error)}.</div></div>
+        <div class="subtext">Approving turns ${err.data.conflicts.length===1?'that day':'those days'} into leave, so ${err.data.conflicts.length===1?'it counts':'they count'} against the allowance. If the employee actually worked, reject the request instead.</div></div>
+        <div class="modal-foot"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="button" class="btn danger" onclick="decideLeave('${id}','${decision}',true)">Approve and replace attendance</button></div>`);
+      return;
+    }
+    toast(err.message || "Couldn't update leave request");
+  }
+}
+// An employee (or HR) withdraws a request that hasn't been decided yet.
+async function cancelLeave(id){
+  try{
+    await apiJson(`/api/hr/leave-requests/${id}/cancel`, { method:"POST" });
+    await Promise.all([loadLeaveRequests().catch(()=>{}), loadLeaveBalances().catch(()=>{})]);
+    toast("Leave request cancelled"); render();
+  }catch(err){ toast(err.message || "Couldn't cancel the request"); }
 }
 // Approving opens a small confirm step so HR sees (and can change) the month the employee asked for.
 function openApproveAdvance(id){

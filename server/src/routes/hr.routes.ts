@@ -48,6 +48,7 @@ router.get("/attendance/:employeeId/history", attendance.getAttendanceHistory); 
 router.get("/leave-requests", leave.listLeaveRequests); // self-or-HR (checked inside)
 router.post("/leave-requests", leave.createLeaveRequest); // self-service or HR-for-any
 router.patch("/leave-requests/:id", requireHRAdmin, leave.decideLeaveRequest);
+router.post("/leave-requests/:id/cancel", leave.cancelLeaveRequest); // own pending request, or HR (checked inside)
 router.get("/leave-balance", requireHRAdmin, leave.listAllLeaveBalances);
 router.get("/leave-balance/:employeeId", leave.getLeaveBalance); // self-or-HR
 router.post("/leave-balance/:employeeId/update-balances", requireHRAdmin, leave.updateLeaveBalances);

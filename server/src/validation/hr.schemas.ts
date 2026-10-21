@@ -87,13 +87,16 @@ export const leaveRequestCreateSchema = z.object({
   duration: z.enum(["FULL_DAY", "HALF_DAY", "QUARTER_DAY"]).default("FULL_DAY"),
   fromDate: dateStr,
   toDate: dateStr,
-  days: z.number().positive(),
-  reason: z.string().min(1),
+  // Ignored: the server works the days out from the dates and duration (working days only). Still accepted so older pages keep working.
+  days: z.number().positive().optional(),
+  reason: z.string().trim().min(1),
 });
 
 export const leaveDecisionSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
   note: z.string().optional(),
+  // Approving leave over a day the employee is marked Present / Late / Half day replaces that attendance — only when HR says so.
+  overwriteAttendance: z.boolean().optional(),
 });
 
 export const advanceCreateSchema = z.object({

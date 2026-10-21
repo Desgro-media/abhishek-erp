@@ -11,13 +11,15 @@ export async function workingDaysInMonth(month: string, db: Prisma.TransactionCl
   const holidays = await db.holiday.findMany({ select: { date: true } });
   const holidaySet = new Set(holidays.map((h) => h.date.toISOString().slice(0, 10)));
 
+  // UTC throughout: building local-time dates and reading them back as ISO strings shifts the day on a server in a +offset zone
+  // (e.g. IST), so holidays and the weekly off would be matched against the wrong date.
   const [y, m] = month.split("-").map(Number);
-  const lastDay = new Date(y, m, 0).getDate();
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
   let count = 0;
   for (let day = 1; day <= lastDay; day++) {
-    const d = new Date(y, m - 1, day);
+    const d = new Date(Date.UTC(y, m - 1, day));
     const ds = d.toISOString().slice(0, 10);
-    if (d.getDay() !== weeklyOff && !holidaySet.has(ds)) count++;
+    if (d.getUTCDay() !== weeklyOff && !holidaySet.has(ds)) count++;
   }
   return count;
 }

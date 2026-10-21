@@ -7,10 +7,12 @@ import { leaveRequestCreateSchema, leaveDecisionSchema } from "../../validation/
 import { computeMonthlyLeaveUsage, getLeaveLedger, ensureCarryForward, thisMonth } from "../../services/hr/leaveBalance";
 import { leaveAdjustmentSchema, balanceUpdateSchema } from "../../validation/hr.schemas";
 import { sendMail, detailsHtml, HR_MAIL } from "../../services/mail.service";
+import { loadWorkingDayCheck, eachDay, requestLoad, DURATION_FRACTION } from "../../services/hr/leaveDays";
 
 
+// The company's "this month" — IST, so between midnight and 5:30 am on the 1st it is already the new month.
 function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
+  return thisMonth();
 }
 
 // Every date from `from` to `to` inclusive, at UTC midnight — matches how
@@ -72,14 +74,36 @@ export const createLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
     });
   }
 
+  if (d.toDate < d.fromDate) return res.status(400).json({ error: "The To date can't be before the From date" });
+  if (eachDay(d.fromDate, d.toDate).length > 92) return res.status(400).json({ error: "A request can cover at most 92 days" });
+
+  // The days a request costs are worked out here, never taken from the browser: working days only (not the weekly off or a holiday),
+  // or the fraction for a single-day half / quarter day.
+  const isWorking = await loadWorkingDayCheck();
+  const duration = d.fromDate === d.toDate ? d.duration : "FULL_DAY";
+  const workingDates = eachDay(d.fromDate, d.toDate).filter(isWorking);
+  if (!workingDates.length) return res.status(400).json({ error: d.fromDate === d.toDate ? `${d.fromDate} is a weekly off or holiday — nothing to apply for` : "Every day in that range is a weekly off or holiday — nothing to apply for" });
+  const days = duration === "FULL_DAY" ? workingDates.length : DURATION_FRACTION[duration];
+
+  // No double booking: across the employee's pending and approved requests, no date may take more than one whole day
+  // (so two half days on one date are fine, a half day over a full-day request is not).
+  const mine = await prisma.leaveRequest.findMany({
+    where: { employeeId, status: { in: ["PENDING", "APPROVED"] }, fromDate: { lte: new Date(d.toDate) }, toDate: { gte: new Date(d.fromDate) } },
+    select: { duration: true, fromDate: true, toDate: true },
+  });
+  const load: Record<string, number> = {};
+  for (const r of mine) for (const [day, w] of Object.entries(requestLoad(r, isWorking))) load[day] = (load[day] ?? 0) + w;
+  const clash = Object.entries(requestLoad({ duration, fromDate: new Date(d.fromDate), toDate: new Date(d.toDate) }, isWorking)).find(([day, w]) => (load[day] ?? 0) + w > 1);
+  if (clash) return res.status(409).json({ error: `You already have a leave or WFH request covering ${clash[0]}` });
+
   const leaveRequest = await prisma.leaveRequest.create({
     data: {
       employeeId,
       type: d.type,
-      duration: d.fromDate === d.toDate ? d.duration : "FULL_DAY",
+      duration,
       fromDate: new Date(d.fromDate),
       toDate: new Date(d.toDate),
-      days: d.days,
+      days,
       reason: d.reason,
       status: "PENDING",
     },
@@ -90,7 +114,7 @@ export const createLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
     action: "HR_LEAVE_REQUEST_CREATE",
     entityType: "LeaveRequest",
     entityId: leaveRequest.id,
-    afterData: { employeeId, type: d.type, days: d.days },
+    afterData: { employeeId, type: d.type, days },
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"] ?? null,
   });
@@ -98,7 +122,7 @@ export const createLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
   const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { name: true, email: true } });
   if (emp) {
     const span = d.fromDate === d.toDate ? d.fromDate : `${d.fromDate} to ${d.toDate}`;
-    const rows = { Employee: emp.name, Type: d.type, Dates: span, Days: d.days, Reason: d.reason };
+    const rows = { Employee: emp.name, Type: d.type, Dates: span, Days: days, Reason: d.reason };
     sendMail("hr", { to: HR_MAIL(), subject: `Leave request: ${emp.name} (${span})`, html: detailsHtml("A new leave request is waiting for approval.", rows) });
     sendMail("hr", { to: emp.email, subject: "Your leave request was submitted", html: detailsHtml("HR has received your leave request and will review it.", rows) });
   }
@@ -122,25 +146,44 @@ export const decideLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
   if (!before) return res.status(404).json({ error: "Leave request not found" });
   if (before.status !== "PENDING") return res.status(409).json({ error: "This request has already been decided" });
 
-  const leaveRequest = await prisma.$transaction(async (tx) => {
-    const updated = await tx.leaveRequest.update({
-      where: { id: req.params.id },
-      data: { status: d.status, note: d.note, decidedBy: req.user!.sub, decidedAt: new Date() },
-    });
+  const isWorking = await loadWorkingDayCheck();
+  class Stop extends Error { constructor(public code: number, public body: object) { super("stop"); } }
+  let leaveRequest;
+  try {
+    leaveRequest = await prisma.$transaction(async (tx) => {
+      // Claim the decision atomically — if another HR login got there first, this matches nothing and nothing is written.
+      const claimed = await tx.leaveRequest.updateMany({
+        where: { id: req.params.id, status: "PENDING" },
+        data: { status: d.status, note: d.note, decidedBy: req.user!.sub, decidedAt: new Date() },
+      });
+      if (!claimed.count) throw new Stop(409, { error: "This request has already been decided" });
 
-    if (d.status === "APPROVED" && before.duration === "FULL_DAY") {
-      const attendanceStatus = before.type === "WFH" ? "WFH" : before.type === "PARTIAL_WFH" ? "WFH_PARTIAL" : before.type === "UNPAID_LEAVE" ? "UNPAID_LEAVE" : "ON_LEAVE";
-      for (const date of eachDateInclusive(before.fromDate, before.toDate)) {
-        await tx.attendanceRecord.upsert({
-          where: { employeeId_date: { employeeId: before.employeeId, date } },
-          create: { employeeId: before.employeeId, date, status: attendanceStatus, markedBy: req.user!.sub },
-          update: { status: attendanceStatus, markedBy: req.user!.sub },
+      if (d.status === "APPROVED" && before.duration === "FULL_DAY") {
+        const attendanceStatus = before.type === "WFH" ? "WFH" : before.type === "PARTIAL_WFH" ? "WFH_PARTIAL" : before.type === "UNPAID_LEAVE" ? "UNPAID_LEAVE" : "ON_LEAVE";
+        // Working days only: a weekly off or holiday inside the range is never marked as leave (it would be charged as a day taken).
+        const dates = eachDay(before.fromDate.toISOString().slice(0, 10), before.toDate.toISOString().slice(0, 10)).filter(isWorking).map((x) => new Date(`${x}T00:00:00.000Z`));
+        // Someone marked Present / Late / Half day on one of these dates actually worked it — don't silently replace that.
+        const worked = await tx.attendanceRecord.findMany({
+          where: { employeeId: before.employeeId, date: { in: dates }, status: { in: ["PRESENT", "LATE", "HALF_DAY"] } },
+          select: { date: true, status: true },
         });
+        if (worked.length && !d.overwriteAttendance) {
+          throw new Stop(409, { error: `Already marked as worked on ${worked.map((w) => w.date.toISOString().slice(0, 10)).join(", ")} — approving would replace that attendance`, code: "ATTENDANCE_CONFLICT", conflicts: worked.map((w) => ({ date: w.date.toISOString().slice(0, 10), status: w.status })) });
+        }
+        for (const date of dates) {
+          await tx.attendanceRecord.upsert({
+            where: { employeeId_date: { employeeId: before.employeeId, date } },
+            create: { employeeId: before.employeeId, date, status: attendanceStatus, markedBy: req.user!.sub },
+            update: { status: attendanceStatus, markedBy: req.user!.sub },
+          });
+        }
       }
-    }
-
-    return updated;
-  });
+      return tx.leaveRequest.findUniqueOrThrow({ where: { id: req.params.id } });
+    });
+  } catch (e) {
+    if (e instanceof Stop) return res.status(e.code).json(e.body);
+    throw e;
+  }
 
   await recordAudit({
     userId: req.user!.sub,
@@ -148,7 +191,7 @@ export const decideLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
     entityType: "LeaveRequest",
     entityId: leaveRequest.id,
     beforeData: { status: before.status },
-    afterData: { status: d.status, note: d.note },
+    afterData: { status: d.status, note: d.note, overwroteAttendance: d.overwriteAttendance || undefined },
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"] ?? null,
   });
@@ -166,6 +209,18 @@ export const decideLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
   }
 
   res.json({ leaveRequest });
+});
+
+// Withdraw a request that hasn't been decided yet: the employee's own, or any (HR). Nothing was ever written to attendance for a pending one.
+export const cancelLeaveRequest: RequestHandler = asyncHandler(async (req, res) => {
+  const before = await prisma.leaveRequest.findUnique({ where: { id: req.params.id } });
+  if (!before) return res.status(404).json({ error: "Leave request not found" });
+  const scoped = resolveScopedEmployeeId(req, before.employeeId);
+  if (!isHRAdmin(req.user?.roles) && scoped !== before.employeeId) return res.status(403).json({ error: "Forbidden — you can only cancel your own request" });
+  const claimed = await prisma.leaveRequest.updateMany({ where: { id: before.id, status: "PENDING" }, data: { status: "CANCELLED", decidedBy: req.user!.sub, decidedAt: new Date() } });
+  if (!claimed.count) return res.status(409).json({ error: "Only a pending request can be cancelled" });
+  await recordAudit({ userId: req.user!.sub, action: "HR_LEAVE_REQUEST_CANCEL", entityType: "LeaveRequest", entityId: before.id, beforeData: { status: "PENDING" }, afterData: { status: "CANCELLED" }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.json({ leaveRequest: await prisma.leaveRequest.findUniqueOrThrow({ where: { id: before.id } }) });
 });
 
 // Defaults to the current month — see listAllLeaveBalances.
