@@ -4282,7 +4282,10 @@ function workspaceLeave(){
       ${hasImpact ? `
       <div class="banner" style="margin-top:12px;">
         <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
-        <div><b>This is already affecting your payroll.</b> ${bal.lopDays>0?`${bal.lopDays} leave day${bal.lopDays===1?"":"s"} beyond your ${bal.leaveCap ?? hrPolicy.paidLeavesPerMonth}-day allowance means a full Loss of Pay deduction for ${bal.lopDays===1?"that day":"those days"}.`:""} ${bal.wfhExcessDays>0?`${bal.wfhExcessDays} WFH day${bal.wfhExcessDays===1?"":"s"} beyond your ${hrPolicy.paidWfhPerMonth}/month allowance is paid at 75% instead of full pay.`:""} See exactly how much in My Payroll.</div>
+        <div><b>This is already affecting your payroll.</b> ${bal.lopDays>0?(()=>{
+          const over = Math.max(0, bal.leaveDays-(bal.leaveCap ?? hrPolicy.paidLeavesPerMonth)), un = bal.unpaidLeaveDays||0, wd = workingDaysInMonth(bal.month), est = (currentUser.salary && wd) ? Math.round(currentUser.salary/wd*bal.lopDays) : 0;
+          const parts = [over>0?`${over} paid-leave day${over===1?"":"s"} beyond your ${bal.leaveCap ?? hrPolicy.paidLeavesPerMonth}-day allowance`:"", un>0?`${un} unpaid leave day${un===1?"":"s"} (always deducted in full)`:""].filter(Boolean).join(" and ");
+          return `Loss of Pay: ${parts} = ${bal.lopDays} day${bal.lopDays===1?"":"s"} of salary${est?`, about ${inr(est)}`:""}.`; })():""} ${bal.wfhExcessDays>0?`${bal.wfhExcessDays} WFH day${bal.wfhExcessDays===1?"":"s"} beyond your ${hrPolicy.paidWfhPerMonth}/month allowance is paid at 75% instead of full pay.`:""} It appears in My Payroll once this month's payroll is processed.</div>
       </div>` : `
       <div class="banner muted" style="margin-top:12px;">
         <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
