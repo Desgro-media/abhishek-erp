@@ -96,6 +96,36 @@ export const createLeaveRequest: RequestHandler = asyncHandler(async (req, res) 
   const clash = Object.entries(requestLoad({ duration, fromDate: new Date(d.fromDate), toDate: new Date(d.toDate) }, isWorking)).find(([day, w]) => (load[day] ?? 0) + w > 1);
   if (clash) return res.status(409).json({ error: `You already have a leave or WFH request covering ${clash[0]}` });
 
+  // Paid allowance: Casual/Sick and WFH can't be requested beyond what is left for the month (approved + still-pending requests
+  // count). Past the allowance the employee has to apply for Unpaid leave, which is Loss of Pay by design.
+  if (d.type === "CASUAL_SICK" || d.type === "WFH") {
+    const mine = d.type === "CASUAL_SICK";
+    const asked: Record<string, number> = {};
+    for (const [day, w] of Object.entries(requestLoad({ duration, fromDate: new Date(d.fromDate), toDate: new Date(d.toDate) }, isWorking))) asked[day.slice(0, 7)] = (asked[day.slice(0, 7)] ?? 0) + w;
+    for (const [month, want] of Object.entries(asked)) {
+      const usage = await computeMonthlyLeaveUsage(employeeId, month);
+      const cap = mine ? usage.leaveCap : usage.wfhCap;
+      const used = mine ? usage.leaveDays : usage.wfhDays;
+      const [y, m] = month.split("-").map(Number);
+      const pending = await prisma.leaveRequest.findMany({
+        where: { employeeId, status: "PENDING", type: d.type, fromDate: { lt: new Date(Date.UTC(y, m, 1)) }, toDate: { gte: new Date(Date.UTC(y, m - 1, 1)) } },
+        select: { duration: true, fromDate: true, toDate: true },
+      });
+      const held = pending.reduce((sum, r) => sum + Object.entries(requestLoad(r, isWorking)).filter(([day]) => day.slice(0, 7) === month).reduce((a, [, w]) => a + w, 0), 0);
+      const left = Math.max(0, cap - used - held);
+      if (want > left) {
+        const label = new Date(Date.UTC(y, m - 1, 1)).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+        const what = mine ? "paid leave" : "WFH";
+        return res.status(409).json({
+          error: left > 0
+            ? `You only have ${left} ${what} day${left === 1 ? "" : "s"} left for ${label} and this request needs ${want}. Shorten it${mine ? ", or apply for Unpaid leave for the rest" : ""}.`
+            : `Your ${what} allowance for ${label} is finished — you can't apply for more${mine ? ". If you still need time off, apply for Unpaid leave" : ""}.`,
+          code: "BALANCE_EXHAUSTED",
+        });
+      }
+    }
+  }
+
   const leaveRequest = await prisma.leaveRequest.create({
     data: {
       employeeId,

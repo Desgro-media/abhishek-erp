@@ -30,7 +30,7 @@ async function call(method: string, path: string, token: string | null, body?: u
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
-let savedPolicy: { weeklyOff: number } | null = null;
+let savedPolicy: { weeklyOff: number; paidLeavesPerMonth: number; paidWfhPerMonth: number } | null = null;
 
 before(async () => {
   ({ prisma } = await import("../src/db/prisma"));
@@ -49,8 +49,8 @@ before(async () => {
   otherTok = await mkUser("emp2", ["EMPLOYEE"], e2.id);
   // Sunday is the weekly off for these tests.
   const p = await prisma.hrPolicy.findUnique({ where: { id: 1 } });
-  savedPolicy = p ? { weeklyOff: p.weeklyOff } : null;
-  await prisma.hrPolicy.upsert({ where: { id: 1 }, create: { id: 1, weeklyOff: 0 }, update: { weeklyOff: 0 } });
+  savedPolicy = p ? { weeklyOff: p.weeklyOff, paidLeavesPerMonth: p.paidLeavesPerMonth, paidWfhPerMonth: p.paidWfhPerMonth } : null;
+  await prisma.hrPolicy.upsert({ where: { id: 1 }, create: { id: 1, weeklyOff: 0, paidLeavesPerMonth: 30, paidWfhPerMonth: 30 }, update: { weeklyOff: 0, paidLeavesPerMonth: 30, paidWfhPerMonth: 30 } }); // roomy allowance: these tests are about counting, not the balance block
   server = app.listen(0);
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
 });
@@ -63,7 +63,7 @@ after(async () => {
   await prisma.holiday.deleteMany({ where: { name: `t-${run}` } });
   await prisma.employee.deleteMany({ where: { id: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: created.users } } });
-  if (savedPolicy) await prisma.hrPolicy.update({ where: { id: 1 }, data: { weeklyOff: savedPolicy.weeklyOff } });
+  if (savedPolicy) await prisma.hrPolicy.update({ where: { id: 1 }, data: savedPolicy });
   server?.close();
   await prisma.$disconnect();
 });
