@@ -26,3 +26,10 @@ export async function headedDepartments(u: Caller): Promise<string[]> {
   const rows = await prisma.departmentHead.findMany({ where: { employeeId: u.employeeId }, select: { dept: true } });
   return rows.map((r) => r.dept);
 }
+
+// Departments this caller is a team lead in (any number).
+export async function ledDepartments(u: Caller): Promise<string[]> {
+  if (!u.employeeId) return [];
+  const rows = await prisma.departmentTeamLead.findMany({ where: { employeeId: u.employeeId }, select: { dept: true } });
+  return rows.map((r) => r.dept);
+}

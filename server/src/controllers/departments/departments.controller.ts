@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
-import { DEPARTMENTS, SERVICE_DEPARTMENTS, isLeadership, headedDepartments } from "../../services/departmentAccess";
+import { DEPARTMENTS, SERVICE_DEPARTMENTS, isLeadership, headedDepartments, ledDepartments } from "../../services/departmentAccess";
 
 const isDept = (d: string) => (DEPARTMENTS as readonly string[]).includes(d);
 const monthRe = /^\d{4}-\d{2}$/;
@@ -21,7 +21,29 @@ export const listHeads: RequestHandler = asyncHandler(async (_req, res) => {
   // isn't marked down for days before they had the job.
   const since: Record<string, string | null> = Object.fromEntries(DEPARTMENTS.map((d) => [d, null]));
   rows.forEach((r) => { heads[r.dept] = r.employee?.name ?? null; since[r.dept] = r.employee ? new Date(r.updatedAt.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10) : null; });
-  res.json({ heads, since });
+  const leadRows = await prisma.departmentTeamLead.findMany({ include: { employee: { select: { name: true } } }, orderBy: { createdAt: "asc" } });
+  const leads: Record<string, string[]> = Object.fromEntries(DEPARTMENTS.map((d) => [d, []]));
+  leadRows.forEach((r) => leads[r.dept]?.push(r.employee.name));
+  res.json({ heads, since, leads });
+});
+
+// Leadership/Admin only: replace a department's team leads with this list (an empty list clears them).
+export const setTeamLeads: RequestHandler = asyncHandler(async (req, res) => {
+  if (!(await isLeadership(req.user!))) return res.status(403).json({ error: "Forbidden — leadership only" });
+  const dept = req.params.dept;
+  if (!isDept(dept)) return res.status(404).json({ error: "Unknown department" });
+  const parsed = z.object({ employeeIds: z.array(z.string().uuid()).max(20) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+  const ids = [...new Set(parsed.data.employeeIds)];
+  const found = await prisma.employee.findMany({ where: { id: { in: ids }, NOT: { employmentStatus: "LEFT" } }, select: { id: true } });
+  if (found.length !== ids.length) return res.status(409).json({ error: "One of those people wasn't found or has left the company" });
+  const before = (await prisma.departmentTeamLead.findMany({ where: { dept }, select: { employeeId: true } })).map((r) => r.employeeId);
+  await prisma.$transaction([
+    prisma.departmentTeamLead.deleteMany({ where: { dept, employeeId: { notIn: ids } } }),
+    ...ids.map((employeeId) => prisma.departmentTeamLead.upsert({ where: { dept_employeeId: { dept, employeeId } }, create: { dept, employeeId, updatedBy: req.user!.name }, update: {} })),
+  ]);
+  await recordAudit({ userId: req.user!.sub, action: "DEPT_TEAM_LEADS_SET", entityType: "Department", entityId: dept, beforeData: { employeeIds: before }, afterData: { employeeIds: ids }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.json({ ok: true });
 });
 
 // Leadership/Admin only: set (or clear, with employeeId null) a department's head.
@@ -92,12 +114,14 @@ export const departmentSummary: RequestHandler = asyncHandler(async (req, res) =
 
   const leader = await isLeadership(req.user!);
   const headed = await headedDepartments(req.user!);
-  if (!leader && !headed.includes(dept)) return res.status(403).json({ error: "Forbidden — not your department" });
+  const led = await ledDepartments(req.user!);
+  if (!leader && !headed.includes(dept) && !led.includes(dept)) return res.status(403).json({ error: "Forbidden — not your department" });
   const roles = req.user!.roles ?? [];
   const money = leader || headed.includes(dept) || roles.includes("SALES") || roles.includes("SALES_HEAD") || roles.includes("FINANCE");
 
   const svc = SERVICE_DEPARTMENTS.includes(dept);
   const prev = prevMonth(month);
+  const leadNames = (await prisma.departmentTeamLead.findMany({ where: { dept }, include: { employee: { select: { name: true } } }, orderBy: { createdAt: "asc" } })).map((r) => r.employee.name);
   const [headRow, team, prevTeam, clients, prevClients, tasks, rev, prevRev] = await Promise.all([
     prisma.departmentHead.findUnique({ where: { dept }, include: { employee: { select: { name: true } } } }),
     teamFor(dept, month), teamFor(dept, prev),
@@ -112,13 +136,16 @@ export const departmentSummary: RequestHandler = asyncHandler(async (req, res) =
   const [fbNow, fbPrev] = svc ? await Promise.all([month, prev].map((m) => prisma.clientFeedback.findMany({ where: { dept, month: m }, include: { client: { select: { id: true, name: true } } }, orderBy: { date: "desc" } }))) : [[], []];
   const avgOf = (r: { rating: number }[]) => (r.length ? Math.round((r.reduce((s, f) => s + f.rating, 0) / r.length) * 100) / 100 : null);
   const today = new Date().toISOString().slice(0, 10);
+  const marks = await prisma.attendanceRecord.findMany({ where: { employeeId: { in: (await prisma.employee.findMany({ where: { dept, employmentStatus: { not: "LEFT" } }, select: { id: true, employeeCode: true } })).map((e) => e.id) }, date: new Date(`${new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10)}T00:00:00Z`) }, select: { status: true, employee: { select: { employeeCode: true } } } });
+  const todayOf = new Map(marks.map((m) => [m.employee.employeeCode, m.status]));
   const byPerson = (name: string) => tasks.filter((t) => t.assignedTo === name);
   const openFor = (clientId: string) => tasks.filter((t) => t.clientId === clientId).length;
   res.json({
     dept, month, head: headRow?.employee?.name ?? null, service: svc, canSeeMoney: money,
+    teamLeads: leadNames,
     team: team.map((e) => {
       const t = byPerson(e.name);
-      return { id: e.employeeCode, name: e.name, role: e.role, openTasks: t.length, overdue: t.filter((x) => x.dueAt.toISOString().slice(0, 10) < today).length, clients: new Set(t.map((x) => x.clientId)).size };
+      return { id: e.employeeCode, name: e.name, role: e.role, today: todayOf.get(e.employeeCode) ?? null, openTasks: t.length, overdue: t.filter((x) => x.dueAt.toISOString().slice(0, 10) < today).length, clients: new Set(t.map((x) => x.clientId)).size };
     }),
     clients: clients.map((c) => ({ id: c.id, name: c.name, accountManager: c.accountManager ?? "", openTasks: openFor(c.id), rating: fbNow.find((f) => f.clientId === c.id)?.rating ?? null })),
     feedback: fbNow.map((f) => ({ id: f.id, client: f.client.name, clientId: f.clientId, rating: f.rating, comment: f.comment, via: f.via, by: f.by, date: f.date.toISOString().slice(0, 10) })),
@@ -134,7 +161,8 @@ export const departmentSummary: RequestHandler = asyncHandler(async (req, res) =
 export const departmentsOverview: RequestHandler = asyncHandler(async (req, res) => {
   const leader = await isLeadership(req.user!);
   const headed = await headedDepartments(req.user!);
-  const visible = DEPARTMENTS.filter((d) => leader || headed.includes(d));
+  const led = await ledDepartments(req.user!);
+  const visible = DEPARTMENTS.filter((d) => leader || headed.includes(d) || led.includes(d));
   const month = new Date().toISOString().slice(0, 7);
   const heads = await prisma.departmentHead.findMany({ include: { employee: { select: { name: true } } } });
   const tiles = await Promise.all(visible.map(async (d) => ({

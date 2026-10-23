@@ -2,7 +2,7 @@ import { autoStartServices } from "../../services/boardAutoStart";
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
-import { seesWholeSalesTeam, seesAllClients } from "../../middleware/crmAccess";
+import { seesWholeSalesTeam, seesAllClients, isCrmUser } from "../../middleware/crmAccess";
 import { recordAudit } from "../../services/audit.service";
 import { clientCreateSchema, clientUpdateSchema } from "../../validation/crm.schemas";
 import { nextSequentialCode } from "../../utils/sequentialCode";
@@ -52,8 +52,12 @@ export const updateClient: RequestHandler = asyncHandler(async (req, res) => {
   const existing = await prisma.client.findUnique({ where: { id: req.params.id } });
   if (!existing) return res.status(404).json({ error: "Client not found" });
   // Same scoping as listClients/getClient: a plain Sales rep only ever edits their own book.
-  if (!seesWholeSalesTeam(req.user?.roles) && existing.salesPerson !== req.user!.name) {
+  if (!seesAllClients(req.user?.roles) && existing.salesPerson !== req.user!.name) {
     return res.status(403).json({ error: "Forbidden — not your client" });
+  }
+  // A Clients-only login manages client details but can't pause or churn (deactivate) a client.
+  if (!isCrmUser(req.user?.roles) && parsed.data.status && parsed.data.status !== existing.status) {
+    return res.status(403).json({ error: "Forbidden — you can't change a client's status" });
   }
   const client = await prisma.client.update({ where: { id: existing.id }, data: parsed.data });
   const added = client.services.filter((x) => !existing.services.includes(x));
