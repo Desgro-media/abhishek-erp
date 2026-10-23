@@ -2222,10 +2222,11 @@ function openMarkHoliday(date){
    from /api/departments (computed server-side, so a head doesn't need Clients or Finance access). Score,
    client feedback and the action plan attach to this page in later packages. */
 let deptHeads = {};            // dept -> head's name | null
+let deptLeads = {};            // dept -> team leads' names
 let deptHeadSince = {};        // dept -> IST date the current head was assigned
 let deptOverviewTiles = [];
 let deptSummaries = {};        // dept -> last loaded /summary
-async function loadDeptHeads(){ const r = await apiJson("/api/departments/heads"); deptHeads = r.heads; deptHeadSince = r.since || {}; }
+async function loadDeptHeads(){ const r = await apiJson("/api/departments/heads"); deptHeads = r.heads; deptHeadSince = r.since || {}; deptLeads = r.leads || {}; }
 async function loadDeptOverview(){ deptOverviewTiles = (await apiJson("/api/departments/overview")).tiles; }
 async function loadDeptSummary(d){ deptSummaries[d] = await apiJson(`/api/departments/${encodeURIComponent(d)}/summary`); }
 function deptSlug(d){ return d.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
@@ -2233,7 +2234,8 @@ function deptFromSlug(sl){ return DEPARTMENTS.find(d=>deptSlug(d)===sl) || null;
 function deptHeadOf(d){ return deptHeads[d] || null; }
 function headDeptOf(name){ return DEPARTMENTS.find(d=>deptHeads[d]===name) || null; }
 function isDeptHead(u){ return !!(u && headDeptOf(u.name)); }
-function canSeeDeptPage(d){ return !!currentUser && (isLeadershipRole(currentUser) || headDeptOf(currentUser.name)===d); }
+function isTeamLeadOf(d){ return !!currentUser && (deptLeads[d]||[]).includes(currentUser.name); }
+function canSeeDeptPage(d){ return !!currentUser && (isLeadershipRole(currentUser) || headDeptOf(currentUser.name)===d || isTeamLeadOf(d)); }
 function deptsVisibleTo(){ return DEPARTMENTS.filter(canSeeDeptPage); }
 function prevMonth(m){ const [y,mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo-2, 1)).toISOString().slice(0,7); }
 function shortInr(n){ n = Math.round(n||0); return n>=100000 ? '₹'+(n/100000).toFixed(n>=1000000?1:2).replace(/\.?0+$/,'')+'L' : n>=1000 ? '₹'+(n/1000).toFixed(n>=10000?0:1).replace(/\.0$/,'')+'K' : '₹'+n; }
@@ -2266,6 +2268,28 @@ function openAssignDeptHead(dept){
       await Promise.all([loadDeptHeads(), loadDeptOverview(), loadDeptSummary(dept).catch(()=>{})]);
       toast(id?"Head updated":"Head cleared"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't update the head"); }
+  });
+}
+function openAssignDeptTeamLeads(dept){
+  if(!isLeadershipRole(currentUser)) return;
+  const cur = deptLeads[dept] || [];
+  const people = employees.filter(e=>e.employmentStatus!=="Left").sort((a,b)=>(b.dept===dept)-(a.dept===dept) || a.name.localeCompare(b.name));
+  showModal(`
+    <div class="modal-head"><h3>${esc(dept)} — team leads</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-dept-leads"><div class="modal-body">
+      <div class="check-row">${people.map(e=>`<label class="check-chip"><input type="checkbox" name="lead" value="${esc(e._dbId)}" ${cur.includes(e.name)?"checked":""}>${esc(e.name)}${e.dept===dept?"":" · "+esc(e.dept)}</label>`).join("")}</div>
+      <div class="subtext">A team lead sees this department's page under Departments: its staff, today's attendance, open and overdue work, clients and ratings. It's view-only, with no money figures. Only leadership can change this.</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-dept-leads").addEventListener("submit", async ev=>{
+    ev.preventDefault();
+    const ids = new FormData(ev.target).getAll("lead");
+    try{
+      await apiJson(`/api/departments/${encodeURIComponent(dept)}/team-leads`, { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ employeeIds:ids }) });
+      await Promise.all([loadDeptHeads(), loadDeptSummary(dept).catch(()=>{})]);
+      toast("Team leads updated"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't update the team leads"); }
   });
 }
 function deptTile(d){
@@ -2391,10 +2415,11 @@ function deptPage(d){
   if(!s) return `<div class="empty">Loading ${esc(d)}…</div>`;
   const M = monthLabel(s.month).split(' ')[0], head = s.head;
   const ps = head ? planScore(d, s.month) : null, psP = head ? planScore(d, prevMonth(s.month)) : null;
-  const attLabel = id => { const a = attendanceToday[id]; return a ? attendanceLabel(a.status) : null; };
-  const showToday = s.team.some(e=>attendanceToday[e.id]);
+  const attLabel = id => { const a = attendanceToday[id]; if(a) return attendanceLabel(a.status); const m = s.team.find(e=>e.id===id); return m && m.today ? attendanceLabel(ATTENDANCE_FROM_API[m.today]) : null; };
+  const showToday = s.team.some(e=>attendanceToday[e.id] || e.today);
   const header = `<div class="panel" style="padding:16px 18px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between;">
     <div style="display:flex;align-items:center;gap:12px;"><div class="mini-avatar" style="width:40px;height:40px;font-size:13px;">${head?initials(head):'—'}</div><div><div class="kpi-label">Department head</div><div style="font-weight:800;font-size:14px;">${head?esc(head):'Not assigned'}</div></div></div>
+    <div><div class="kpi-label">Team leads</div><div style="font-weight:700;font-size:13px;">${(s.teamLeads||[]).length?(s.teamLeads).map(esc).join(', '):'<span class="faint">None</span>'}</div></div>
     <div style="display:flex;gap:22px;flex-wrap:wrap;">
       <div><div class="kpi-label">Team</div><div class="mono" style="font-size:18px;font-weight:800;">${s.team.length}</div></div>
       ${s.service?`<div><div class="kpi-label">Clients · ${M}</div><div class="mono" style="font-size:18px;font-weight:800;">${s.clients.length}</div></div>`:''}
@@ -2402,14 +2427,14 @@ function deptPage(d){
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
       ${head && isLeadershipRole(currentUser) ? `<button class="btn btn-sm ghost" onclick="setSub('workspace','plans')">Action plans</button>` : (head && currentUser.name===head ? `<button class="btn btn-sm ghost" onclick="setSub('workspace','plan')">My action plan</button>` : '')}
-      ${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${head?'Change head':'Assign head'}</button>`:''}
+      ${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openAssignDeptHead('${esc(d)}')">${head?'Change head':'Assign head'}</button><button class="btn btn-sm ghost" onclick="openAssignDeptTeamLeads('${esc(d)}')">Team leads</button>`:''}
     </div>
   </div>`;
   const insights = `<div class="panel"><div class="panel-head"><div><h3>${esc(d)} · ${monthLabel(s.month)}</h3><div class="sub">This month against last month</div></div></div><div class="panel-body">${deptInsightsHTML(s)}</div></div>`;
   const teamPanel = `<div class="panel">
     <div class="panel-head"><div><h3>Team</h3><div class="sub">${s.team.length} people · open client work${showToday?" and today's attendance":""}</div></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Person</th>${showToday?'<th>Today</th>':''}<th class="num">Open tasks</th><th class="num">Overdue</th>${s.service?'<th class="num">Clients</th>':''}</tr></thead><tbody>${s.team.map(e=>{ const st = attLabel(e.id); return `<tr>
-      <td>${personCell(e)}${e.name===head?' '+pill('Head','blue'):''}</td>
+      <td>${personCell(e)}${e.name===head?' '+pill('Head','blue'):''}${(s.teamLeads||[]).includes(e.name)?' '+pill('Team lead','neutral'):''}</td>
       ${showToday?`<td>${st?pill(st, statusKind(st)):pill('Not marked','neutral')}</td>`:''}
       <td class="num mono">${e.openTasks||'—'}</td><td class="num mono ${e.overdue?'neg':'faint'}">${e.overdue||'—'}</td>${s.service?`<td class="num mono">${e.clients||'—'}</td>`:''}
     </tr>`; }).join('') || `<tr><td colspan="5"><div class="empty">No one in this department.</div></td></tr>`}</tbody></table></div>
@@ -6697,14 +6722,14 @@ function clientsAll(){
   <div class="panel">
     <div class="panel-head"><h3>${isSalesViewer?'My clients':'Clients'}</h3><div class="sub">${filtered.length} of ${live.length}${clientsMonthFilter!=='All'?' onboarded in '+monthLabel(clientsMonthFilter):' on record'}${Object.values(F).some(v=>v!=='All')?' · filtered':''}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th>${hidePayment?'':'<th class="num">Payment Due</th>'}<th>Status</th><th></th></tr></thead>
-      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openEditClient('${c.id}')" title="Edit client"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button><button class="btn btn-sm ghost" onclick="event.stopPropagation();archiveClient('${c.id}')" title="Archive client — hides them from the working lists, keeps every invoice, quote and payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Archive</button>${canDeleteClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openConfirmDelete('client','${c.id}')" title="Delete client (only for records added by mistake)"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?6:7}"><div class="empty">${isSalesViewer&&!anyFilter?'No clients assigned to you yet.':'No clients match these filters.'}</div></td></tr>`}</tbody>
+      <tbody>${filtered.map(c=>{ const due=clientPaymentDue(c.id); return `<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td>${hidePayment?'':`<td class="num mono" style="${due>0?'color:var(--neg);font-weight:700;':''}">${due>0?inr(due):'—'}</td>`}<td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openEditClient('${c.id}')" title="Edit client"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${canArchiveClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();archiveClient('${c.id}')" title="Archive client — hides them from the working lists, keeps every invoice, quote and payment"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Archive</button>`:''}${canDeleteClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openConfirmDelete('client','${c.id}')" title="Delete client (only for records added by mistake)"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td></tr>`; }).join("") || `<tr><td colspan="${hidePayment?6:7}"><div class="empty">${isSalesViewer&&!anyFilter?'No clients assigned to you yet.':'No clients match these filters.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>
   ${archived.length ? `
   <details class="panel" style="margin-top:14px;" ${clientsArchivedOpen?'open':''} ontoggle="clientsArchivedOpen=this.open">
     <summary class="panel-head" style="cursor:pointer;list-style:none;"><div><h3>Archived clients</h3><div class="sub">${archived.length} out of the working lists · invoices, quotes and payments are kept</div></div><span class="sub">Show / hide</span></summary>
     <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Services</th><th>Account Manager</th><th>Sales Person</th><th>Status</th><th>Archived</th><th></th></tr></thead>
-      <tbody>${archived.map(c=>`<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td><td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td class="muted">${fmtDate(c.archivedAt)}</td><td><div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();restoreClient('${c.id}')">Restore</button></div></td></tr>`).join("")}</tbody>
+      <tbody>${archived.map(c=>`<tr class="row-click" onclick="openClientDetail('${c.id}')"><td>${clientCell(c.id)}</td><td class="muted" style="max-width:220px;">${c.services.map(s=>`<span class="tag" style="margin:1px 3px 1px 0;">${esc(s)}</span>`).join('')}</td><td class="muted">${esc(c.accountManager)}</td><td class="muted">${esc(c.salesPerson)}</td><td>${pill(c.status,c.status==='Active'?'pos':c.status==='Paused'?'warn':'neg')}</td><td class="muted">${fmtDate(c.archivedAt)}</td><td><div style="display:flex;justify-content:flex-end;">${canArchiveClients()?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();restoreClient('${c.id}')">Restore</button>`:''}</div></td></tr>`).join("")}</tbody>
     </table></div>
   </details>` : ""}`;
 }
@@ -6890,6 +6915,8 @@ function openLogMeeting(clientId){
     collabSave(clientId, "POST", "/meetings", { date:f.get("date"), attendees:f.get("attendees"), notes:f.get("notes") }, "Meeting logged");
   });
 }
+// A Clients-only login manages client details but can't archive, delete or change a client's status (the server enforces the same).
+function canArchiveClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
 function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); loadClientFeedback(id); { const c = clientById(id); if(c && isPerformanceMarketingClient(c)) loadClientReportLink(id); } }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
@@ -7319,7 +7346,7 @@ function openEditClient(id){
         <div><label class="field-label">Sales Person</label><select class="field-input" name="salesPerson">${(()=>{ const pool=assignableEmployees(); const s=pool.filter(e=>e.dept==='Sales'); return (s.length?s:pool).map(e=>`<option ${e.name===c.salesPerson?'selected':''}>${esc(e.name)}</option>`).join(''); })()}</select></div>
       </div>
       <div class="field-row">
-        <div><label class="field-label">Status</label><select class="field-input" name="status">${["Active","Paused","Churned"].map(s=>`<option ${s===c.status?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div><label class="field-label">Status</label><select class="field-input" name="status" ${canArchiveClients()?'':'disabled title="Only Sales or Admin can change a client\'s status"'}>${["Active","Paused","Churned"].map(s=>`<option ${s===c.status?'selected':''}>${s}</option>`).join('')}</select></div>
         <div><label class="field-label">Billing</label><select class="field-input" name="billingType">${["Prepaid","Postpaid"].map(b=>`<option ${b===(c.billingType||"Prepaid")?'selected':''}>${b}</option>`).join('')}</select></div>
       </div>
     </div>
@@ -7332,7 +7359,7 @@ function openEditClient(id){
       await apiJson(`/api/crm/clients/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
         name:f.get("name"), industry:f.get("industry"), city:f.get("city"), services:f.getAll("services"),
         accountManager:f.get("accountManager")||undefined, salesPerson:f.get("salesPerson")||undefined,
-        status:TITLECASE_TO_API(f.get("status")), billingType:TITLECASE_TO_API(f.get("billingType")),
+        status:canArchiveClients()?TITLECASE_TO_API(f.get("status")):undefined, billingType:TITLECASE_TO_API(f.get("billingType")),
       })});
       await loadClients();
       toast("Client updated"); closeModal(); render();

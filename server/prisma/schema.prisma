@@ -236,6 +236,7 @@ model Employee {
   @@index([dept])
   @@map("employees")
   departmentHeads DepartmentHead[]
+  departmentTeamLeads DepartmentTeamLead[]
   programAttendances HrProgramAttendee[]
   programFeedback    HrProgramFeedback[]
 }
@@ -1517,6 +1518,20 @@ model DepartmentHead {
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
   @@map("department_heads")
+}
+
+// Team leads under a department head: any number per department. A team lead opens their own department's page
+// (staff, attendance, open work, clients) to monitor it — read-only, no money figures, no action plan.
+model DepartmentTeamLead {
+  id         String   @id @default(uuid())
+  dept       String
+  employeeId String   @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  updatedBy  String   @map("updated_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([dept, employeeId])
+  @@map("department_team_leads")
 }
 
 // A department head's daily action plan: a one-line focus, research notes and a running list of items
