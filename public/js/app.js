@@ -7146,7 +7146,7 @@ function serviceBoardHTML(c, svc, readOnly){
 function openBoardCard(clientId, svc, id, presetStage){
   const c = clientById(clientId), cfg = SERVICE_BOARDS[svc]; if(!c || !cfg || !canEditBoard()) return;
   const it = id ? clientTasks.find(x=>x.id===id) : null;
-  const act = activeEmployees(), team = act.filter(e=>e.dept===svc), rest = act.filter(e=>e.dept!==svc);
+  const act = assignableEmployees().filter(e=>!['Left','Terminated','Resigned'].includes(e.employmentStatus)), team = act.filter(e=>e.dept===svc), rest = act.filter(e=>e.dept!==svc);
   const who = it ? it.assignedTo : '';
   const opt = e => `<option value="${esc(e.name)}" ${e.name===who?'selected':''}>${esc(e.name)}</option>`;
   showModal(`
