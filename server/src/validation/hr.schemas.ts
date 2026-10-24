@@ -53,6 +53,7 @@ export const noticePeriodSchema = z.object({
 
 export const confirmDepartureSchema = z.object({
   leavingDate: dateStr.optional(),
+  reason: z.string().trim().max(500).optional(),
 });
 
 // Grants ERP access to an employee who doesn't have it yet, or resets the
