@@ -2110,7 +2110,7 @@ function calTeamHTML(){
   </div></div>`;
 }
 function calAgendaHTML(date){
-  const items = calItemsOn(date);
+  const items = calItemsOn(date).filter(it=>it.kind!=="Content");   // content pieces live on the grid, not in the day's event list
   const dayTasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due===date) : [];
   const hol = hrPolicy.holidays.find(h=>h.date===date);
   const btns = [
