@@ -5014,7 +5014,7 @@ function payrollView(readOnly){
   <div class="panel">
     <div class="panel-head"><h3>Payroll — ${MONTH_LABEL[month]}</h3><div class="sub">${includedEmployees.length} added</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th class="num">Gross</th><th class="num">Deductions</th><th class="num">Net pay</th><th class="num">Paid</th><th class="num">Balance</th><th>Next due</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':'faint'}">${r.calc.balance>0?inr(r.calc.balance):'—'}</td><td>${nextDueCell(r.calc)}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button>${(!readOnly&&(isHRRole(currentUser)||isFinanceAdminUser(currentUser)))?`<button class="btn btn-sm ghost" onclick="openDeletePayroll('${r.emp.id}')" title="Delete a payment or remove from this month's payroll" style="color:var(--neg);">Delete</button>`:""}<button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit this month's gross salary (not payments — use Payslip to fix payments)"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="9"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
+      <tbody>${rows.length ? rows.map(r=>`<tr><td>${personCell(r.emp)}</td><td class="num mono">${inr(r.calc.gross)}</td><td class="num mono">${inr(r.calc.totalDeductions)}${r.calc.lopDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.lopDays}d LOP</div>`:""}${r.calc.wfhDeduction>0?`<div class="subtext" style="color:var(--neg);text-align:right;">incl. ${r.calc.wfhExcessDays}d WFH</div>`:""}</td><td class="num mono" style="font-weight:700;">${inr(r.calc.net)}</td><td class="num mono ${r.calc.paid>0?'':'faint'}">${r.calc.paid>0?inr(r.calc.paid):'—'}</td><td class="num mono ${r.calc.balance>0?'warn':r.calc.paid>r.calc.net?'':'faint'}" ${r.calc.paid>r.calc.net?'style="color:var(--neg);" title="Paid more than net pay"':''}>${r.calc.balance>0?inr(r.calc.balance):(r.calc.paid>r.calc.net?'Extra '+inr(r.calc.paid-r.calc.net):'—')}</td><td>${nextDueCell(r.calc)}</td><td>${pill(r.calc.payStatus,statusKind(r.calc.payStatus))}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${(!readOnly && r.calc.balance>0)?`<button class="btn btn-sm" onclick="openRecordPayment('${r.emp.id}')">Pay</button>`:""}<button class="btn btn-sm ghost" onclick="openPayslip('${r.emp.id}',${!!readOnly})">Payslip</button>${(!readOnly&&(isHRRole(currentUser)||isFinanceAdminUser(currentUser)))?`<button class="btn btn-sm ghost" onclick="openDeletePayroll('${r.emp.id}')" title="Delete a payment or remove from this month's payroll" style="color:var(--neg);">Delete</button>`:""}<button class="btn btn-sm ghost" onclick="openAddPayrollEntry('${r.emp.id}')" title="Edit this month's gross salary (not payments — use Payslip to fix payments)"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div></td></tr>`).join("") : `<tr><td colspan="9"><div class="empty">No one added to this month's payroll yet.</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -5534,8 +5534,8 @@ async function openEmployeeDetail(id){
     </div>
     <div class="modal-foot">
       <div style="display:flex;gap:8px;">
-        ${e.employmentStatus==="Active" ? `<button class="btn btn-sm ghost" onclick="openMarkNoticePeriod('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-bell"/></svg>Mark notice period</button>` : ""}
-        ${e.employmentStatus==="Notice Period" ? `<button class="btn btn-sm ghost" onclick="cancelNoticePeriod('${e.id}')">Cancel notice period</button><button class="btn btn-sm danger" onclick="openConfirmDeparture('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Confirm departure</button>` : ""}
+        ${e.employmentStatus==="Active" ? `<button class="btn btn-sm ghost" onclick="openMarkNoticePeriod('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-bell"/></svg>Mark notice period</button><button class="btn btn-sm danger" onclick="openConfirmDeparture('${e.id}', true)"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Terminate</button>` : ""}
+        ${e.employmentStatus==="Notice Period" ? `<button class="btn btn-sm ghost" onclick="cancelNoticePeriod('${e.id}')">Cancel notice period</button><button class="btn btn-sm danger" onclick="openConfirmDeparture('${e.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg>Confirm departure</button><button class="btn btn-sm danger" onclick="openConfirmDeparture('${e.id}', true)">Terminate now</button>` : ""}
         ${e.employmentStatus==="Left" ? `<button class="btn btn-sm ghost" onclick="reinstateEmployee('${e.id}')">Reinstate</button>` : ""}
       </div>
       <div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn primary" onclick="openEditEmployee('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-edit"/></svg>Edit details</button></div>
@@ -5593,22 +5593,24 @@ async function cancelNoticePeriod(id){
     toast("Notice period cancelled"); await openEmployeeDetail(id); render();
   }catch(err){ toast(err.message || "Couldn't cancel notice period"); }
 }
-function openConfirmDeparture(id){
+function openConfirmDeparture(id, terminate){
   const e = byId(id);
   showModal(`
-    <div class="modal-head"><h3>Confirm departure</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-head"><h3>${terminate?"Terminate employee":"Confirm departure"}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <div class="modal-body">
       <div class="person" style="margin-bottom:4px;">${personCell(e)}</div>
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div>This moves them out of the active directory into the archive and blocks their sign-in immediately. You can reinstate them from the archive later if needed.</div></div>
-      <div><label class="field-label">Last working day</label><input class="field-input" type="date" id="departure-date" value="${e.leavingDate||TODAY}"></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-archive"/></svg><div>This removes them from the ERP: they leave the active directory, and their sign-in is blocked immediately. Their records are kept in the archive and you can reinstate them later if needed.</div></div>
+      <div><label class="field-label">${terminate?"Termination date":"Last working day"}</label><input class="field-input" type="date" id="departure-date" value="${e.leavingDate||TODAY}"></div>
+      ${terminate?`<div><label class="field-label">Reason (optional)</label><textarea class="field-input" id="departure-reason" rows="3" style="resize:vertical;font-family:inherit;" placeholder="Why is this person being terminated?"></textarea></div>`:""}
     </div>
-    <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><button type="button" class="btn danger" onclick="confirmDeparture('${e.id}')">Confirm &amp; archive</button></div>`);
+    <div class="modal-foot"><button type="button" class="btn ghost" onclick="openEmployeeDetail('${e.id}')">Back</button><button type="button" class="btn danger" onclick="confirmDeparture('${e.id}')">${terminate?"Terminate &amp; remove from ERP":"Confirm &amp; archive"}</button></div>`);
 }
 async function confirmDeparture(id){
   const e = byId(id);
   const dateInput = document.getElementById('departure-date');
+  const reasonInput = document.getElementById('departure-reason');
   try{
-    await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/confirm-departure`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ leavingDate: (dateInput && dateInput.value) || undefined }) });
+    await apiJson(`/api/hr/employees/${employeeDbIdByCode[id]}/confirm-departure`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ leavingDate: (dateInput && dateInput.value) || undefined, reason: (reasonInput && reasonInput.value.trim()) || undefined }) });
     await Promise.all([loadEmployees(), loadArchivedEmployees()]);
     toast(e.name+" archived"); closeModal(); render();
   }catch(err){ toast(err.message || "Couldn't confirm departure"); }
@@ -5952,7 +5954,7 @@ function payrollInstalmentsDue(){
 }
 function nextDueCell(c){
   const sc = c.schedule;
-  if(c.schedule && c.schedule.overpayment>0) return `<span class="pill neg" title="Net pay is below what was already paid">Overpaid ${inr(c.schedule.overpayment)}</span>`;
+  if(c.paid>c.net) return '<span class="faint">—</span>';
   if(!sc || !sc.nextDue) return c.balance>0 ? '<span class="faint" style="font-size:12px;">No schedule</span>' : '<span class="faint">—</span>';
   const n = sc.nextDue;
   return `<div class="mono" style="font-size:12.5px;">${inr(n.amount)}</div><div class="subtext" style="${n.status==='Overdue'?'color:var(--neg);':''}">${n.status==='Overdue'?'overdue · ':''}${fmtDateShort(n.dueDate)}</div>`;

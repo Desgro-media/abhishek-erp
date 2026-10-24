@@ -392,7 +392,7 @@ export const confirmDeparture: RequestHandler = asyncHandler(async (req, res) =>
   const employee = await prisma.$transaction(async (tx) => {
     const updated = await tx.employee.update({
       where: { id: employeeId },
-      data: { employmentStatus: "LEFT", leavingDate },
+      data: { employmentStatus: "LEFT", leavingDate, ...(d.reason ? { noticeNote: d.reason } : {}) },
     });
     if (before.user) {
       await tx.user.update({ where: { id: before.user.id }, data: { active: false } });
@@ -407,7 +407,7 @@ export const confirmDeparture: RequestHandler = asyncHandler(async (req, res) =>
     entityType: "Employee",
     entityId: employeeId,
     beforeData: { employmentStatus: before.employmentStatus },
-    afterData: { employmentStatus: "LEFT", leavingDate: leavingDate.toISOString(), loginRevoked: !!before.user },
+    afterData: { employmentStatus: "LEFT", leavingDate: leavingDate.toISOString(), reason: d.reason, loginRevoked: !!before.user },
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"] ?? null,
   });
