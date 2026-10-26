@@ -3285,8 +3285,8 @@ async function openProgramFeedbackLink(id){
   const p = programById(id);
   if(!p || !canManagePrograms()) return;
   const n = p.attendees.length;
-  const state = p.status!=="Completed" ? {k:'warn', t:'Opens after close-out', d:`The link works once you close out the program and tick who attended — only they can rate it.`}
-    : feedbackIsOpen(p) ? {k:'pos', t:'Open till '+fmtDateShort(feedbackClosesOn(p)), d:`Anyone marked as attending can rate it once, up to ${FEEDBACK_WINDOW_DAYS} days after the program.`}
+  const state = p.status!=="Completed" ? {k:'warn', t:'Opens after close-out', d:`The link works once you close out the program and tick who attended — everyone the program was for can rate it.`}
+    : feedbackIsOpen(p) ? {k:'pos', t:'Open till '+fmtDateShort(feedbackClosesOn(p)), d:`Anyone the program was for can rate it once, up to ${FEEDBACK_WINDOW_DAYS} days after the program.`}
     : {k:'neutral', t:'Closed '+fmtDateShort(feedbackClosesOn(p)), d:`Feedback closed ${FEEDBACK_WINDOW_DAYS} days after the program. The link now tells people it has closed.`};
   showModal(`
     <div class="modal-head"><h3>Feedback link — ${esc(p.title)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
@@ -3318,7 +3318,7 @@ async function openFeedbackFromLink(id){
   try{ await loadMyPrograms(); }catch(e){}
   const due = myProgramsData.feedbackDue.find(x=>x.id===id);
   if(due) return openProgramFeedback(id);
-  note("Nothing to rate here", "This feedback link isn't open for you — it may have closed (feedback stays open for 14 days), you may have rated it already, or HR didn't mark you as attending. Check with HR if you were there.");
+  note("Nothing to rate here", "This feedback link isn't open for you — it may have closed (feedback stays open for 14 days), you may have rated it already, or the program wasn't meant for your team. Check with HR if you were there.");
 }
 // HR's view of a program's responses — distribution + comments, no names.
 async function openProgramResponses(programId){
@@ -3331,7 +3331,7 @@ async function openProgramResponses(programId){
       <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);">
         <div class="kpi-card"><div class="kpi-label">Overall</div><div class="kpi-value mono">${r.rating==null?'—':r.rating.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div><div class="kpi-sub">${starsHTML(r.rating)}</div></div>
         <div class="kpi-card"><div class="kpi-label">${p.type==="Team Building"?"Team bonding":"Usefulness"}</div><div class="kpi-value mono">${r.useful==null?'—':r.useful.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div></div>
-        <div class="kpi-card"><div class="kpi-label">Responses</div><div class="kpi-value mono">${r.responses}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${r.attendees}</span></div><div class="kpi-sub">${r.attendees?Math.round(r.responses/r.attendees*100):0}% of attendees</div></div>
+        <div class="kpi-card"><div class="kpi-label">Responses</div><div class="kpi-value mono">${r.responses}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${r.attendees}</span></div><div class="kpi-sub">${r.attendees?Math.min(100,Math.round(r.responses/r.attendees*100)):0}% of attendees</div></div>
       </div>
       <div class="barchart">${r.distribution.map(d=>`<div class="bar-row" style="grid-template-columns:60px 1fr 28px;"><div class="bar-label">${'★'.repeat(d.rating)}</div><div class="bar-track"><div class="bar-fill" style="width:${d.count/max*100}%;background:var(--warn);"></div></div><div class="bar-val">${d.count}</div></div>`).join('')}</div>
       <div class="section-label">Who has responded</div>
