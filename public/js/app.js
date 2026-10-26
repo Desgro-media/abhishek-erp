@@ -7137,15 +7137,17 @@ function serviceBoardHTML(c, svc, readOnly){
   const inMonth = mine.filter(x=>cardInMonth(x, st.month) || (cfg.projectTasks && st.project && st.project!=='All' && x.project===st.project));
   const projs = cfg.projectTasks ? boardProjects(c.id, svc) : []; if(st.project && st.project!=='All' && !projs.some(p2=>p2.id===st.project)) st.project = 'All';
   const shown = inMonth.filter(x=>(st.platform==='All' || (x.platforms||[]).includes(st.platform)) && (st.assignee==='All' || x.assignedTo===st.assignee) && (!st.project || st.project==='All' || x.project===st.project));
-  const doneNow = mine.filter(x=>x.status==="Done" && cardMonth(x)===st.month).length, donePrev = mine.filter(x=>x.status==="Done" && cardMonth(x)===prev).length;
-  const toDo = inMonth.filter(x=>x.status!=="Done"), overdue = toDo.filter(cardOverdue);
+  const delivered = x=>x.status==="Done" && x.stage===last;   // Done in an earlier column only means that step is finished
+  const doneNow = mine.filter(x=>delivered(x) && cardMonth(x)===st.month).length, donePrev = mine.filter(x=>delivered(x) && cardMonth(x)===prev).length;
+  const toDo = inMonth.filter(x=>!delivered(x)), overdue = toDo.filter(cardOverdue);
   const team = [...new Set([...activeEmployees().filter(e=>e.dept===svc).map(e=>e.name), ...mine.map(x=>x.assignedTo).filter(Boolean)])];
   const kpi = (label, v, sub) => `<div class="kpi-card" style="padding:12px 14px;"><div class="kpi-label">${label}</div><div class="kpi-value mono" style="font-size:20px;">${v}</div><div class="kpi-sub">${sub}</div></div>`;
-  const card = t => { const od = cardOverdue(t), done = t.status==="Done", k = null;
+  const card = t => { const od = cardOverdue(t), done = delivered(t), stepDone = t.status==="Done" && !done, k = null;
     const lateBy = cfg.flagLate && od ? Math.max(1, wdInclusive(addDays(t.due,1), TODAY)) : 0, doneLate = cfg.flagLate && done && t.doneDate && t.due && t.doneDate > t.due;
     return `
     <div class="card ${done?'published':''}" ${edit?`draggable="true" ondragstart="boardDragStart(event,'${t.id}')"`:''} ${(k&&k.late)||lateBy?'data-delayed="1"':''} style="${(k&&k.late)||lateBy?'border-color:var(--neg);box-shadow:inset 3px 0 0 var(--neg);':''}${edit?'':'cursor:default;'}">
       <div class="card-title">${esc(t.title)}</div>
+      ${stepDone?`<div style="font-size:11px;font-weight:700;color:var(--pos);">✓ ${esc(t.stage)} done · ready for the next step</div>`:''}
       ${lateBy?`<div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;font-weight:700;padding:5px 7px;border-radius:6px;background:var(--neg-soft);color:var(--neg);"><span>⚑ Delayed · was due ${fmtDateShort(t.due)}</span><span class="mono">+${lateBy}d</span></div>`:''}
       ${doneLate?`<div style="font-size:11px;font-weight:700;color:var(--warn);">Finished ${Math.max(1, wdInclusive(addDays(t.due,1), t.doneDate))}d late</div>`:''}
       ${k?`<div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;font-weight:700;padding:5px 7px;border-radius:6px;${k.late?'background:var(--neg-soft);color:var(--neg);':'background:var(--surface-sunk);color:var(--ink-soft);'}"><span>${k.late?'⚑ Delayed':'In stage'} · since ${fmtDateShort(k.start)}</span><span class="mono">${k.taken}${k.max?' / '+k.max:''}d</span></div>`:''}
