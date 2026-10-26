@@ -3318,7 +3318,7 @@ async function openFeedbackFromLink(id){
   try{ await loadMyPrograms(); }catch(e){}
   const due = myProgramsData.feedbackDue.find(x=>x.id===id);
   if(due) return openProgramFeedback(id);
-  note("Nothing to rate here", "This feedback link isn't open for you — it may have closed (feedback stays open for 14 days), you may have rated it already, or the program wasn't meant for your team. Check with HR if you were there.");
+  note("Nothing to rate here", "This feedback link isn't open for you — it may have closed (feedback stays open for 14 days), you may have rated it already, or the program wasn't meant for your team. Logins that aren't linked to an employee (like System Admin) can't rate — sign in as the employee. HR can read the results under HR → Programs.");
 }
 // HR's view of a program's responses — distribution + comments, no names.
 async function openProgramResponses(programId){
@@ -3344,7 +3344,7 @@ async function openProgramResponses(programId){
       ${r.comments.length ? r.comments.map(c=>`<div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);font-size:12.5px;">“${esc(c.text)}” <span class="faint" style="font-size:11px;">· ${c.rating}★</span></div>`).join('') : `<div class="empty" style="padding:10px;">No comments yet.</div>`}
     </div>
     <div class="modal-foot"><div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" class="btn ghost" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>
-      <button type="button" class="btn" onclick="shareProgramFeedbackWhatsApp('${p.id}')">Share results on WhatsApp</button>${r.pending.length?`<button type="button" class="btn ghost" onclick="remindProgramFeedbackWhatsApp('${p.id}')">Remind ${r.pending.length} on WhatsApp</button>`:''}</div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+      <button type="button" class="btn primary" onclick="shareProgramResultsInApp('${p.id}')">Send results to attendees</button><button type="button" class="btn" onclick="shareProgramFeedbackWhatsApp('${p.id}')">Share on WhatsApp</button>${r.pending.length?`<button type="button" class="btn ghost" onclick="remindProgramFeedbackWhatsApp('${p.id}')">Remind ${r.pending.length} on WhatsApp</button>`:''}</div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
   programResponsesCache = {id:programId, r};
 }
 let programResponsesCache = null;
@@ -3355,6 +3355,12 @@ function shareProgramFeedbackWhatsApp(id){
   if(r.comments.length) lines.push('', 'What people said:', ...r.comments.map(c=>`• "${c.text}" (${c.rating}★)`));
   lines.push('', 'Thank you all for the feedback — it shapes our next programs.');
   window.open('https://wa.me/?text='+encodeURIComponent(lines.join('\n')), '_blank');
+}
+async function shareProgramResultsInApp(id){
+  const p = programById(id); if(!p) return;
+  if(!confirm(`Send "${p.title}" results to the ${p.attendees.length} people who took part? They get it as a notification in the ERP.`)) return;
+  const r = await programApi("POST", `/${id}/share-results`, null, null);
+  if(r) toast(`Results sent to ${r.sent} ${r.sent===1?'person':'people'}`);
 }
 function remindProgramFeedbackWhatsApp(id){
   const p = programById(id); if(!p) return;
