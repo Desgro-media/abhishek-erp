@@ -60,7 +60,8 @@ export const myPrograms: RequestHandler = asyncHandler(async (req, res) => {
     .filter((p) => invitedTo(p.audience, dept))
     .map((p) => ({ id: p.id, title: p.title, type: p.type, date: d10(p.date), time: p.time, mode: p.mode, venue: p.venue, facilitator: p.facilitator }));
   const due = req.user!.employeeId
-    ? await prisma.hrProgram.findMany({ where: { status: "Completed", date: { gte: new Date(addDays(today, -FEEDBACK_WINDOW_DAYS)) }, attendees: { some: { employeeId: req.user!.employeeId } }, feedback: { none: { employeeId: req.user!.employeeId } } }, orderBy: { date: "desc" } })
+    ? (await prisma.hrProgram.findMany({ where: { status: "Completed", date: { gte: new Date(addDays(today, -FEEDBACK_WINDOW_DAYS)) }, feedback: { none: { employeeId: req.user!.employeeId } } }, include: { attendees: { where: { employeeId: req.user!.employeeId } } }, orderBy: { date: "desc" } }))
+        .filter((p) => p.attendees.length || invitedTo(p.audience, dept))   // anyone the program was for can rate it, not only those ticked as attending
     : [];
   res.json({ upcoming, feedbackDue: due.map((p) => ({ id: p.id, title: p.title, type: p.type, date: d10(p.date), type_: p.type, closesOn: addDays(d10(p.date), FEEDBACK_WINDOW_DAYS) })) });
 });
@@ -139,7 +140,7 @@ export const submitFeedback: RequestHandler = asyncHandler(async (req, res) => {
   if (!p) return res.status(404).json({ error: "Program not found" });
   if (p.status !== "Completed") return res.status(409).json({ error: "Feedback opens once HR closes the program out" });
   if (istToday() > addDays(d10(p.date), FEEDBACK_WINDOW_DAYS)) return res.status(410).json({ error: "Feedback for this program has closed" });
-  if (!p.attendees.length) return res.status(403).json({ error: "HR didn't mark you as attending this program" });
+  if (!p.attendees.length && !invitedTo(p.audience, await callerDept(req.user!))) return res.status(403).json({ error: "This program wasn't for your team" });
   if (await prisma.hrProgramFeedback.findUnique({ where: { programId_employeeId: { programId: p.id, employeeId } } })) return res.status(409).json({ error: "You've already rated this one" });
   await prisma.hrProgramFeedback.create({ data: { programId: p.id, employeeId, ...parsed.data, date: new Date(istToday()) } });
   res.status(201).json({ ok: true });
@@ -148,14 +149,14 @@ export const submitFeedback: RequestHandler = asyncHandler(async (req, res) => {
 // HR's view of a program's responses: the spread of ratings and the comments — never who wrote them.
 export const programResponses: RequestHandler = asyncHandler(async (req, res) => {
   if (!(await canManage(req.user!))) return res.status(403).json({ error: "Forbidden — HR/leadership only" });
-  const p = await prisma.hrProgram.findUnique({ where: { id: req.params.id }, include: { attendees: { include: { employee: { select: { name: true } } } }, feedback: true } });
+  const p = await prisma.hrProgram.findUnique({ where: { id: req.params.id }, include: { attendees: { include: { employee: { select: { name: true } } } }, feedback: { include: { employee: { select: { name: true } } } } } });
   if (!p) return res.status(404).json({ error: "Program not found" });
   const fb = p.feedback, n = fb.length;
   // Who has / hasn't rated is shown as two plain name lists; comments are ordered by rating, not time, so nobody can be matched to one.
   const rated = new Set(fb.map((f) => f.employeeId)), byName = (a: string, b: string) => a.localeCompare(b);
   res.json({
     attendees: p.attendees.length, responses: n,
-    submitted: p.attendees.filter((a) => rated.has(a.employeeId)).map((a) => a.employee.name).sort(byName),
+    submitted: fb.map((f) => f.employee.name).sort(byName),
     pending: p.attendees.filter((a) => !rated.has(a.employeeId)).map((a) => a.employee.name).sort(byName),
     rating: n ? fb.reduce((s, f) => s + f.rating, 0) / n : null, useful: n ? fb.reduce((s, f) => s + f.useful, 0) / n : null,
     distribution: [5, 4, 3, 2, 1].map((r) => ({ rating: r, count: fb.filter((f) => f.rating === r).length })),
