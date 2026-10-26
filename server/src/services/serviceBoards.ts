@@ -12,6 +12,8 @@ export type ServiceBoard = {
   types: string[];
   platforms: string[];
   flagLate?: boolean;
+  // Pipeline boards (Production): Done in My Tasks finishes the person's step and leaves the card in its column.
+  stepDone?: boolean;
   projectTasks?: Record<string, { name: string; days: number }[]>;
   // Marketing Consultation: created for every month a client takes it. Retained clients skip the "new clients only" ones.
   monthlyTasks?: { name: string; days: number; type: string; newOnly?: boolean }[];
@@ -83,6 +85,7 @@ export const DEFAULT_BOARDS: Record<string, ServiceBoard> = {
   },
   "Production": {
     "noun": "deliverable",
+    "stepDone": true,
     "stages": [
       "Idea",
       "Scripting",
@@ -524,12 +527,13 @@ export function boardStageStatus(board: ServiceBoard, stage: string): ClientTask
   return /review|approval/i.test(stage) ? "REVIEW" : "IN_PROGRESS";
 }
 
-// My Tasks moves a card by status — find the column that matches (staying put if the card already is in one).
+// My Tasks moves a card by status — find the column that matches (staying put if the card already is in one; Done never skips ahead).
 export function stageForStatus(board: ServiceBoard, status: ClientTaskStatus, cur: string | null): string | null {
   const st = board.stages;
   if (!st.length) return cur;
   if (cur && boardStageStatus(board, cur) === status) return cur;
-  if (status === "DONE") return st[st.length - 1];
+  // Done in My Tasks means "my step is finished" — the card stays in the column it's in (only the last column is delivered).
+  if (status === "DONE") return board.stepDone && cur && st.includes(cur) ? cur : st[st.length - 1];
   if (status === "TODO") return st[0];
   if (status === "REVIEW") return st.find((x) => boardStageStatus(board, x) === "REVIEW") ?? st[st.length - 2];
   const ci = cur ? st.indexOf(cur) : -1;

@@ -148,13 +148,17 @@ export const submitFeedback: RequestHandler = asyncHandler(async (req, res) => {
 // HR's view of a program's responses: the spread of ratings and the comments — never who wrote them.
 export const programResponses: RequestHandler = asyncHandler(async (req, res) => {
   if (!(await canManage(req.user!))) return res.status(403).json({ error: "Forbidden — HR/leadership only" });
-  const p = await prisma.hrProgram.findUnique({ where: { id: req.params.id }, include: { attendees: true, feedback: { orderBy: { createdAt: "asc" } } } });
+  const p = await prisma.hrProgram.findUnique({ where: { id: req.params.id }, include: { attendees: { include: { employee: { select: { name: true } } } }, feedback: true } });
   if (!p) return res.status(404).json({ error: "Program not found" });
   const fb = p.feedback, n = fb.length;
+  // Who has / hasn't rated is shown as two plain name lists; comments are ordered by rating, not time, so nobody can be matched to one.
+  const rated = new Set(fb.map((f) => f.employeeId)), byName = (a: string, b: string) => a.localeCompare(b);
   res.json({
     attendees: p.attendees.length, responses: n,
+    submitted: p.attendees.filter((a) => rated.has(a.employeeId)).map((a) => a.employee.name).sort(byName),
+    pending: p.attendees.filter((a) => !rated.has(a.employeeId)).map((a) => a.employee.name).sort(byName),
     rating: n ? fb.reduce((s, f) => s + f.rating, 0) / n : null, useful: n ? fb.reduce((s, f) => s + f.useful, 0) / n : null,
     distribution: [5, 4, 3, 2, 1].map((r) => ({ rating: r, count: fb.filter((f) => f.rating === r).length })),
-    comments: fb.filter((f) => f.comment).map((f) => ({ text: f.comment, rating: f.rating })),
+    comments: fb.filter((f) => f.comment).map((f) => ({ text: f.comment, rating: f.rating })).sort((x, y) => y.rating - x.rating || x.text.localeCompare(y.text)),
   });
 });

@@ -3162,7 +3162,7 @@ function hrProgramsView(){
         <td style="white-space:nowrap;"><div style="font-weight:700;">${fmtDateShort(p.date)}</div><div class="subtext">${WEEKDAY_NAMES[new Date(p.date+"T00:00:00").getDay()].slice(0,3)} · ${esc(p.time||'')}</div><div class="subtext">${esc(p.duration||'')}</div></td>
         <td style="min-width:300px;"><div style="font-weight:700;">${esc(p.title)}</div><div class="subtext" style="color:var(--ink-soft);">${esc(p.mode)}${p.venue?' · '+esc(p.venue):''}${p.facilitator?' · with '+esc(p.facilitator):''}</div>${p.objective?`<div class="subtext" style="max-width:300px;white-space:normal;">${esc(p.objective)}</div>`:''}${p.status==='Completed'&&p.outcome?`<div class="subtext" style="max-width:300px;white-space:normal;color:var(--ink-soft);"><b>Outcome:</b> ${esc(p.outcome)}</div>`:''}</td>
         <td>${pill(p.type, PROGRAM_TYPE_KIND[p.type])}</td>
-        <td class="muted" title="${esc(p.audience.includes('All')?'All staff':p.audience.join(', '))}">${esc(programAudienceLabel(p))}<div class="subtext">${p.status==='Completed'?`${p.attendees.length} of ${inv} attended${p.rating!=null?' · ★ '+p.rating.toFixed(1)+' ('+p.responses+')':''}`:`${inv} invited`}</div></td>
+        <td class="muted" title="${esc(p.audience.includes('All')?'All staff':p.audience.join(', '))}">${esc(programAudienceLabel(p))}<div class="subtext">${p.status==='Completed'?`${p.attendees.length} of ${inv} attended${p.rating!=null?` · <a href="#" onclick="openProgramResponses('${p.id}');return false;" style="color:inherit;text-decoration:underline;">★ ${p.rating.toFixed(1)} (${p.responses})</a>`:''}`:`${inv} invited`}</div></td>
         <td class="num mono">${p.budget?inr(p.budget):'—'}${p.status==='Completed'&&p.spent?`<div class="subtext">${inr(p.spent)} spent</div>`:''}</td>
         <td>${pill(p.status, PROGRAM_STATUS_KIND[p.status])}</td>
         <td class="num">${manage?`<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${p.status!=='Completed'&&p.status!=='Cancelled'&&p.date<=TODAY?`<button class="btn btn-sm primary" onclick="openCompleteProgram('${p.id}')">Close out</button>`:''}${p.status==='Completed'?`<button class="btn btn-sm ${feedbackIsOpen(p)?'':'ghost'}" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>`:''}<button class="btn btn-sm ghost" onclick="openProgram('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>`:''}</td>
@@ -3334,10 +3334,31 @@ async function openProgramResponses(programId){
         <div class="kpi-card"><div class="kpi-label">Responses</div><div class="kpi-value mono">${r.responses}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / ${r.attendees}</span></div><div class="kpi-sub">${r.attendees?Math.round(r.responses/r.attendees*100):0}% of attendees</div></div>
       </div>
       <div class="barchart">${r.distribution.map(d=>`<div class="bar-row" style="grid-template-columns:60px 1fr 28px;"><div class="bar-label">${'★'.repeat(d.rating)}</div><div class="bar-track"><div class="bar-fill" style="width:${d.count/max*100}%;background:var(--warn);"></div></div><div class="bar-val">${d.count}</div></div>`).join('')}</div>
+      <div class="section-label">Who has responded</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12.5px;">
+        <div><div style="font-weight:700;color:var(--pos);margin-bottom:4px;">Rated · ${r.submitted.length}</div>${r.submitted.length?r.submitted.map(n=>`<div>${esc(n)}</div>`).join(''):'<div class="faint">Nobody yet</div>'}</div>
+        <div><div style="font-weight:700;color:var(--warn);margin-bottom:4px;">Yet to rate · ${r.pending.length}</div>${r.pending.length?r.pending.map(n=>`<div>${esc(n)}</div>`).join(''):'<div class="faint">Everyone has rated</div>'}</div>
+      </div>
+      <div class="subtext">Names show only who has rated — comments and ratings below are never linked to a person.</div>
       <div class="section-label">Comments</div>
       ${r.comments.length ? r.comments.map(c=>`<div style="padding:8px 10px;border-radius:8px;background:var(--surface-sunk);font-size:12.5px;">“${esc(c.text)}” <span class="faint" style="font-size:11px;">· ${c.rating}★</span></div>`).join('') : `<div class="empty" style="padding:10px;">No comments yet.</div>`}
     </div>
-    <div class="modal-foot"><div><button type="button" class="btn ghost" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+    <div class="modal-foot"><div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" class="btn ghost" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>
+      <button type="button" class="btn" onclick="shareProgramFeedbackWhatsApp('${p.id}')">Share results on WhatsApp</button>${r.pending.length?`<button type="button" class="btn ghost" onclick="remindProgramFeedbackWhatsApp('${p.id}')">Remind ${r.pending.length} on WhatsApp</button>`:''}</div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`);
+  programResponsesCache = {id:programId, r};
+}
+let programResponsesCache = null;
+// WhatsApp has no ERP integration here, so these open WhatsApp with the message filled in — HR picks the group or people to send it to.
+function shareProgramFeedbackWhatsApp(id){
+  const p = programById(id), r = programResponsesCache && programResponsesCache.id===id ? programResponsesCache.r : null; if(!p || !r) return;
+  const lines = [`*Feedback — ${p.title}* (${fmtDate(p.date)})`, `Overall ${r.rating==null?'—':r.rating.toFixed(1)}/5 · ${p.type==="Team Building"?"Team bonding":"Usefulness"} ${r.useful==null?'—':r.useful.toFixed(1)}/5 · ${r.responses} of ${r.attendees} responded`];
+  if(r.comments.length) lines.push('', 'What people said:', ...r.comments.map(c=>`• "${c.text}" (${c.rating}★)`));
+  lines.push('', 'Thank you all for the feedback — it shapes our next programs.');
+  window.open('https://wa.me/?text='+encodeURIComponent(lines.join('\n')), '_blank');
+}
+function remindProgramFeedbackWhatsApp(id){
+  const p = programById(id); if(!p) return;
+  window.open('https://wa.me/?text='+encodeURIComponent(programFeedbackMessage(p)), '_blank');
 }
 // Staff My Workspace: programs they attended and haven't rated.
 function feedbackDueHTML(){
@@ -7137,15 +7158,17 @@ function serviceBoardHTML(c, svc, readOnly){
   const inMonth = mine.filter(x=>cardInMonth(x, st.month) || (cfg.projectTasks && st.project && st.project!=='All' && x.project===st.project));
   const projs = cfg.projectTasks ? boardProjects(c.id, svc) : []; if(st.project && st.project!=='All' && !projs.some(p2=>p2.id===st.project)) st.project = 'All';
   const shown = inMonth.filter(x=>(st.platform==='All' || (x.platforms||[]).includes(st.platform)) && (st.assignee==='All' || x.assignedTo===st.assignee) && (!st.project || st.project==='All' || x.project===st.project));
-  const doneNow = mine.filter(x=>x.status==="Done" && cardMonth(x)===st.month).length, donePrev = mine.filter(x=>x.status==="Done" && cardMonth(x)===prev).length;
-  const toDo = inMonth.filter(x=>x.status!=="Done"), overdue = toDo.filter(cardOverdue);
+  const delivered = x=>x.status==="Done" && x.stage===last;   // Done in an earlier column only means that step is finished
+  const doneNow = mine.filter(x=>delivered(x) && cardMonth(x)===st.month).length, donePrev = mine.filter(x=>delivered(x) && cardMonth(x)===prev).length;
+  const toDo = inMonth.filter(x=>!delivered(x)), overdue = toDo.filter(cardOverdue);
   const team = [...new Set([...activeEmployees().filter(e=>e.dept===svc).map(e=>e.name), ...mine.map(x=>x.assignedTo).filter(Boolean)])];
   const kpi = (label, v, sub) => `<div class="kpi-card" style="padding:12px 14px;"><div class="kpi-label">${label}</div><div class="kpi-value mono" style="font-size:20px;">${v}</div><div class="kpi-sub">${sub}</div></div>`;
-  const card = t => { const od = cardOverdue(t), done = t.status==="Done", k = null;
+  const card = t => { const od = cardOverdue(t), done = delivered(t), stepDone = t.status==="Done" && !done, k = null;
     const lateBy = cfg.flagLate && od ? Math.max(1, wdInclusive(addDays(t.due,1), TODAY)) : 0, doneLate = cfg.flagLate && done && t.doneDate && t.due && t.doneDate > t.due;
     return `
     <div class="card ${done?'published':''}" ${edit?`draggable="true" ondragstart="boardDragStart(event,'${t.id}')"`:''} ${(k&&k.late)||lateBy?'data-delayed="1"':''} style="${(k&&k.late)||lateBy?'border-color:var(--neg);box-shadow:inset 3px 0 0 var(--neg);':''}${edit?'':'cursor:default;'}">
       <div class="card-title">${esc(t.title)}</div>
+      ${stepDone?`<div style="font-size:11px;font-weight:700;color:var(--pos);">✓ ${esc(t.stage)} done · ready for the next step</div>`:''}
       ${lateBy?`<div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;font-weight:700;padding:5px 7px;border-radius:6px;background:var(--neg-soft);color:var(--neg);"><span>⚑ Delayed · was due ${fmtDateShort(t.due)}</span><span class="mono">+${lateBy}d</span></div>`:''}
       ${doneLate?`<div style="font-size:11px;font-weight:700;color:var(--warn);">Finished ${Math.max(1, wdInclusive(addDays(t.due,1), t.doneDate))}d late</div>`:''}
       ${k?`<div style="display:flex;justify-content:space-between;gap:6px;font-size:11px;font-weight:700;padding:5px 7px;border-radius:6px;${k.late?'background:var(--neg-soft);color:var(--neg);':'background:var(--surface-sunk);color:var(--ink-soft);'}"><span>${k.late?'⚑ Delayed':'In stage'} · since ${fmtDateShort(k.start)}</span><span class="mono">${k.taken}${k.max?' / '+k.max:''}d</span></div>`:''}
