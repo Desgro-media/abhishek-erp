@@ -6574,8 +6574,10 @@ let contentMonthFilter = "All";
 function setContentMonthFilter(v){ contentMonthFilter = v; render(); }
 const contentInView = ()=>contentItems.filter(i=>matchesDateFilter(i.due, contentMonthFilter));
 function mktContent(){
+  const scoreMonth = TODAY.slice(0,7), scorePrev = prevMonth(scoreMonth), scoreP = monthLabel(scorePrev).split(' ')[0];
   return `
   <div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Sample data.</b> Drag a card between columns, or use the stage dropdown on each card — both update the same record.</div></div>
+  ${monthScorePanelHTML(`Marketing Score · ${monthLabel(scoreMonth)}`, `Content, followers and engagement · vs ${scoreP}`, marketingScore(scoreMonth), marketingScore(scorePrev), scoreP)}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Active Content</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-board"/></svg></div></div><div class="kpi-value mono" id="kpi-active">0</div><div class="kpi-sub">not yet published</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">In Production</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-edit"/></svg></div></div><div class="kpi-value mono" id="kpi-production">0</div><div class="kpi-sub">scripting, production, edit + graphic</div></div>
