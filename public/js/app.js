@@ -1993,9 +1993,19 @@ function taskCalFilterBar(){
 const TASK_STATUS_KIND = {"To Do":"neutral","In Progress":"blue","Review":"warn","Done":"pos"};
 function taskCalAgendaHTML(date, tasks){
   const list = tasks.filter(t=>t.due===date).sort((a,b)=>a.assignedTo.localeCompare(b.assignedTo));
+  const content = calContentOn(date);
+  const total = list.length + content.length;
+  const contentRows = content.map(c=>`<tr>
+      <td><div style="font-weight:700;">${esc(c.title)}</div><div class="faint" style="font-size:11px;">${esc(c.type||"Content")}</div></td>
+      <td class="muted">DesGro</td>
+      <td style="white-space:nowrap;"><b class="mono" style="font-size:11px;">${SERVICE_SHORT.Content||"CT"}</b> <span class="muted" style="font-size:12.5px;">Content</span></td>
+      <td>${c.assignee?`<span class="assignee"><span class="mini-avatar sm">${initials(c.assignee)}</span>${esc(c.assignee)}</span>`:'<span class="muted">Unassigned</span>'}</td>
+      <td>${pill(c.stage||"—", c.stage==="Published"?"pos":"neutral")}</td>
+      <td></td>
+    </tr>`).join('');
   return `
   <div class="panel">
-    <div class="panel-head"><div><h3>Tasks due</h3><div class="sub">${list.length} task${list.length===1?'':'s'}</div></div></div>
+    <div class="panel-head"><div><h3>Tasks due</h3><div class="sub">${total} task${total===1?'':'s'}</div></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Task</th><th>Client</th><th>Service</th><th>Assigned to</th><th>Stage</th><th></th></tr></thead><tbody>${list.map(t=>{ const c=clientById(t.clientId); return `<tr>
       <td><div style="font-weight:700;">${esc(t.title)}${t.status!=="Done"&&t.due<TODAY?' '+pill('Overdue','neg'):''}</div>${t.projectName||t.cycle?`<div class="faint" style="font-size:11px;">${esc(t.projectName||monthLabel(t.cycle)+' month')}</div>`:''}</td>
       <td class="muted">${c?esc(c.name):(t.clientName?esc(t.clientName):'—')}</td>
@@ -2003,10 +2013,15 @@ function taskCalAgendaHTML(date, tasks){
       <td>${t.clientAssigned?pill('Client action','warn'):`<span class="assignee"><span class="mini-avatar sm">${initials(t.assignedTo)}</span>${esc(t.assignedTo)}</span>`}</td>
       <td>${pill(t.stage||t.status, TASK_STATUS_KIND[t.status]||'neutral')}</td>
       <td class="num"><div style="display:flex;gap:6px;justify-content:flex-end;">${canMoveCalTasks()?`<button class="btn btn-sm ghost" onclick="openEditTask('${t.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>`:''}${c&&canMoveCalTasks()?`<button class="btn btn-sm ghost" onclick="goToClient('${t.clientId}')">Open client</button>`:''}</div></td>
-    </tr>`; }).join('')}</tbody></table></div>
+    </tr>`; }).join('')}${contentRows}</tbody></table></div>
   </div>`;
 }
 // Everything except client tasks for one date, in display order.
+function calContentOn(ds){
+  if(!calOn("content") || !(taskCalService==="All" || taskCalService==="Content")) return [];
+  const p = taskCalPersonValue();
+  return calContentSource().filter(c=>c.due===ds && calPersonMatch(c.assignee, p));
+}
 function calItemsOn(ds){
   const out = [], p = taskCalPersonValue();
   const personOk = name => calPersonMatch(name, p);
@@ -2112,6 +2127,7 @@ function calTeamHTML(){
 function calAgendaHTML(date){
   const items = calItemsOn(date).filter(it=>it.kind!=="Content");   // content pieces live on the grid, not in the day's event list
   const dayTasks = calOn("tasks") ? taskCalTasks().filter(t=>t.due===date) : [];
+  const dayContent = calContentOn(date);
   const hol = hrPolicy.holidays.find(h=>h.date===date);
   const btns = [
     canEditCalendar() ? `<button class="btn btn-sm primary" onclick="openCompanyEvent(null,'${date}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add event</button>` : "",
@@ -2119,14 +2135,14 @@ function calAgendaHTML(date){
   ].join("");
   return `
   <div class="panel">
-    <div class="panel-head" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;"><div><h3>${fmtDate(date)}${date===TODAY?" · Today":""}</h3><div class="sub">${items.length} event${items.length===1?"":"s"} & updates · ${dayTasks.length} task${dayTasks.length===1?"":"s"}${!isPlanWorkingDay(date)?" · non-working day":""}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${btns}</div></div>
+    <div class="panel-head" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;"><div><h3>${fmtDate(date)}${date===TODAY?" · Today":""}</h3><div class="sub">${items.length} event${items.length===1?"":"s"} & updates · ${dayTasks.length+dayContent.length} task${dayTasks.length+dayContent.length===1?"":"s"}${!isPlanWorkingDay(date)?" · non-working day":""}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${btns}</div></div>
     ${items.length ? `<div class="panel-body" style="display:flex;flex-direction:column;gap:0;padding-top:4px;padding-bottom:4px;">${items.map(it=>`<div style="display:grid;grid-template-columns:130px minmax(0,1fr) auto;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);">
       <div style="display:flex;"><span class="cal-item ${it.cls||""}" style="${it.style||""};display:inline-block;width:auto;max-width:100%;cursor:default;">${esc(it.kind)}</span></div>
       <div style="min-width:0;"><div style="font-weight:700;font-size:13px;">${esc(it.label.replace(/^(🎂|🎉|✓) /u,""))}</div>${it.sub?`<div class="subtext">${esc(it.sub)}</div>`:""}</div>
       ${it.onclick?`<button class="btn btn-sm ghost" onclick="${it.onclick}">Open</button>`:"<span></span>"}
-    </div>`).join("")}</div>` : (dayTasks.length ? "" : `<div class="empty">Nothing on this day.</div>`)}
+    </div>`).join("")}</div>` : (dayTasks.length||dayContent.length ? "" : `<div class="empty">Nothing on this day.</div>`)}
   </div>
-  ${dayTasks.length ? taskCalAgendaHTML(date, taskCalTasks()) : ""}`;
+  ${dayTasks.length||dayContent.length ? taskCalAgendaHTML(date, taskCalTasks()) : ""}`;
 }
 function calendarView(){
   if(!currentUser) return "";
