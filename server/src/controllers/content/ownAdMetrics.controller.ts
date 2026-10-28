@@ -26,7 +26,7 @@ export const upsertOwnAdMetric: RequestHandler = asyncHandler(async (req, res) =
   if ("error" in parsedDate) return res.status(400).json({ error: parsedDate.error });
   const date = parsedDate.date;
 
-  const data = { spend: d.spend, leads: d.leads, purchases: d.purchases, revenue: d.revenue, loggedBy: req.user!.name };
+  const data = { spend: d.spend, leads: d.leads, purchases: d.purchases, revenue: d.revenue, note: d.note || null, loggedBy: req.user!.name };
   const before = await prisma.ownAdMetric.findUnique({ where: { date } });
   const row = await prisma.ownAdMetric.upsert({ where: { date }, create: { date, ...data }, update: data });
 

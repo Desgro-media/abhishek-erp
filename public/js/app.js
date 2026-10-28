@@ -7437,14 +7437,14 @@ function adDailyTrackerHTML(rows, label, opts){
     <div class="kpi-card hero"><div class="kpi-label">ROAS</div><div class="kpi-value mono" style="font-size:18px;">${roas!=null?roas.toFixed(2)+'x':'—'}</div><div class="kpi-sub">${inr(t.revenue)} revenue tracked</div></div>
   </div>
   <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Purchases</th><th class="num">Revenue</th><th class="num">CPL</th><th class="num">CPA</th><th class="num">ROAS</th>${hasActions?'<th></th>':''}</tr></thead>
-    <tbody>${rows.map(m=>`<tr><td class="muted">${fmtDateShort(m.date)}</td><td class="num mono">${inr(m.spend)}</td><td class="num mono">${m.leads}</td><td class="num mono">${m.purchases}</td><td class="num mono">${inr(m.revenue)}</td><td class="num mono">${dash(m.cpl)}</td><td class="num mono">${dash(m.cpa)}</td><td class="num mono">${m.roas!=null?m.roas.toFixed(2)+'x':'—'}</td>${hasActions?`<td><div style="display:flex;gap:6px;justify-content:flex-end;">${opts.editFn?`<button class="btn btn-sm ghost" onclick="${opts.editFn}('${esc(m.id)}')" title="Edit this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>`:''}${opts.deleteKind?`<button class="btn btn-sm ghost" onclick="openConfirmDelete('${opts.deleteKind}','${esc(m.id)}')" title="Delete this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td>`:''}</tr>`).join('')}</tbody>
+    <tbody>${rows.map(m=>`<tr><td class="muted">${fmtDateShort(m.date)}${m.note?`<div class="subtext" style="max-width:220px;white-space:normal;" title="${esc(m.note)}">📝 ${esc(m.note)}</div>`:''}</td><td class="num mono">${inr(m.spend)}</td><td class="num mono">${m.leads}</td><td class="num mono">${m.purchases}</td><td class="num mono">${inr(m.revenue)}</td><td class="num mono">${dash(m.cpl)}</td><td class="num mono">${dash(m.cpa)}</td><td class="num mono">${m.roas!=null?m.roas.toFixed(2)+'x':'—'}</td>${hasActions?`<td><div style="display:flex;gap:6px;justify-content:flex-end;">${opts.editFn?`<button class="btn btn-sm ghost" onclick="${opts.editFn}('${esc(m.id)}')" title="Edit this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>`:''}${opts.deleteKind?`<button class="btn btn-sm ghost" onclick="openConfirmDelete('${opts.deleteKind}','${esc(m.id)}')" title="Delete this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td>`:''}</tr>`).join('')}</tbody>
   </table></div>` : `<div class="empty">No ad performance logged yet.</div>`}`;
 }
 // Log (or correct) one day's numbers. Saving a date that already exists updates it. `save` receives the
 // validated payload and POSTs it; the server re-validates everything (no future dates, no negatives).
 function logAdMetricModal(forLabel, existing, save, currency){
   const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
-  const v = existing || {date:local, spend:'', revenue:'', leads:'', purchases:''};
+  const v = existing || {date:local, spend:'', revenue:'', leads:'', purchases:'', note:''};
   showModal(`
     <div class="modal-head"><h3>${existing?'Edit':'Log'} ad performance</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-log-ad-metric"><div class="modal-body">
@@ -7459,13 +7459,14 @@ function logAdMetricModal(forLabel, existing, save, currency){
         <div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" placeholder="Optional — saved as 0"></div>
         <div><label class="field-label">Purchases</label><input class="field-input" type="number" step="1" min="0" name="purchases" value="${esc(v.purchases)}" placeholder="Optional — saved as 0"></div>
       </div>
+      <div><label class="field-label">Note <span class="faint" style="font-weight:500;">(optional)</span></label><textarea class="field-input" name="note" rows="2" maxlength="300" placeholder="e.g. Spend not available yet — Meta billing delayed">${esc(v.note||'')}</textarea></div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
     </form>`);
   document.getElementById("f-log-ad-metric").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    const payload = { date:f.get("date"), spend:Number(f.get("spend")), revenue:Number(f.get("revenue")), leads:Number(f.get("leads")), purchases:Number(f.get("purchases")) };
+    const payload = { date:f.get("date"), spend:Number(f.get("spend")), revenue:Number(f.get("revenue")), leads:Number(f.get("leads")), purchases:Number(f.get("purchases")), note:(f.get("note")||"").trim() };
     try{ await save(payload); toast("Ad performance saved"); closeModal(); render(); }
     catch(err){ toast(err.message || "Couldn't save ad performance"); }
   });

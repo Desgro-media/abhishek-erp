@@ -2,7 +2,7 @@
 // Performance Marketing client's ads (CRM) — and both must show identical derived figures and obey
 // identical date rules, so that logic lives here once.
 
-type MetricRow = { id: string; date: Date; spend: unknown; leads: number; purchases: number; revenue: unknown; loggedBy: string | null };
+type MetricRow = { id: string; date: Date; spend: unknown; leads: number; purchases: number; revenue: unknown; loggedBy: string | null; note?: string | null };
 
 // CPL / CPA / ROAS only mean something with a non-zero divisor; null means "show —", never
 // Infinity or NaN.
@@ -17,6 +17,7 @@ export function serializeAdMetric(m: MetricRow) {
     purchases: m.purchases,
     revenue,
     loggedBy: m.loggedBy,
+    note: m.note ?? null,
     cpl: m.leads > 0 ? spend / m.leads : null,
     cpa: m.purchases > 0 ? spend / m.purchases : null,
     roas: spend > 0 ? revenue / spend : null,
