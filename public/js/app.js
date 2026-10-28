@@ -153,7 +153,7 @@ function mapPosition(p){
   return { id:p.id, role:p.role, dept:p.dept, openings:p.openings, status:TITLECASE_FROM_API(p.status), postedDate:isoDate(p.postedDate), archived:!!p.archived };
 }
 function mapCandidate(c){
-  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate), archived:!!c.archived, hasResume:!!c.resumeFilename };
+  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate), appliedAt:c.appliedDate, archived:!!c.archived, hasResume:!!c.resumeFilename };
 }
 function mapNotice(n){
   return { id:n.id, title:n.title, message:n.message, postedBy:n.postedByUser?.name||"", postedDate:isoDate(n.postedDate) };
@@ -237,7 +237,7 @@ async function loadComplaints(){
 async function loadHiring(){
   const { positions } = await apiJson("/api/hr/positions");
   openPositions = positions.map(mapPosition);
-  candidates = positions.flatMap(p=>(p.candidates||[]).map(mapCandidate));
+  candidates = positions.flatMap(p=>(p.candidates||[]).map(mapCandidate)).sort((a,b)=>String(b.appliedAt).localeCompare(String(a.appliedAt)));   // newest application first
 }
 // Matches the server's CandidateStage enum exactly.
 const CANDIDATE_STAGES = ["Applied","Shortlisted","Interview","Offer","Hired","Rejected"];
