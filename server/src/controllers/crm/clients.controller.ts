@@ -2,7 +2,7 @@ import { autoStartServices } from "../../services/boardAutoStart";
 import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
-import { seesWholeSalesTeam, seesAllClients, isCrmUser } from "../../middleware/crmAccess";
+import { seesAllClients } from "../../middleware/crmAccess";
 import { recordAudit } from "../../services/audit.service";
 import { clientCreateSchema, clientUpdateSchema } from "../../validation/crm.schemas";
 import { nextSequentialCode } from "../../utils/sequentialCode";
@@ -55,10 +55,6 @@ export const updateClient: RequestHandler = asyncHandler(async (req, res) => {
   if (!seesAllClients(req.user?.roles) && existing.salesPerson !== req.user!.name) {
     return res.status(403).json({ error: "Forbidden — not your client" });
   }
-  // A Clients-only login manages client details but can't pause or churn (deactivate) a client.
-  if (!isCrmUser(req.user?.roles) && parsed.data.status && parsed.data.status !== existing.status) {
-    return res.status(403).json({ error: "Forbidden — you can't change a client's status" });
-  }
   const client = await prisma.client.update({ where: { id: existing.id }, data: parsed.data });
   const added = client.services.filter((x) => !existing.services.includes(x));
   if (added.length) await autoStartServices(client.id, added, req.user!.sub);
@@ -67,18 +63,18 @@ export const updateClient: RequestHandler = asyncHandler(async (req, res) => {
   res.json({ client });
 });
 
-// Admin / Sales Head only — a plain Sales rep can edit their clients but not remove them. Refused
+// Admin / Sales Head / Clients module delete any client; a Sales rep only their own. Refused
 // once the client has invoices or quotes: those carry the payment ledger, which is append-only
 // (same rule as deleteInvoice/deleteQuote), so a client with any billing history is archived by
 // setting its status to Churned instead. Their workflow tasks are deleted along with them (schema cascade).
 export const deleteClient: RequestHandler = asyncHandler(async (req, res) => {
-  if (!seesWholeSalesTeam(req.user?.roles)) return res.status(403).json({ error: "Forbidden — only Admin or the Sales Head can delete a client" });
-
   const client = await prisma.client.findUnique({
     where: { id: req.params.id },
     include: { _count: { select: { invoices: true, quotes: true, tasks: true } } },
   });
   if (!client) return res.status(404).json({ error: "Client not found" });
+  // Same scoping as edit/archive: whole-client roles delete any client, a Sales rep only their own book.
+  if (!seesAllClients(req.user?.roles) && client.salesPerson !== req.user!.name) return res.status(403).json({ error: "Forbidden — not your client" });
 
   const { invoices, quotes } = client._count;
   if (invoices > 0 || quotes > 0) {
@@ -98,7 +94,7 @@ export const deleteClient: RequestHandler = asyncHandler(async (req, res) => {
 async function setArchived(req: Parameters<RequestHandler>[0], res: Parameters<RequestHandler>[1], archive: boolean) {
   const existing = await prisma.client.findUnique({ where: { id: req.params.id } });
   if (!existing) return res.status(404).json({ error: "Client not found" });
-  if (!seesWholeSalesTeam(req.user?.roles) && existing.salesPerson !== req.user!.name) {
+  if (!seesAllClients(req.user?.roles) && existing.salesPerson !== req.user!.name) {
     return res.status(403).json({ error: "Forbidden — not your client" });
   }
   if (archive === !!existing.archivedAt) return res.status(409).json({ error: archive ? "Already archived" : "Not archived" });

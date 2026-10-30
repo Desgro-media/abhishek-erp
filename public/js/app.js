@@ -6963,8 +6963,8 @@ function openLogMeeting(clientId){
   });
 }
 // A Clients-only login manages client details but can't archive, delete or change a client's status (the server enforces the same).
-function canArchiveClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
-function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD'))); }
+function canArchiveClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'||r==='CLIENTS'))); }
+function canDeleteClients(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'||r==='CLIENTS'))); }
 function openClientDetail(id){ nav.detail = {type:'client', id}; render(); loadClientCollab(id); loadClientLeadAdvances(id); loadClientFeedback(id); { const c = clientById(id); if(c && isPerformanceMarketingClient(c)) loadClientReportLink(id); } }
 // A client's whole page IS their workflow — one Payment section (every invoice raised against them)
 // and one Task board (every activity done for them), nothing split off into a separate "project".
