@@ -5,6 +5,7 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { isHRAdmin } from "../../middleware/hrAccess";
 import { isLeadership } from "../../services/departmentAccess";
+import { notifyUser } from "../../services/taskAccess.service";
 
 const TYPES = ["Team Building", "Upskilling", "Training"] as const;
 const STATUSES = ["Planned", "Confirmed", "Completed", "Cancelled"] as const;
@@ -162,4 +163,20 @@ export const programResponses: RequestHandler = asyncHandler(async (req, res) =>
     distribution: [5, 4, 3, 2, 1].map((r) => ({ rating: r, count: fb.filter((f) => f.rating === r).length })),
     comments: fb.filter((f) => f.comment).map((f) => ({ text: f.comment, rating: f.rating })).sort((x, y) => y.rating - x.rating || x.text.localeCompare(y.text)),
   });
+});
+
+// HR sends the program's results (averages + the anonymous comments) to everyone who took part, as an in-app notification.
+export const shareResults: RequestHandler = asyncHandler(async (req, res) => {
+  if (!(await canManage(req.user!))) return res.status(403).json({ error: "Forbidden — HR/leadership only" });
+  const p = await prisma.hrProgram.findUnique({ where: { id: req.params.id }, include: { attendees: { include: { employee: { select: { user: { select: { id: true } } } } } }, feedback: true } });
+  if (!p) return res.status(404).json({ error: "Program not found" });
+  const fb = p.feedback, n = fb.length;
+  if (!n) return res.status(409).json({ error: "No feedback to share yet" });
+  const avg = (k: "rating" | "useful") => (fb.reduce((s, f) => s + f[k], 0) / n).toFixed(1);
+  const comments = fb.filter((f) => f.comment).map((f) => `“${f.comment}” (${f.rating}★)`);
+  const body = [`Overall ${avg("rating")}/5 · ${p.type === "Team Building" ? "Team bonding" : "Usefulness"} ${avg("useful")}/5 · ${n} of ${p.attendees.length} responded`, ...comments].join("\n").slice(0, 1800);
+  const ids = [...new Set(p.attendees.map((a) => a.employee.user?.id).filter((u): u is string => !!u))];
+  for (const id of ids) await notifyUser(id, { kind: "PROGRAM_FEEDBACK", title: `Feedback from “${p.title}”`, body, link: "workspace" }, req.user!.sub);
+  await recordAudit({ userId: req.user!.sub, action: "HR_PROGRAM_SHARE_RESULTS", entityType: "HrProgram", entityId: p.id, afterData: { sent: ids.length } });
+  res.json({ sent: ids.length });
 });

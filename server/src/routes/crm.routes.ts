@@ -73,14 +73,14 @@ router.put("/clients/:id/ad-currency", requireClientsUser, adMetrics.setClientAd
 router.post("/clients/:id/ad-metrics", requireClientsUser, adMetrics.upsertClientAdMetric);
 router.delete("/clients/:id/ad-metrics/:metricId", requireClientsUser, adMetrics.deleteClientAdMetric);
 
-// A Clients-only login may edit a client's details (not its status), but never create, archive or delete one.
+// The Clients module is full access to clients: add, edit, change status, archive/restore and delete.
+router.post("/clients", requireClientsUser, clients.createClient);
 router.patch("/clients/:id", requireClientsUser, clients.updateClient);
+router.patch("/clients/:id/archive", requireClientsUser, clients.archiveClient);
+router.patch("/clients/:id/restore", requireClientsUser, clients.restoreClient);
+router.delete("/clients/:id", requireClientsUser, clients.deleteClient);
 
 router.use(requireCrmUser);
-router.post("/clients", clients.createClient);
-router.patch("/clients/:id/archive", clients.archiveClient);
-router.patch("/clients/:id/restore", clients.restoreClient);
-router.delete("/clients/:id", clients.deleteClient);
 
 router.get("/leads", leads.listLeads);
 router.post("/leads", leads.createLead);

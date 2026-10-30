@@ -103,6 +103,7 @@ router.delete("/programs/:id", programs.deleteProgram);
 router.post("/programs/:id/complete", programs.completeProgram);
 router.post("/programs/:id/feedback", programs.submitFeedback);
 router.get("/programs/:id/responses", programs.programResponses);
+router.post("/programs/:id/share-results", programs.shareResults);
 router.put("/payroll/:employeeId/:month/schedule", requireHRAdminOrFinance, payroll.setPayrollSchedule);
 router.post("/payroll/:employeeId/:month/payments", requireHRAdminOrFinance, payroll.recordPayrollPayment);
 router.patch("/payroll/payments/:paymentId", requireHRAdminOrFinance, payroll.updatePayrollPayment);
