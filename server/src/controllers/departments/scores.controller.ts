@@ -17,12 +17,23 @@ const targetsSchema = z.object({
   deptClientGrowth: z.number().min(0).max(100),
   sales: z.object({ revenue: pos, conversion: z.number().min(1).max(100), meetings: pos }),
   meta: z.object({ roas: pos, cpl: pos, conv: pos }),
+  marketing: z.object({
+    followerGrowth: z.number().min(0.1).max(100),
+    engagement: z.number().min(0.1).max(100),
+    months: z.record(z.string().regex(monthRe), z.object({ content: z.number().int().min(1).max(10000).optional(), followerGrowth: z.number().min(0.1).max(100).optional(), engagement: z.number().min(0.1).max(100).optional() })),
+  }),
 });
 // Leadership only. A partial body keeps the other targets as they are.
 export const setScoreTargets: RequestHandler = asyncHandler(async (req, res) => {
   if (!(await isLeadership(req.user!))) return res.status(403).json({ error: "Forbidden — leadership only" });
   const cur = await getTargets();
-  const merged = { ...cur, ...(req.body ?? {}), deptRevenue: { ...cur.deptRevenue, ...(req.body?.deptRevenue ?? {}) }, sales: { ...cur.sales, ...(req.body?.sales ?? {}) }, meta: { ...cur.meta, ...(req.body?.meta ?? {}) } };
+  // Marketing month overrides merge per month; a month sent as null (or with every field blank) goes back to the defaults.
+  const mkt = { ...cur.marketing, ...(req.body?.marketing ?? {}), months: { ...cur.marketing.months } };
+  for (const [m, v] of Object.entries((req.body?.marketing?.months ?? {}) as Record<string, Record<string, unknown> | null>)) {
+    const clean = Object.fromEntries(Object.entries(v ?? {}).filter(([, x]) => x != null && x !== ""));
+    if (Object.keys(clean).length) mkt.months[m] = clean; else delete mkt.months[m];
+  }
+  const merged = { ...cur, ...(req.body ?? {}), deptRevenue: { ...cur.deptRevenue, ...(req.body?.deptRevenue ?? {}) }, sales: { ...cur.sales, ...(req.body?.sales ?? {}) }, meta: { ...cur.meta, ...(req.body?.meta ?? {}) }, marketing: mkt };
   const parsed = targetsSchema.safeParse(merged);
   if (!parsed.success) return res.status(400).json({ error: "Invalid targets", details: parsed.error.flatten().fieldErrors });
   await prisma.scoreSettings.upsert({ where: { id: 1 }, create: { id: 1, targets: parsed.data, updatedBy: req.user!.name }, update: { targets: parsed.data, updatedBy: req.user!.name } });

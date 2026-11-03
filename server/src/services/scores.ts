@@ -15,12 +15,15 @@ export interface Targets {
   deptClientGrowth: number;       // % a month
   sales: { revenue: number; conversion: number; meetings: number };
   meta: { roas: number; cpl: number; conv: number };
+  // Marketing Score: defaults for every month, plus optional per-month overrides ("YYYY-MM"). `content` = posts to publish that month.
+  marketing: { followerGrowth: number; engagement: number; months: Record<string, { content?: number; followerGrowth?: number; engagement?: number }> };
 }
 export const DEFAULT_TARGETS: Targets = {
   deptRevenue: { "Marketing Consultation": 100000, "Web Development": 75000, "Production": 50000, "Graphic Design": 50000, "Performance Marketing": 75000 },
   deptClientGrowth: 10,
   sales: { revenue: 300000, conversion: 20, meetings: 20 },
   meta: { roas: 5, cpl: 250, conv: 5 },
+  marketing: { followerGrowth: 3, engagement: 5, months: {} },
 };
 
 export async function getTargets(): Promise<Targets> {
@@ -31,6 +34,7 @@ export async function getTargets(): Promise<Targets> {
     deptClientGrowth: t.deptClientGrowth ?? DEFAULT_TARGETS.deptClientGrowth,
     sales: { ...DEFAULT_TARGETS.sales, ...(t.sales ?? {}) },
     meta: { ...DEFAULT_TARGETS.meta, ...(t.meta ?? {}) },
+    marketing: { ...DEFAULT_TARGETS.marketing, ...(t.marketing ?? {}), months: { ...(t.marketing?.months ?? {}) } },
   };
 }
 

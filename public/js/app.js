@@ -2830,7 +2830,7 @@ let scoreTargets = null;
 let deptScores = null;      // {month, scores:{dept:{now,prev}}}
 let metaScoreData = null;   // {month, now, prev, totals, targets}
 async function loadDeptScores(){ const r = await apiJson("/api/scores/departments"); deptScores = r; scoreTargets = r.targets; }
-async function loadMetaScore(){ metaScoreData = await apiJson("/api/scores/meta-ads"); }
+async function loadMetaScore(month){ metaScoreData = await apiJson("/api/scores/meta-ads"+(month?`?month=${month}`:"")); }
 function scoreGradePill(s){ return s==null ? pill('No data','neutral') : s>=85 ? pill('Strong','pos') : s>=65 ? pill('Fair','warn') : pill('Needs work','neg'); }
 function scoreTone(v){ return v==null ? 'var(--ink-faint)' : v>=0.85 ? 'var(--pos)' : v>=0.65 ? 'var(--warn)' : 'var(--neg)'; }
 function scoreRingHTML(score, size){
@@ -3663,12 +3663,12 @@ function visibleModulesLegacy(){
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
   "hr/programs":[loadHrPrograms], "hr/overview":[loadHrPrograms],
-  "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
+  "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMktTargets().catch(()=>{}), ()=>loadMetaScore(mktMonthNow()).catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadServiceBoards().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
-  "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems],
+  "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems, ()=>loadMktTargets().catch(()=>{}), ()=>loadSocial().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{})],
   "workspace/payroll":[loadWithdrawalRequests, loadMyPayroll], "workspace/attendance":[loadMyLeaveBalance], "hr/advances":[loadWithdrawalRequests],
   // Finance sees what Sales just pushed without a reload; Overview always reflects the latest approvals.
   // Quotes live behind CRM access, so a Finance-only sign-in (no CRM role) skips that fetch.
@@ -6351,7 +6351,7 @@ function compareLegendHTML(month, prev){
 function monthCardHTML(label, series, months, fmt, opts, extra){
   const now = series[series.length-1], before = series[series.length-2];
   return `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value mono" style="font-size:21px;">${now==null?'—':fmt(now)}</div>
-    <div class="kpi-sub">${vsHTML(now, before, Object.assign({fmt}, opts||{}))}</div>${extra||''}${sparkBarsHTML(series, months)}</div>`;
+    <div class="kpi-sub">${vsHTML(now, before, Object.assign({fmt, mon:monthLabel(months[months.length-2]||prevMonth(months[months.length-1])).split(' ')[0]}, opts||{}))}</div>${extra||''}${sparkBarsHTML(series, months)}</div>`;
 }
 // Our own ads' spend / leads for a month, from the daily tracker; null when nothing was logged.
 function ownAdsForMonth(month){
@@ -6375,50 +6375,94 @@ async function loadSocialStatus(){ socialStatus = await apiJson("/api/scores/soc
 const socialPlatforms = ()=> socialData ? socialData.platforms : ["Instagram","LinkedIn"];
 const socialFor = (month, platform)=> (socialData && socialData.stats.find(x=>x.month===month && x.platform===platform)) || null;
 function socialTotal(month, key){ const rows = socialData ? socialData.stats.filter(x=>x.month===month) : []; return rows.length ? rows.reduce((t,x)=>t+(x[key]||0),0) : null; }
-const socialPendingNow = ()=> !!socialData && !socialData.stats.some(x=>x.month===TODAY.slice(0,7));
+const socialPendingNow = (month)=> { month = month || TODAY.slice(0,7); return !!socialData && month===TODAY.slice(0,7) && !socialData.stats.some(x=>x.month===month); };
 function monthEndOf(month){ const [y,m] = month.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10); }
 function weightedScoreOf(parts){ const live = parts.filter(p=>p.v!=null), w = live.reduce((t,p)=>t+p.w,0); return w ? Math.round(live.reduce((t,p)=>t+p.v*p.w,0)/w*100) : null; }
+// Marketing Score targets: defaults for every month, with optional per-month overrides set by leadership.
+let mktTargets = {followerGrowth:3, engagement:5, months:{}};
+async function loadMktTargets(){ const r = await apiJson("/api/scores/targets"); if(r.targets && r.targets.marketing) mktTargets = r.targets.marketing; }
+function mktTargetsFor(month){
+  const o = (mktTargets.months||{})[month] || {};
+  return { content:o.content||null, followerGrowth:(o.followerGrowth||mktTargets.followerGrowth||MKT_FOLLOWER_GROWTH_TARGET*100)/100, engagement:(o.engagement||mktTargets.engagement||MKT_ENGAGEMENT_TARGET*100)/100, custom:!!(mktTargets.months||{})[month] };
+}
+// Posts published in a month — counted straight from the pipeline, so moving a card to Published updates it.
+const mktPublishedIn = month => contentItems.filter(c=>c.stage==="Published" && (c.due||'').slice(0,7)===month).length;
 function marketingScore(month){
-  const asOf = [TODAY, monthEndOf(month)].sort()[0];
+  const asOf = [TODAY, monthEndOf(month)].sort()[0], T = mktTargetsFor(month);
   const due = contentItems.filter(c=>(c.due||'').slice(0,7)===month && c.due<=asOf), done = due.filter(c=>c.stage==="Published");
   const f = socialTotal(month,'followers'), fp = socialTotal(prevMonth(month),'followers');
   const reach = socialTotal(month,'reach'), eng = socialTotal(month,'engagements');
   const growth = (f!=null && fp) ? (f-fp)/fp : null, er = reach ? eng/reach : null;
+  const pubAll = mktPublishedIn(month);
+  const contentV = T.content ? Math.min(1, pubAll/T.content) : (due.length ? done.length/due.length : null);
+  const contentDetail = T.content ? `${pubAll} of ${T.content} target published` : due.length ? `${done.length} of ${due.length} due so far published` : "nothing due yet";
   const parts = [
-    {key:"content", label:"Content delivered", w:50, v: due.length ? done.length/due.length : null, detail: due.length ? `${done.length} of ${due.length} due so far published` : "nothing due yet"},
-    {key:"followers", label:"Follower growth", w:30, v: growth==null ? null : Math.max(0, Math.min(1, growth/MKT_FOLLOWER_GROWTH_TARGET)), detail: growth==null ? "no numbers to compare" : `${growth>=0?'+':''}${(growth*100).toFixed(1)}% · target ${MKT_FOLLOWER_GROWTH_TARGET*100}%`},
-    {key:"engagement", label:"Engagement rate", w:20, v: er==null ? null : Math.min(1, er/MKT_ENGAGEMENT_TARGET), detail: er==null ? "no numbers yet" : `${(er*100).toFixed(1)}% of reach · target ${MKT_ENGAGEMENT_TARGET*100}%`},
+    {key:"content", label:"Content delivered", w:50, v: contentV, detail: contentDetail},
+    {key:"followers", label:"Follower growth", w:30, v: growth==null ? null : Math.max(0, Math.min(1, growth/T.followerGrowth)), detail: growth==null ? "no numbers to compare" : `${growth>=0?'+':''}${(growth*100).toFixed(1)}% · target ${+(T.followerGrowth*100).toFixed(2)}%`},
+    {key:"engagement", label:"Engagement rate", w:20, v: er==null ? null : Math.min(1, er/T.engagement), detail: er==null ? "no numbers yet" : `${(er*100).toFixed(1)}% of reach · target ${+(T.engagement*100).toFixed(2)}%`},
   ];
   return {score: weightedScoreOf(parts), parts};
 }
-function socialPanelHTML(){
+// Small bar under the Marketing Score title: this month's targets, with a button for leadership to change them.
+function mktTargetsBar(month){
+  const T = mktTargetsFor(month);
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>${monthLabel(month)} targets: ${T.content?`${mktPublishedIn(month)} of ${T.content} posts published`:`${mktPublishedIn(month)} published · target = all content due`} · followers +${+(T.followerGrowth*100).toFixed(2)}% · engagement ${+(T.engagement*100).toFixed(2)}%${T.custom?' · <b>set for this month</b>':''}</span>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openMktTargets('${month}')">Set targets</button>`:''}</div>`;
+}
+function openMktTargets(month){
+  if(!isLeadershipRole(currentUser)) return;
+  const T = mktTargetsFor(month), o = (mktTargets.months||{})[month] || {};
+  showModal(`
+    <div class="modal-head"><h3>Marketing targets · ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-mkt-targets"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">These apply to ${monthLabel(month)} only. Other months keep their own targets or the defaults.</div>
+      <div style="padding:10px 12px;border-radius:8px;background:var(--surface-sunk);font-size:13px;"><b>${mktPublishedIn(month)}</b> posts published in ${monthLabel(month)} so far <span class="faint">· counted automatically from the Content pipeline. Moving a card to Published adds to it.</span></div>
+      <div><label class="field-label">Posts to publish this month (target)</label><input class="field-input" type="number" min="1" step="1" name="content" value="${o.content||''}" placeholder="Blank = all content due this month"></div>
+      <div class="field-row">
+        <div><label class="field-label">Follower growth target (%)</label><input class="field-input" type="number" min="0.1" max="100" step="0.1" name="followerGrowth" value="${+(T.followerGrowth*100).toFixed(2)}" required></div>
+        <div><label class="field-label">Engagement target (% of reach)</label><input class="field-input" type="number" min="0.1" max="100" step="0.1" name="engagement" value="${+(T.engagement*100).toFixed(2)}" required></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;"><input type="checkbox" name="asDefault"> Also use the follower and engagement targets as the default for every month</label>
+    </div>
+    <div class="modal-foot"><div>${o && Object.keys(o).length?`<button type="button" class="btn ghost" style="color:var(--neg);" id="mkt-reset">Reset this month</button>`:''}</div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save targets</button></div></div>
+    </form>`);
+  const save = async body => { try{ await apiJson("/api/scores/targets", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); await loadMktTargets(); toast("Marketing targets saved"); closeModal(); render(); }catch(err){ toast(err.message || "Couldn't save the targets"); } };
+  document.getElementById("f-mkt-targets").addEventListener("submit", ev=>{
+    ev.preventDefault(); const f = new FormData(ev.target), c = Number(f.get("content"));
+    const entry = { followerGrowth:Number(f.get("followerGrowth")), engagement:Number(f.get("engagement")) }; if(c>0) entry.content = Math.round(c);
+    const m = { months:{[month]:entry} };
+    if(f.get("asDefault")){ m.followerGrowth = entry.followerGrowth; m.engagement = entry.engagement; }
+    save({marketing:m});
+  });
+  const r = document.getElementById("mkt-reset"); if(r) r.addEventListener("click", ()=>save({marketing:{months:{[month]:null}}}));
+}
+function socialPanelHTML(month){
   if(!socialData) return '';
-  const month = TODAY.slice(0,7), prev = prevMonth(month), M = monthLabel(month).split(' ')[0];
+  month = month || TODAY.slice(0,7); const prev = prevMonth(month), M = monthLabel(month).split(' ')[0];
   const owner = socialData.owner ? socialData.owner.name : "Nobody yet";
-  const pending = socialPendingNow(), note = socialData.notes[month];
+  const pending = socialPendingNow(month), note = socialData.notes[month];
   const last = socialData.stats.filter(x=>x.month===month).map(x=>x.updatedOn).sort().pop();
   const er = x => x && x.reach ? x.engagements/x.reach*100 : null;
   const num = x => x.toLocaleString('en-IN');
   return `<div class="panel">
     <div class="panel-head"><div><h3>Social media · ${M}</h3><div class="sub">Updated by ${esc(owner)} each month from platform insights${last?` · last update ${fmtDateShort(last)}`:''}</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openMarketingOwner()">Change owner</button>`:''}${socialData.canUpdate?`<button class="btn btn-sm ${pending?'primary':'ghost'}" onclick="openSocialUpdate()">${pending?'Update '+M+' numbers':'Edit '+M+' numbers'}</button>`:''}</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openMarketingOwner()">Change owner</button>`:''}${socialData.canUpdate?`<button class="btn btn-sm ${pending?'primary':'ghost'}" onclick="openSocialUpdate('${month}')">${pending?'Update '+M+' numbers':'Edit '+M+' numbers'}</button>`:''}</div></div>
     ${pending?`<div class="banner" style="margin:12px 16px 0;background:var(--warn-soft);color:var(--ink);"><div><b>${M}'s numbers aren't in yet.</b> ${esc(owner)} updates followers, reach and engagements for each platform.</div></div>`:''}
     <div class="table-wrap"><table class="data"><thead><tr><th>Platform</th><th class="num">Followers</th><th class="num">Growth</th><th class="num">Reach</th><th class="num">Engagements</th><th class="num">Engagement rate</th></tr></thead>
       <tbody>${socialPlatforms().map(pl=>{ const a = socialFor(month, pl), b = socialFor(prev, pl); const g = a&&b&&b.followers ? (a.followers-b.followers)/b.followers*100 : null; return `<tr>
         <td style="font-weight:700;">${esc(pl)}</td>
-        <td class="num"><div class="mono" style="font-weight:700;">${a?num(a.followers):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.followers:null, b?b.followers:null, {fmt:num})}</div></td>
+        <td class="num"><div class="mono" style="font-weight:700;">${a?num(a.followers):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.followers:null, b?b.followers:null, {fmt:num, mon:monthLabel(prev).split(' ')[0]})}</div></td>
         <td class="num mono" style="font-weight:700;color:${g!=null&&g>=0?'var(--pos)':'var(--neg)'};">${g==null?'—':(g>=0?'+':'')+g.toFixed(1)+'%'}</td>
-        <td class="num"><div class="mono">${a?num(a.reach):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.reach:null, b?b.reach:null, {fmt:num})}</div></td>
-        <td class="num"><div class="mono">${a?num(a.engagements):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.engagements:null, b?b.engagements:null, {fmt:num})}</div></td>
-        <td class="num"><div class="mono">${er(a)==null?'—':er(a).toFixed(1)+'%'}</div><div style="font-size:10.5px;">${vsHTML(er(a), er(b), {fmt:x=>x.toFixed(1)+'%', eps:0.05})}</div></td>
+        <td class="num"><div class="mono">${a?num(a.reach):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.reach:null, b?b.reach:null, {fmt:num, mon:monthLabel(prev).split(' ')[0]})}</div></td>
+        <td class="num"><div class="mono">${a?num(a.engagements):'—'}</div><div style="font-size:10.5px;">${vsHTML(a?a.engagements:null, b?b.engagements:null, {fmt:num, mon:monthLabel(prev).split(' ')[0]})}</div></td>
+        <td class="num"><div class="mono">${er(a)==null?'—':er(a).toFixed(1)+'%'}</div><div style="font-size:10.5px;">${vsHTML(er(a), er(b), {fmt:x=>x.toFixed(1)+'%', eps:0.05, mon:monthLabel(prev).split(' ')[0]})}</div></td>
       </tr>`; }).join('')}</tbody>
     </table></div>
     ${note?`<div class="panel-body" style="padding-top:8px;"><div class="subtext"><b>What the insights say</b> · ${esc(note.by)}, ${fmtDateShort(note.on)}</div><div style="margin-top:4px;font-size:13px;">${esc(note.text)}</div></div>`:''}
   </div>`;
 }
-function openSocialUpdate(){
+function openSocialUpdate(month){
   if(!socialData || !socialData.canUpdate) return;
-  const month = TODAY.slice(0,7), prev = prevMonth(month), pm = monthLabel(prev).slice(0,3), note = socialData.notes[month];
+  month = month || TODAY.slice(0,7); const prev = prevMonth(month), pm = monthLabel(prev).slice(0,3), note = socialData.notes[month];
   showModal(`
     <div class="modal-head"><h3>Followers &amp; insights — ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-social"><div class="modal-body">
@@ -6471,8 +6515,31 @@ function socialReminderHTML(){
 }
 
 // Marketing → Overview: our own Meta Ads score and month-on-month content and ad numbers, with the content pipeline.
+// Marketing → Overview month picker: look back at any month's score, followers, ads and leads.
+let mktMonth = null;
+const mktMonthNow = ()=> mktMonth || TODAY.slice(0,7);
+function mktMonthList(){
+  const ms = [TODAY.slice(0,7), ...contentItems.map(c=>(c.due||'').slice(0,7)), ...ownAdMetrics.map(m=>m.date.slice(0,7)), ...(socialData?socialData.stats.map(x=>x.month):[])].filter(m=>m && m<=TODAY.slice(0,7)).sort();
+  const out = []; let m = ms[0]; while(m <= TODAY.slice(0,7)){ out.push(m); m = new Date(Date.UTC(+m.slice(0,4), +m.slice(5,7), 1)).toISOString().slice(0,7); }
+  return out.reverse();
+}
+async function setMktMonth(m){
+  mktMonth = m===TODAY.slice(0,7) ? null : m;
+  try{ await loadMetaScore(mktMonthNow()); }catch(err){}
+  render();
+}
+// On the Content tab the same picker also sets the pipeline's Show filter to that month.
+function setMktContentMonth(m){ mktMonth = m===TODAY.slice(0,7) ? null : m; contentMonthFilter = m; render(); }
+function shiftMktMonth(step, onContent){ const l = mktMonthList(), i = l.indexOf(mktMonthNow()), j = i - step; if(j>=0 && j<l.length) (onContent ? setMktContentMonth : setMktMonth)(l[j]); }
+function mktMonthBar(onContent){
+  const l = mktMonthList(), m = mktMonthNow(), i = l.indexOf(m), set = onContent ? 'setMktContentMonth' : 'setMktMonth', oc = onContent ? ',true' : '';
+  return `<div style="display:flex;align-items:center;gap:8px;"><span class="filter-label">Month</span>
+    <button class="btn btn-sm ghost" onclick="shiftMktMonth(-1${oc})" ${i>=l.length-1?'disabled':''} aria-label="Previous month">‹</button>
+    <select class="select-sm" onchange="${set}(this.value)">${l.map(x=>`<option value="${x}" ${x===m?'selected':''}>${monthLabel(x)}${x===TODAY.slice(0,7)?' (this month)':''}</option>`).join('')}</select>
+    <button class="btn btn-sm ghost" onclick="shiftMktMonth(1${oc})" ${i<=0?'disabled':''} aria-label="Next month">›</button></div>`;
+}
 function mktOverview(){
-  const month = TODAY.slice(0,7), prev = prevMonth(month), P = monthLabel(prev).split(' ')[0], M = monthLabel(month).split(' ')[0];
+  const month = mktMonthNow(), isNow = month===TODAY.slice(0,7), prev = prevMonth(month), P = monthLabel(prev).split(' ')[0], M = monthLabel(month).split(' ')[0];
   const months = lastMonths(month, 4);
   const published = months.map(m=>contentItems.filter(c=>c.stage==="Published" && (c.due||'').slice(0,7)===m).length);
   const adSpend = months.map(m=>{ const a = ownAdsForMonth(m); return a ? a.spend : null; });
@@ -6482,19 +6549,20 @@ function mktOverview(){
   const overdueContent = contentItems.filter(c=>c.stage!=="Published" && c.due && c.due<TODAY).length;
   const maxStage = Math.max(...STAGES.map(x=>contentItems.filter(c=>c.stage===x).length),1);
   return `
+  ${mktMonthBar()}
   <div class="banner">
     <svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg>
     <div><b>Internal marketing.</b> This tracks DesGro Media's own brand content and ad campaigns — not client work, which lives under Clients. Leads and quotes are under Sales.</div>
   </div>
-  ${monthScorePanelHTML(`Marketing Score · ${monthLabel(month)}`, `Content, followers and engagement · vs ${P}`, marketingScore(month), marketingScore(prev), P)}
+  ${monthScorePanelHTML(`Marketing Score · ${monthLabel(month)}`, `Content, followers and engagement · vs ${P}`, marketingScore(month), marketingScore(prev), P, mktTargetsBar(month))}
   ${metaAdsScorePanelHTML()}
 
   <div class="panel">
-    <div class="panel-head"><div><h3>${M} vs ${P}</h3><div class="sub">${M} is month to date · bars show the last 4 months</div></div></div>
+    <div class="panel-head"><div><h3>${M} vs ${P}</h3><div class="sub">${isNow?`${M} is month to date · `:''}bars show the 4 months up to ${M}</div></div></div>
     <div class="modal-body">
       <div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">
         ${monthCardHTML("Content published", published, months, x=>x)}
-        ${socialData ? monthCardHTML("Total followers", months.map(m=>socialTotal(m,'followers')), months, x=>x.toLocaleString('en-IN'), {}, socialPendingNow()?`<div class="kpi-sub" style="color:var(--warn);">${M} not updated yet</div>`:'') : ''}
+        ${socialData ? monthCardHTML("Total followers", months.map(m=>socialTotal(m,'followers')), months, x=>x.toLocaleString('en-IN'), {}, socialPendingNow(month)?`<div class="kpi-sub" style="color:var(--warn);">${M} not updated yet</div>`:'') : ''}
         ${monthCardHTML("Meta ads spend", adSpend, months, inr, {neutral:true}, adNow?`<div class="kpi-sub faint">${adNow.days} day${adNow.days===1?'':'s'} logged · ${adNow.leads} leads</div>`:'')}
         ${monthCardHTML("Leads from ads", adLeads, months, x=>x)}
         <div class="kpi-card"><div class="kpi-label">Content in flight</div><div class="kpi-value mono" style="font-size:21px;">${activeContent}</div><div class="kpi-sub ${overdueContent?'neg':''}">${overdueContent?overdueContent+' overdue':'none overdue'}</div></div>
@@ -6506,7 +6574,7 @@ function mktOverview(){
     <div class="panel-head"><div><h3>Content by stage</h3><div class="sub">${contentItems.length} items in the pipeline</div></div><button class="btn btn-sm ghost" onclick="setSub('marketing','content')">Open</button></div>
     <div class="panel-body"><div class="barchart">${STAGES.map(st=>{ const n=contentItems.filter(c=>c.stage===st).length; return `<div class="bar-row"><div class="bar-label">${st}</div><div class="bar-track"><div class="bar-fill" style="width:${n/maxStage*100}%"></div></div><div class="bar-val mono">${n}</div></div>`; }).join('')}</div></div>
   </div>
-  ${socialPanelHTML()}`;
+  ${socialPanelHTML(month)}`;
 }
 
 // Sales → Overview: the sales score, month-on-month pipeline numbers, the team and where leads stand.
@@ -6601,10 +6669,11 @@ let contentMonthFilter = "All";
 function setContentMonthFilter(v){ contentMonthFilter = v; render(); }
 const contentInView = ()=>contentItems.filter(i=>matchesDateFilter(i.due, contentMonthFilter));
 function mktContent(){
-  const scoreMonth = TODAY.slice(0,7), scorePrev = prevMonth(scoreMonth), scoreP = monthLabel(scorePrev).split(' ')[0];
+  const scoreMonth = mktMonthNow(), scorePrev = prevMonth(scoreMonth), scoreP = monthLabel(scorePrev).split(' ')[0];
   return `
+  ${mktMonthBar(true)}
   <div class="banner"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div><b>Sample data.</b> Drag a card between columns, or use the stage dropdown on each card — both update the same record.</div></div>
-  ${monthScorePanelHTML(`Marketing Score · ${monthLabel(scoreMonth)}`, `Content, followers and engagement · vs ${scoreP}`, marketingScore(scoreMonth), marketingScore(scorePrev), scoreP)}
+  ${monthScorePanelHTML(`Marketing Score · ${monthLabel(scoreMonth)}`, `Content, followers and engagement · vs ${scoreP}`, marketingScore(scoreMonth), marketingScore(scorePrev), scoreP, mktTargetsBar(scoreMonth))}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Active Content</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-board"/></svg></div></div><div class="kpi-value mono" id="kpi-active">0</div><div class="kpi-sub">not yet published</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">In Production</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-edit"/></svg></div></div><div class="kpi-value mono" id="kpi-production">0</div><div class="kpi-sub">scripting, production, edit + graphic</div></div>
@@ -7145,9 +7214,13 @@ function boardMonthList(cid, svc){
   return out.reverse();
 }
 function shiftBoardMonth(cid, svc, step){ const list = boardMonthList(cid, svc), i = list.indexOf(bState(cid, svc).month), j = i - step; if(j>=0 && j<list.length) setBoardFilter(cid, svc, 'month', list[j]); }
+// A delivered card (Done in the board's last column) belongs to the month it was published, not only the month it was due.
+function cardDelivered(t){ const cfg = SERVICE_BOARDS[t.service]; return t.status==="Done" && !!cfg && t.stage===cfg.stages[cfg.stages.length-1]; }
+function cardDeliveredMonth(t){ return cardDelivered(t) && t.doneDate ? String(t.doneDate).slice(0,7) : cardMonth(t); }
 function cardInMonth(t, month){
   const due = cardMonth(t);
   if(due===month) return true;
+  if(cardDelivered(t) && t.doneDate && String(t.doneDate).slice(0,7)===month) return true;
   return month===TODAY.slice(0,7) && t.status!=="Done" && (!due || due < month);
 }
 function cardOverdue(t){ return t.status!=="Done" && t.due && t.due < TODAY; }
@@ -7165,7 +7238,7 @@ function serviceBoardHTML(c, svc, readOnly){
   const projs = cfg.projectTasks ? boardProjects(c.id, svc) : []; if(st.project && st.project!=='All' && !projs.some(p2=>p2.id===st.project)) st.project = 'All';
   const shown = inMonth.filter(x=>(st.platform==='All' || (x.platforms||[]).includes(st.platform)) && (st.assignee==='All' || x.assignedTo===st.assignee) && (!st.project || st.project==='All' || x.project===st.project));
   const delivered = x=>x.status==="Done" && x.stage===last;   // Done in an earlier column only means that step is finished
-  const doneNow = mine.filter(x=>delivered(x) && cardMonth(x)===st.month).length, donePrev = mine.filter(x=>delivered(x) && cardMonth(x)===prev).length;
+  const doneNow = mine.filter(x=>delivered(x) && cardDeliveredMonth(x)===st.month).length, donePrev = mine.filter(x=>delivered(x) && cardDeliveredMonth(x)===prev).length;
   const toDo = inMonth.filter(x=>!delivered(x)), overdue = toDo.filter(cardOverdue);
   const team = [...new Set([...activeEmployees().filter(e=>e.dept===svc).map(e=>e.name), ...mine.map(x=>x.assignedTo).filter(Boolean)])];
   const kpi = (label, v, sub) => `<div class="kpi-card" style="padding:12px 14px;"><div class="kpi-label">${label}</div><div class="kpi-value mono" style="font-size:20px;">${v}</div><div class="kpi-sub">${sub}</div></div>`;
@@ -7210,7 +7283,7 @@ function serviceBoardHTML(c, svc, readOnly){
     <select class="select-sm" onchange="setBoardFilter('${c.id}','${q(svc)}','assignee',this.value)"><option value="All">All assignees</option>${team.map(t2=>`<option ${st.assignee===t2?'selected':''}>${esc(t2)}</option>`).join('')}</select>
     </div>
   </div>
-  <div class="subtext" style="margin-top:-4px;">Showing work due in ${M}${st.month===TODAY.slice(0,7)?', plus anything unfinished from earlier':''}.${edit?' Drag a card between columns or use its dropdown.':''}</div>
+  <div class="subtext" style="margin-top:-4px;">Showing work due or published in ${M}${st.month===TODAY.slice(0,7)?', plus anything unfinished from earlier':''}.${edit?' Drag a card between columns or use its dropdown.':''}</div>
   <div class="board-scroll"><div class="board">${stages.map(stage=>{ const cards = shown.filter(x=>x.stage===stage); return `
     <div class="col" data-stage="${esc(stage)}" ${edit?`ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="boardDrop(event,'${q(stage)}')"`:''}>
       <div class="col-head"><span class="name">${esc(stage)}</span><span class="count">${cards.length}</span></div>
