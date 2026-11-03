@@ -642,9 +642,9 @@ async function loadLeads(){
 }
 // Pipeline stages. "Won" is only ever reached by converting the lead into a client (today: quote -> invoice),
 // never by moving a card; "Lost" needs a reason. The server enforces both.
-const LEAD_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
-const LEAD_OPEN_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation"];
-const LEAD_STAGE_KIND = {"New":"neutral","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
+const LEAD_STAGES = ["New","Not Connected 1","Not Connected 2","Call Back","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
+const LEAD_OPEN_STAGES = ["New","Not Connected 1","Not Connected 2","Call Back","Contacted","Meeting","Proposal Sent","Negotiation"];
+const LEAD_STAGE_KIND = {"New":"neutral","Not Connected 1":"warn","Not Connected 2":"warn","Call Back":"blue","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
 const LEAD_LOST_REASONS = ["Budget","Went with a competitor","No response","Not a fit","Other"];
 let leadsView = "board";
 function setLeadsView(v){ leadsView = v; render(); }
@@ -972,8 +972,8 @@ function mapInvoice(i){
     id: i.id, clientId: i.clientId, invoiceNo: i.invoiceNo,
     items: i.items.map(it=>({dept: it.dept, amount: Number(it.amount)})),
     issued: isoDate(i.issuedAt), due: isoDate(i.dueAt),
-    payments: i.payments.map(p=>({id:p.id, amount:Number(p.amount), date:isoDate(p.paidDate), accountId:p.accountId, note:p.note})),
-    pendingPayments: i.pendingPayments.map(p=>({id:p.id, amount:Number(p.amount), date:isoDate(p.paymentDate), salesPerson:p.salesPerson, note:p.note, approved:p.approved, approvedDate:p.approvedAt?isoDate(p.approvedAt):undefined})),
+    payments: i.payments.map(p=>({id:p.id, amount:Number(p.amount), date:isoDate(p.paidDate), accountId:p.accountId, note:p.note, upsellAmount:Number(p.upsellAmount||0)})),
+    pendingPayments: i.pendingPayments.map(p=>({id:p.id, amount:Number(p.amount), date:isoDate(p.paymentDate), salesPerson:p.salesPerson, note:p.note, upsellAmount:Number(p.upsellAmount||0), approved:p.approved, approvedDate:p.approvedAt?isoDate(p.approvedAt):undefined})),
   };
 }
 function mapPayable(p){
@@ -1657,7 +1657,7 @@ function openInvoicePayments(invId){
     <div class="modal-body">
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(client.name)} · ${(inv.payments||[]).length} payment${(inv.payments||[]).length===1?'':'s'} recorded against ${esc(inv.invoiceNo)}</div></div>
       <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th class="num">Amount</th><th>Account</th><th>Note</th><th></th></tr></thead>
-        <tbody>${(inv.payments||[]).map((p,idx)=>`<tr><td class="muted">${fmtDate(p.date)}</td><td class="num mono">${inr(p.amount)}</td><td class="muted">${esc(p.accountId?((bankById(p.accountId)||{}).name||p.accountId):'—')}</td><td class="muted">${esc(p.note||'—')}</td><td><button class="btn btn-sm ghost" onclick="downloadReceipt('${inv.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Receipt</button></td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">No payments recorded yet.</div></td></tr>`}</tbody>
+        <tbody>${(inv.payments||[]).map((p,idx)=>`<tr><td class="muted">${fmtDate(p.date)}</td><td class="num mono">${inr(p.amount)}</td><td class="muted">${esc(p.accountId?((bankById(p.accountId)||{}).name||p.accountId):'—')}</td><td class="muted">${esc(p.note||'—')}${p.upsellAmount>0?' '+pill('Upsell '+inr(p.upsellAmount),'blue'):''}</td><td><button class="btn btn-sm ghost" onclick="downloadReceipt('${inv.id}',${idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Receipt</button></td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">No payments recorded yet.</div></td></tr>`}</tbody>
       </table></div>
     </div>
     <div class="modal-foot"><div></div><div><button class="btn ghost" onclick="closeModal()">Close</button></div></div>`);
@@ -8544,7 +8544,7 @@ function acctApprovedReceipts(){
     <div class="panel-head"><h3>Approved payments</h3><div class="sub">${approvedReceiptsLoaded?`${approvedReceiptsTotal} confirmed payment${approvedReceiptsTotal===1?'':'s'}${receiptsSummary?` · ${inr(receiptsSummary.approved.amount)} received · ${inr(receiptsSummary.approved.commission)} commission`:''}${receiptsFiltered()?' (filtered)':''}${approvedReceiptsTotal>rows.length?' · showing the latest '+rows.length:''}`:'Loading…'}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Source</th><th>For</th><th class="num">Amount</th><th>Pushed by</th><th>Approved by</th><th>Bank account</th><th>Commission</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map(r=>`<tr>
-        <td class="mono">${esc(r.invoiceNo)}<div class="subtext">${r.source==='Direct'?pill('Direct','neutral'):r.source==='Quote'?'Quote '+esc(r.quoteCode||''):'Invoice'}</div></td>
+        <td class="mono">${esc(r.invoiceNo)}<div class="subtext">${r.source==='Direct'?pill('Direct','neutral'):r.source==='Quote'?'Quote '+esc(r.quoteCode||''):'Invoice'}${r.upsellAmount>0?' '+pill('Upsell '+inr(r.upsellAmount),'blue'):''}</div></td>
         <td class="muted">${clientLink(r.clientId, r.clientName)}</td>
         <td class="num mono">${inr(r.amount)}<div class="subtext" style="white-space:nowrap;">paid ${fmtDateShort(isoDate(r.paidDate))}</div></td>
         <td class="muted">${r.pushedBy?esc(r.pushedBy):dash}</td>
@@ -8627,7 +8627,7 @@ function acctPendingReceipts(){
           const party = quoteParty(r.q);
           return `<tr><td class="mono">${esc(r.q.title)}<div class="subtext">Quote</div></td><td class="muted">${party.kind==='client'?clientLink(party.id):esc(party.name)}${party.kind==='lead'?' '+pill('Lead','blue'):''}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(quoteTotal(r.q))}</td><td class="muted">${esc(r.q.createdBy)}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveQuotePayment('${r.q.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('quote','${r.q.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
         }
-        return `<tr><td class="mono">${esc(r.inv.invoiceNo)}<div class="subtext">Invoice</div></td><td class="muted">${clientLink(r.inv.clientId)}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(invoiceBalance(r.inv))}</td><td class="muted">${esc(r.p.salesPerson||'—')}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${r.inv.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${r.inv.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
+        return `<tr><td class="mono">${esc(r.inv.invoiceNo)}<div class="subtext">Invoice${r.p.upsellAmount>0?' '+pill('Upsell '+inr(r.p.upsellAmount),'blue'):''}</div></td><td class="muted">${clientLink(r.inv.clientId)}</td><td class="num mono">${inr(r.p.amount)}</td><td class="num mono">${inr(invoiceBalance(r.inv))}</td><td class="muted">${esc(r.p.salesPerson||'—')}</td><td class="muted">${esc(r.p.note||'—')} · ${fmtDateShort(r.p.date)}</td><td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm primary" onclick="openApproveInvoicePayment('${r.inv.id}',${r.idx})"><svg class="icon" style="width:12px;height:12px"><use href="#i-check"/></svg>Approve</button><button class="btn btn-sm ghost" onclick="openConfirmDeleteReceipt('invoice','${r.inv.id}','${r.p.id}')" title="Discard"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button></div></td></tr>`;
       }).join(""):`<tr><td colspan="7"><div class="empty">${receiptsFiltered()?'No pending payments match these filters.':'Nothing waiting on Finance right now.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>`;
@@ -8713,6 +8713,8 @@ function commissionDetailHTML(i, r){
   const settleBar = (filteredMonth && monthBalance>0.005) ? `<div style="display:flex;justify-content:flex-end;margin:0 0 10px;"><button class="btn btn-sm" onclick="openSettleCommission(${i},'${d.period}')" title="Pay only the entries received in ${esc(periodLabel)}, oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle this month only · ${inr(monthBalance)}</button></div>` : '';
   const cards = `<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:10px;">
     ${card('Total sales ('+esc(periodLabel)+')', inr(S.totalSales), 'approved payments, by date received')}
+    ${S.upsell>0?card('Upsell sold', inr(S.upsell), 'part of the sales above'):''}
+    ${S.upsellOwed>0?card('Upsell owed', inr(S.upsellOwed), S.upsellBalance>0?inr(S.upsellBalance)+' still to pay':'paid in full', S.upsellBalance>0?'warn':'pos'):''}
     ${card('Deals', S.deals, 'invoices with a payment')}
     ${card('Clients', S.clients)}
     ${card('Commission earned', inr(S.earned))}
@@ -8732,12 +8734,12 @@ function commissionDetailHTML(i, r){
     const open = key in commissionMonthOpen ? commissionMonthOpen[key] : m.month===TODAY.slice(0,7);
     return `<details class="report-details" ${open?'open':''} ontoggle="onCommissionMonthToggle(this,'${esc(key).replace(/'/g,"&#39;")}')" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px;">
       <summary class="report-line" style="padding:8px 12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><span class="name" style="font-weight:700;"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(monthLabel(m.month))}</span>
-        <span class="mono" style="font-size:12.5px;">Received ${inr(m.paymentsReceived)} · Earned ${inr(m.earned)} · Paid ${inr(m.paid)} · Balance <b style="${m.balance>0?'color:var(--neg);':''}">${inr(m.balance)}</b>${m.bonusEarned>0?` · Target bonus ${inr(m.bonusEarned)}`:''}</span></summary>
+        <span class="mono" style="font-size:12.5px;">Received ${inr(m.paymentsReceived)}${m.upsell>0?` (incl. ${inr(m.upsell)} upsell)`:''} · Earned ${inr(m.earned)} · Paid ${inr(m.paid)} · Balance <b style="${m.balance>0?'color:var(--neg);':''}">${inr(m.balance)}</b>${m.bonusEarned>0?` · Target bonus ${inr(m.bonusEarned)}`:''}${m.upsellEarned>0?` · Upsell owed ${inr(m.upsellEarned)}`:''}</span></summary>
       <div class="table-wrap"><table class="data"><thead><tr><th>Date received</th><th>Client</th><th>Reference</th><th class="num">Payment</th><th class="num">%</th><th class="num">Commission</th><th class="num">Paid</th><th class="num">Balance</th><th></th></tr></thead><tbody>${m.rows.map(t=>`<tr>
         <td class="muted">${fmtDateShort(t.date)}</td>
-        <td>${t.kind==='Target bonus'?pill('Target bonus','blue'):(t.clientId?clientLink(t.clientId,t.clientName):'<span class="faint">—</span>')}</td>
-        <td class="mono muted">${t.kind==='Target bonus'?'<span class="faint">monthly target</span>':esc(t.reference||'—')}</td>
-        <td class="num mono ${t.kind==='Target bonus'?'faint':''}">${t.paymentAmount!=null?inr(t.paymentAmount):'—'}</td>
+        <td>${t.kind==='Target bonus'?pill('Target bonus','blue'):(t.clientId?clientLink(t.clientId,t.clientName):'<span class="faint">—</span>')}${t.kind==='Upsell'?' '+pill('Upsell','blue'):''}</td>
+        <td class="mono muted">${t.kind==='Target bonus'?'<span class="faint">monthly target</span>':esc(t.reference||'—')}${t.kind==='Upsell'?'<div class="subtext">invoice fully paid</div>':''}</td>
+        <td class="num mono ${t.kind==='Target bonus'?'faint':''}">${t.paymentAmount!=null?inr(t.paymentAmount):'—'}${t.upsellAmount>0?`<div class="subtext" style="color:var(--blue);font-weight:700;">incl. ${inr(t.upsellAmount)} upsell</div>`:''}</td>
         <td class="num mono" title="${t.kind==='Target bonus'?'% of sales past target':t.edited?'Amount was edited or split after it was created':''}">${t.rate!=null?t.rate+'%':'—'}${t.edited?' <span class="faint">(edited)</span>':''}${t.kind==='Target bonus'&&t.rate!=null?'<div class="subtext">of excess</div>':''}</td>
         <td class="num mono">${inr(t.earned)}</td>
         <td class="num mono muted">${t.paid>0?inr(t.paid):'—'}</td>
@@ -9003,16 +9005,29 @@ function openSubmitInvoicePayment(id){
         <div><label class="field-label">Payment date</label><input class="field-input" type="date" name="paymentDate" value="${TODAY}" required></div>
       </div>
       <div><label class="field-label">Collected by</label><select class="field-input" name="salesPerson">${salesOptions}</select></div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;cursor:pointer;"><input type="checkbox" name="isUpsell" id="sp-upsell-on" style="margin-top:3px;"><span><b>Part of this is an upsell</b><span class="faint"> — an extra sale to an existing client, included in the amount above. Finance and reports will see it tagged. Commission is not affected.</span></span></label>
+        <div id="sp-upsell-box" style="display:none;"><label class="field-label">Upsell amount (₹)</label><input class="field-input" type="number" name="upsellAmount" id="sp-upsell-amt" min="1" max="${bal}" step="1" placeholder="e.g. 3000"><div class="subtext" id="sp-upsell-hint"></div></div>
+      </div>
       <div><label class="field-label">Note for Finance (optional)</label><input class="field-input" name="note" placeholder="e.g. Paid via UPI, ref UTR..."></div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Push to Finance</button></div></div>
     </form>`);
+  const spForm = document.getElementById("f-submit-invoice-payment");
+  const spHint = ()=>{ const amt = Number(spForm.elements.amount.value)||0, up = Number(spForm.elements.upsellAmount.value)||0;
+    spForm.elements.upsellAmount.max = amt;
+    document.getElementById("sp-upsell-hint").textContent = up>0 ? `${inr(up)} upsell + ${inr(Math.max(0,amt-up))} regular = ${inr(amt)} collected` : `Out of the ${inr(amt)} collected`; };
+  document.getElementById("sp-upsell-on").addEventListener("change", ev=>{ document.getElementById("sp-upsell-box").style.display = ev.target.checked ? "" : "none"; if(ev.target.checked) spForm.elements.upsellAmount.focus(); spHint(); });
+  spForm.elements.amount.addEventListener("input", spHint); spForm.elements.upsellAmount.addEventListener("input", spHint); spHint();
   document.getElementById("f-submit-invoice-payment").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
     const amount = Math.min(bal, Math.max(1, Number(f.get("amount"))));
+    const upsellAmount = f.get("isUpsell")==="on" ? Math.round(Number(f.get("upsellAmount"))||0) : 0;
+    if(f.get("isUpsell")==="on" && upsellAmount<=0){ toast("Enter how much of the payment is upsell"); return; }
+    if(upsellAmount>amount){ toast("The upsell part can't be more than the amount collected ("+inr(amount)+")"); return; }
     try{
-      await apiJson(`/api/finance/invoices/${id}/pending-payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, paymentDate:f.get("paymentDate"), note:f.get("note").trim()||"Sales confirmed payment", salesPerson:f.get("salesPerson") }) });
+      await apiJson(`/api/finance/invoices/${id}/pending-payments`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, paymentDate:f.get("paymentDate"), note:f.get("note").trim()||"Sales confirmed payment", salesPerson:f.get("salesPerson"), upsellAmount }) });
       await loadInvoices();
       toast("Sent to Finance for confirmation"); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't submit payment"); }
@@ -9036,7 +9051,7 @@ function openApproveInvoicePayment(id, idx){
   showModal(`
     <div class="modal-head"><h3>Approve payment — ${esc(inv.invoiceNo)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-approve-invoice-payment"><div class="modal-body">
-      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(clientById(inv.clientId).name)} · this payment <b>${inr(payment.amount)}</b> · Sales reported collected ${fmtDateShort(payment.date)}${payment.note?' — '+esc(payment.note):''}</div></div>
+      <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>${esc(clientById(inv.clientId).name)} · this payment <b>${inr(payment.amount)}</b> · Sales reported collected ${fmtDateShort(payment.date)}${payment.note?' — '+esc(payment.note):''}${payment.upsellAmount>0?' · '+pill('Upsell '+inr(payment.upsellAmount),'blue')+` <span class="faint">— owed to ${esc(payment.salesPerson||'the salesperson')} once this invoice is fully paid, on top of commission</span>`:''}</div></div>
       <div class="field-row">
         <div><label class="field-label">Credited to account</label><select class="field-input" name="accountId">${bankAccounts.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
         <div><label class="field-label">Date received</label><input class="field-input" type="date" name="date" value="${payment.date||TODAY}" max="${TODAY}" required><div class="sub" style="margin-top:4px;">The day the money reached the account — decides which month the sale, bonus and commission count in.</div></div>

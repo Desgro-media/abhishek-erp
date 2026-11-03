@@ -9,6 +9,7 @@ import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { sumAmounts, invoiceTotal, invoicePaidAsOf, invoiceStatus } from "../../services/finance/calc";
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
+import { createUpsellPayablesIfFullyPaid } from "../../services/finance/upsell";
 import { assertReceivedDate, lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { carryLeadAdvances } from "../../services/leadPayments";
 import {
@@ -141,12 +142,14 @@ export const submitPendingPayment: RequestHandler = asyncHandler(async (req, res
   const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
 
+  const upsellAmount = d.upsellAmount ?? 0;
+  if (upsellAmount > d.amount) return res.status(400).json({ error: "The upsell part can't be more than the payment amount" });
   const salesPerson = isFinanceAdmin(req.user?.roles) ? d.salesPerson : req.user!.name;
   const pending = await prisma.invoicePendingPayment.create({
-    data: { invoiceId, amount: d.amount, paymentDate: new Date(d.paymentDate), salesPerson, note: d.note },
+    data: { invoiceId, amount: d.amount, paymentDate: new Date(d.paymentDate), salesPerson, note: d.note, upsellAmount },
   });
 
-  await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_SUBMITTED", entityType: "Invoice", entityId: invoiceId, afterData: { amount: d.amount, salesPerson } });
+  await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_SUBMITTED", entityType: "Invoice", entityId: invoiceId, afterData: { amount: d.amount, salesPerson, upsellAmount } });
   res.status(201).json({ pending });
 });
 
@@ -191,7 +194,7 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
   const result = await prisma.$transaction(async (tx) => {
     await lockUnapprovedPending(tx, "invoice_pending_payments", pendingId);
     const payment = await tx.invoicePayment.create({
-      data: { invoiceId, amount: pending.amount, paidDate: date, accountId: d.accountId, note: pending.note ?? undefined, recordedBy: req.user!.sub },
+      data: { invoiceId, amount: pending.amount, paidDate: date, accountId: d.accountId, note: pending.note ?? undefined, recordedBy: req.user!.sub, upsellAmount: pending.upsellAmount },
     });
     await recordBankTxn(tx, { accountId: d.accountId, date, type: "CREDIT", amount: Number(pending.amount), note: `Invoice ${invoice.invoiceNo}`, refType: "INVOICE_PAYMENT", refId: payment.id });
     let commission = null;
@@ -205,7 +208,9 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
       salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: pending.salesPerson, paymentAmount: Number(pending.amount), date, sourcePaymentId: payment.id });
     }
     await tx.invoicePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
-    return { payment, commission, salesBonus };
+    // Fully paid now? Then any upsell Sales tagged on this invoice becomes owed to them (after the row above is approved).
+    const upsell = await createUpsellPayablesIfFullyPaid(tx, { invoiceId, invoiceNo: invoice.invoiceNo, sourcePaymentId: payment.id, date });
+    return { payment, commission, salesBonus, upsell };
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_APPROVED", entityType: "Invoice", entityId: invoiceId, afterData: { pendingId, amount: pending.amount, receivedDate: d.date, salesReportedDate: pending.paymentDate.toISOString().slice(0, 10) }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });

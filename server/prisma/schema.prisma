@@ -567,6 +567,7 @@ enum PayableCategory {
   RENT
   COMMISSION
   SALES_BONUS
+  UPSELL
   INTERNAL_LOAN
   VENDOR
 }
@@ -647,6 +648,8 @@ model InvoicePayment {
   account    BankAccount @relation(fields: [accountId], references: [id])
   note       String?
   recordedBy String?     @map("recorded_by")
+  // How much of this payment Sales tagged as upsell (an extra sale to an existing client). Reporting only.
+  upsellAmount Decimal   @default(0) @db.Decimal(12, 2) @map("upsell_amount")
   createdAt  DateTime    @default(now()) @map("created_at")
 
   // Commission / sales-bonus payables this payment generated — see Payable.sourcePaymentId.
@@ -669,6 +672,7 @@ model InvoicePendingPayment {
   salesPerson    String?   @map("sales_person")
   note           String?
   approved       Boolean   @default(false)
+  upsellAmount   Decimal   @default(0) @db.Decimal(12, 2) @map("upsell_amount")
   approvedAt     DateTime? @map("approved_at")
   invoicePayment String?   @map("invoice_payment_id") // set once approved, points at the resulting InvoicePayment.id
   createdAt      DateTime  @default(now()) @map("created_at")
@@ -1055,6 +1059,9 @@ enum LeadStatus {
 
 enum LeadStage {
   NEW
+  NOT_CONNECTED_1
+  NOT_CONNECTED_2
+  CALL_BACK
   CONTACTED
   MEETING
   PROPOSAL_SENT

@@ -107,12 +107,26 @@ export const getMyEmployeeRecord: RequestHandler = asyncHandler(async (req, res)
   res.json({ employee });
 });
 
+// An email can belong to only one employee (and one login). Check up front so HR gets a clear message, not a 500 —
+// and so a duplicate login email can't leave a half-created employee behind.
+async function emailTakenMessage(email: string, exceptEmployeeId?: string, checkLogin = true): Promise<string | null> {
+  const e = await prisma.employee.findFirst({ where: { email: { equals: email, mode: "insensitive" }, ...(exceptEmployeeId ? { NOT: { id: exceptEmployeeId } } : {}) }, select: { name: true, employeeCode: true } });
+  if (e) return `${email} is already used by ${e.name} (${e.employeeCode}) — use a different email.`;
+  if (checkLogin) {
+    const u = await prisma.user.findFirst({ where: { email: { equals: email, mode: "insensitive" } }, select: { name: true } });
+    if (u) return `${email} already has an ERP login (${u.name}) — use a different email.`;
+  }
+  return null;
+}
+
 export const createEmployee: RequestHandler = asyncHandler(async (req, res) => {
   const parsed = employeeCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
   if (d.grantAccess && adminGrantForbidden(req, d.grantAccess.roles)) return res.status(403).json({ error: "Forbidden — only an Admin can grant the Admin role" });
+  const taken = await emailTakenMessage(d.email);
+  if (taken) return res.status(409).json({ error: taken });
   const employeeCode = await nextEmployeeCode();
   const employee = await prisma.employee.create({
     data: {
@@ -164,6 +178,10 @@ export const updateEmployee: RequestHandler = asyncHandler(async (req, res) => {
 
   const before = await prisma.employee.findUnique({ where: { id: req.params.id } });
   if (!before) return res.status(404).json({ error: "Employee not found" });
+  if (d.email && d.email.toLowerCase() !== before.email.toLowerCase()) {
+    const taken = await emailTakenMessage(d.email, before.id, false);
+    if (taken) return res.status(409).json({ error: taken });
+  }
 
   // Salary changes go through the salary-revisions endpoint so there's a
   // dated, reasoned history — not a silent overwrite here.

@@ -14,7 +14,7 @@ import { monthlyApprovedInvoiceRevenue } from "../../services/finance/revenue";
 const DEPARTMENTS = ["Marketing Consultation", "Web Development", "Production", "Graphic Design", "Performance Marketing", "Sales", "Administrative"];
 const SERVICE_DEPARTMENTS = DEPARTMENTS.filter((d) => d !== "Administrative" && d !== "Sales");
 const OVERHEAD_DEPTS = ["Administrative", "Sales"];
-const PAYABLE_LIABILITY_CATEGORIES: PayableCategory[] = ["RENT", "COMMISSION", "SALES_BONUS", "VENDOR"];
+const PAYABLE_LIABILITY_CATEGORIES: PayableCategory[] = ["RENT", "COMMISSION", "SALES_BONUS", "UPSELL", "VENDOR"];
 
 function monthBounds(month: string) {
   const [y, m] = month.split("-").map(Number);
