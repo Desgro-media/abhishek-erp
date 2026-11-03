@@ -66,6 +66,7 @@ export const submitApplicationPublic: RequestHandler = asyncHandler(async (req, 
     return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   }
   const d = parsed.data;
+  if (!req.file) return res.status(400).json({ error: "Upload your resume (PDF) to apply" });
   if (!d.phone && !d.email) {
     if (req.file) fs.unlink(req.file.path, () => {});
     return res.status(400).json({ error: "Add a phone number or an email so we can reach you" });

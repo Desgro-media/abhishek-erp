@@ -64,6 +64,7 @@ document.getElementById("apply-form").addEventListener("submit", async e => {
   errorEl.innerHTML = "";
   if(!name){ errorEl.innerHTML = `<div class="error-msg">Enter your name.</div>`; return; }
   if(!phone && !email){ errorEl.innerHTML = `<div class="error-msg">Add a phone number or an email.</div>`; return; }
+  if(!resumeFile){ errorEl.innerHTML = `<div class="error-msg">Upload your resume (PDF) to apply.</div>`; return; }
   if(resumeFile){
     if(resumeFile.type !== "application/pdf"){ errorEl.innerHTML = `<div class="error-msg">Resume must be a PDF.</div>`; return; }
     if(resumeFile.size > MAX_RESUME_BYTES){ errorEl.innerHTML = `<div class="error-msg">Resume must be 5MB or smaller.</div>`; return; }
