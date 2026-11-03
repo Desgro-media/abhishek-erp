@@ -139,7 +139,7 @@ export const listApprovedReceipts: RequestHandler = asyncHandler(async (req, res
       approvedBy: p.recordedBy ? approverName.get(p.recordedBy) ?? null : null,
       bankAccount: { id: p.accountId, name: p.account.name },
       note: p.note,
-      isUpsell: p.isUpsell,
+      upsellAmount: Number(p.upsellAmount),
       // Zero, one, or several (a split) — each is a real Payable row, so an edit to its amount shows here.
       commissions: commissions
         .filter((c) => c.sourcePaymentId === p.id)
@@ -244,7 +244,7 @@ export const updateApprovedReceipt: RequestHandler = asyncHandler(async (req, re
 
     const updated = await tx.invoicePayment.update({
       where: { id: paymentId },
-      data: { amount: d.amount, paidDate: d.paidDate ? date : undefined, accountId: d.accountId, note: d.note === undefined ? undefined : d.note },
+      data: { amount: d.amount, paidDate: d.paidDate ? date : undefined, accountId: d.accountId, note: d.note === undefined ? undefined : d.note, upsellAmount: Math.min(Number(ctx.payment.upsellAmount), amount) },
     });
 
     // The ledger row this payment posted moves with it.
@@ -262,7 +262,7 @@ export const updateApprovedReceipt: RequestHandler = asyncHandler(async (req, re
 
     // Keep the approved pending row in step: the monthly sales-target figures sum its amount.
     if (amountChanged) {
-      if (ctx.ip) await tx.invoicePendingPayment.update({ where: { id: ctx.ip.id }, data: { amount } });
+      if (ctx.ip) await tx.invoicePendingPayment.update({ where: { id: ctx.ip.id }, data: { amount, upsellAmount: Math.min(Number(ctx.ip.upsellAmount), amount) } });
       if (ctx.qp) {
         await tx.quotePendingPayment.update({ where: { id: ctx.qp.id }, data: { amount } });
         const balance = invoiceTotal(ctx.payment.invoice.items) - (sumAmounts(ctx.payment.invoice.payments) - oldAmount + amount);

@@ -141,12 +141,14 @@ export const submitPendingPayment: RequestHandler = asyncHandler(async (req, res
   const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!invoice) return res.status(404).json({ error: "Invoice not found" });
 
+  const upsellAmount = d.upsellAmount ?? 0;
+  if (upsellAmount > d.amount) return res.status(400).json({ error: "The upsell part can't be more than the payment amount" });
   const salesPerson = isFinanceAdmin(req.user?.roles) ? d.salesPerson : req.user!.name;
   const pending = await prisma.invoicePendingPayment.create({
-    data: { invoiceId, amount: d.amount, paymentDate: new Date(d.paymentDate), salesPerson, note: d.note, isUpsell: d.isUpsell === true },
+    data: { invoiceId, amount: d.amount, paymentDate: new Date(d.paymentDate), salesPerson, note: d.note, upsellAmount },
   });
 
-  await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_SUBMITTED", entityType: "Invoice", entityId: invoiceId, afterData: { amount: d.amount, salesPerson, isUpsell: d.isUpsell === true } });
+  await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_SUBMITTED", entityType: "Invoice", entityId: invoiceId, afterData: { amount: d.amount, salesPerson, upsellAmount } });
   res.status(201).json({ pending });
 });
 
@@ -191,7 +193,7 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
   const result = await prisma.$transaction(async (tx) => {
     await lockUnapprovedPending(tx, "invoice_pending_payments", pendingId);
     const payment = await tx.invoicePayment.create({
-      data: { invoiceId, amount: pending.amount, paidDate: date, accountId: d.accountId, note: pending.note ?? undefined, recordedBy: req.user!.sub, isUpsell: pending.isUpsell },
+      data: { invoiceId, amount: pending.amount, paidDate: date, accountId: d.accountId, note: pending.note ?? undefined, recordedBy: req.user!.sub, upsellAmount: pending.upsellAmount },
     });
     await recordBankTxn(tx, { accountId: d.accountId, date, type: "CREDIT", amount: Number(pending.amount), note: `Invoice ${invoice.invoiceNo}`, refType: "INVOICE_PAYMENT", refId: payment.id });
     let commission = null;
