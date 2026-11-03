@@ -351,7 +351,7 @@ async function loadHrModule(){
       loadMyLeaveBalance().catch(()=>{});
       const { records } = await apiJson(`/api/hr/attendance/${currentUser._dbId}/history?month=${TODAY.slice(0,7)}`);
       const todayRec = records.find(r=>isoDate(r.date)===TODAY);
-      attendanceToday[currentUser.id] = todayRec ? { status: ATTENDANCE_FROM_API[todayRec.status], in: todayRec.checkIn||null } : { status:"notin", in:null };   // no record yet today = not checked in (HR records an absence explicitly)
+      attendanceToday[currentUser.id] = todayRec ? { status: ATTENDANCE_FROM_API[todayRec.status], in: todayRec.checkIn||null } : { status:"present", in:null };   // no record today = Present by default; only an absence HR records shows as Absent
     }
   }
 }
