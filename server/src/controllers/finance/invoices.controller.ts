@@ -9,6 +9,7 @@ import { seesWholeSalesTeam } from "../../middleware/crmAccess";
 import { sumAmounts, invoiceTotal, invoicePaidAsOf, invoiceStatus } from "../../services/finance/calc";
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
+import { createUpsellPayablesIfFullyPaid } from "../../services/finance/upsell";
 import { assertReceivedDate, lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { carryLeadAdvances } from "../../services/leadPayments";
 import {
@@ -207,7 +208,9 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
       salesBonus = await createSalesBonusIfCrossed(tx, { salesPerson: pending.salesPerson, paymentAmount: Number(pending.amount), date, sourcePaymentId: payment.id });
     }
     await tx.invoicePendingPayment.update({ where: { id: pendingId }, data: { approved: true, approvedAt, invoicePayment: payment.id } });
-    return { payment, commission, salesBonus };
+    // Fully paid now? Then any upsell Sales tagged on this invoice becomes owed to them (after the row above is approved).
+    const upsell = await createUpsellPayablesIfFullyPaid(tx, { invoiceId, invoiceNo: invoice.invoiceNo, sourcePaymentId: payment.id, date });
+    return { payment, commission, salesBonus, upsell };
   });
 
   await recordAudit({ userId: req.user!.sub, action: "FIN_INVOICE_PAYMENT_APPROVED", entityType: "Invoice", entityId: invoiceId, afterData: { pendingId, amount: pending.amount, receivedDate: d.date, salesReportedDate: pending.paymentDate.toISOString().slice(0, 10) }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });

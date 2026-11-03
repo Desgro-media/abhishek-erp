@@ -8,6 +8,7 @@ const KIND_BY_ACCOUNT: Record<string, PayableCategory> = {
   "Rent Payable": "RENT",
   "Commission Payable": "COMMISSION",
   "Sales Bonus Payable": "SALES_BONUS",
+  "Upsell Payable": "UPSELL",
   "Internal Loan": "INTERNAL_LOAN",
 };
 

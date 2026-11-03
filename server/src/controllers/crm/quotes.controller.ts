@@ -7,6 +7,7 @@ import { recordAudit } from "../../services/audit.service";
 import { recordBankTxn } from "../../services/finance/bankLedger";
 import { createCommissionPayable } from "../../services/finance/commission";
 import { createSalesBonusIfCrossed } from "../../services/finance/salesTarget";
+import { createUpsellPayablesIfFullyPaid } from "../../services/finance/upsell";
 import { assertReceivedDate, lockUnapprovedPending } from "../../services/finance/pendingPayment";
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
 import { nextInvoiceNo } from "../../services/finance/invoiceNumber";
@@ -303,6 +304,8 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
     const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { items: true, payments: true } });
     const balance = invoiceTotal(invoice.items) - sumAmounts(invoice.payments);
     if (balance <= 0.01) await tx.quote.update({ where: { id: quoteId }, data: { status: "INVOICED" } });
+    // This payment may be the one that completes the invoice — then upsell Sales tagged on earlier payments is owed.
+    await createUpsellPayablesIfFullyPaid(tx, { invoiceId, invoiceNo: invoice.invoiceNo, sourcePaymentId: payment.id, date });
 
     return { payment, commission, salesBonus, invoiceId, clientId, balance };
   });

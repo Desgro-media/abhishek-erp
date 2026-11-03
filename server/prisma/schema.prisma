@@ -567,6 +567,7 @@ enum PayableCategory {
   RENT
   COMMISSION
   SALES_BONUS
+  UPSELL
   INTERNAL_LOAN
   VENDOR
 }

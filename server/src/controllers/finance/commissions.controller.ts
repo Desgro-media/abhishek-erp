@@ -69,7 +69,7 @@ export const approveCommissionWithdrawal: RequestHandler = asyncHandler(async (r
   const date = d.date ? new Date(d.date) : new Date();
   const paidAmount = await prisma.$transaction(async (tx) => {
     const outstanding = await tx.payable.findMany({
-      where: { category: { in: ["COMMISSION", "SALES_BONUS"] }, salesPerson: withdrawal.employee.name },
+      where: { category: { in: ["COMMISSION", "SALES_BONUS", "UPSELL"] }, salesPerson: withdrawal.employee.name },
       include: { payments: true },
       orderBy: { dueAt: "asc" },
     });
@@ -226,7 +226,7 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
   const inPeriod = (iso: string) => period === "all" || (period === "today" ? iso === todayIso() : iso.slice(0, 7) === period);
 
   const [payables, ipRows, qpRows, policy] = await Promise.all([
-    prisma.payable.findMany({ where: { category: { in: ["COMMISSION", "SALES_BONUS"] }, salesPerson }, include: { payments: true }, orderBy: [{ dueAt: "desc" }, { createdAt: "desc" }] }),
+    prisma.payable.findMany({ where: { category: { in: ["COMMISSION", "SALES_BONUS", "UPSELL"] }, salesPerson }, include: { payments: true }, orderBy: [{ dueAt: "desc" }, { createdAt: "desc" }] }),
     prisma.invoicePendingPayment.findMany({ where: { approved: true, salesPerson, invoicePayment: { not: null } }, select: { invoicePayment: true } }),
     prisma.quotePendingPayment.findMany({ where: { approved: true, invoicePayment: { not: null }, quote: { createdBy: salesPerson } }, include: { quote: { select: { quoteCode: true, title: true } } } }),
     getSalesPolicy(),
@@ -241,7 +241,7 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
   const paymentById = new Map(payments.map((p) => [p.id, p]));
 
   // ---- transaction rows: one per commission / bonus entry in the period ----
-  type Tx = { payableId: string; kind: "Commission" | "Target bonus"; date: string; month: string; clientId: string | null; clientName: string | null; reference: string | null; invoiceNo: string | null; quoteCode: string | null; paymentAmount: number | null; upsellAmount: number; rate: number | null; edited: boolean; earned: number; paid: number; balance: number; hasPayments: boolean };
+  type Tx = { payableId: string; kind: "Commission" | "Target bonus" | "Upsell"; date: string; month: string; clientId: string | null; clientName: string | null; reference: string | null; invoiceNo: string | null; quoteCode: string | null; paymentAmount: number | null; upsellAmount: number; rate: number | null; edited: boolean; earned: number; paid: number; balance: number; hasPayments: boolean };
   const txs: Tx[] = [];
   for (const p of payables) {
     const pay = p.sourcePaymentId ? paymentById.get(p.sourcePaymentId) : undefined;
@@ -252,7 +252,7 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
     const rate = p.commissionRate != null ? Number(p.commissionRate) : null;
     const q = pay ? quoteByPayment.get(pay.id) : undefined;
     txs.push({
-      payableId: p.id, kind: p.category === "SALES_BONUS" ? "Target bonus" : "Commission", date, month: due.slice(0, 7),
+      payableId: p.id, kind: p.category === "SALES_BONUS" ? "Target bonus" : p.category === "UPSELL" ? "Upsell" : "Commission", date, month: due.slice(0, 7),
       clientId: pay?.invoice.client.id ?? null, clientName: pay?.invoice.client.name ?? null,
       reference: q?.quoteCode ?? pay?.invoice.invoiceNo ?? null, invoiceNo: pay?.invoice.invoiceNo ?? null, quoteCode: q?.quoteCode ?? null,
       paymentAmount: pay ? Number(pay.amount) : null, upsellAmount: pay ? Number(pay.upsellAmount) : 0, rate,
@@ -269,12 +269,13 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
   const monthKeys = new Set<string>([...txs.map((t) => t.month), ...salesPayments.map((p) => day(p.paidDate).slice(0, 7))]);
   const months = [...monthKeys].sort().reverse().map((m) => {
     const rows = txs.filter((t) => t.month === m);
-    const com = rows.filter((t) => t.kind === "Commission"), bon = rows.filter((t) => t.kind === "Target bonus");
+    const com = rows.filter((t) => t.kind === "Commission"), bon = rows.filter((t) => t.kind === "Target bonus"), ups = rows.filter((t) => t.kind === "Upsell");
     return {
       month: m, rows,
       paymentsReceived: round2(salesPayments.filter((p) => day(p.paidDate).slice(0, 7) === m).reduce((s, p) => s + Number(p.amount), 0)),
       upsell: round2(salesPayments.filter((p) => day(p.paidDate).slice(0, 7) === m).reduce((s, p) => s + Number(p.upsellAmount), 0)),
       earned: round2(com.reduce((s, t) => s + t.earned, 0)), paid: round2(com.reduce((s, t) => s + t.paid, 0)), balance: round2(com.reduce((s, t) => s + t.balance, 0)),
+      upsellEarned: round2(ups.reduce((s, t) => s + t.earned, 0)), upsellBalance: round2(ups.reduce((s, t) => s + t.balance, 0)),
       bonusEarned: round2(bon.reduce((s, t) => s + t.earned, 0)), bonusPaid: round2(bon.reduce((s, t) => s + t.paid, 0)), bonusBalance: round2(bon.reduce((s, t) => s + t.balance, 0)),
     };
   });
@@ -324,6 +325,8 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
     summary: {
       totalSales: round2(salesPayments.reduce((s, p) => s + Number(p.amount), 0)),
       upsell: round2(salesPayments.reduce((s, p) => s + Number(p.upsellAmount), 0)),
+      upsellOwed: round2(txs.filter((t) => t.kind === "Upsell").reduce((s, t) => s + t.earned, 0)),
+      upsellBalance: round2(txs.filter((t) => t.kind === "Upsell").reduce((s, t) => s + t.balance, 0)),
       deals: new Set(salesPayments.map((p) => p.invoiceId)).size,
       clients: new Set(salesPayments.map((p) => p.invoice.clientId)).size,
       earned: round2(commission.reduce((s, t) => s + t.earned, 0)),

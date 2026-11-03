@@ -24,7 +24,7 @@ export const listPayables: RequestHandler = asyncHandler(async (req, res) => {
   const payables = await prisma.payable.findMany({
     where: admin
       ? { category: req.query.category as any }
-      : { category: { in: ["COMMISSION", "SALES_BONUS"] }, salesPerson: req.user!.name },
+      : { category: { in: ["COMMISSION", "SALES_BONUS", "UPSELL"] }, salesPerson: req.user!.name },
     include: { payments: true, account: { select: { id: true, name: true } } },
     orderBy: { dueAt: "desc" },
   });
