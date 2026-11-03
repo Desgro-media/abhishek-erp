@@ -48,6 +48,21 @@ export const createAdvance: RequestHandler = asyncHandler(async (req, res) => {
     const err = await deductMonthError(employeeId, d.deductFromMonth);
     if (err) return res.status(400).json({ error: err });
   }
+  // An advance can't be more than the employee's monthly salary, counting advances already pending or being
+  // recovered against the same salary month.
+  const emp = await prisma.employee.findUnique({ where: { id: employeeId }, select: { salary: true } });
+  const salary = Number(emp?.salary ?? 0);
+  if (salary > 0) {
+    const open = await prisma.advance.findMany({
+      where: { employeeId, status: { in: ["PENDING", "RECOVERING"] }, deductFromMonth: d.deductFromMonth ?? null },
+      select: { status: true, amount: true, balance: true },
+    });
+    const used = open.reduce((t, a) => t + Number(a.status === "PENDING" ? a.amount : a.balance), 0);
+    const room = Math.max(0, salary - used);
+    if (d.amount > room) {
+      return res.status(400).json({ error: room > 0 ? `An advance can be at most ₹${room.toLocaleString("en-IN")} here — your monthly salary is ₹${salary.toLocaleString("en-IN")}, less advances already requested` : "Your salary for that month is already fully requested — pick another month" });
+    }
+  }
   const monthlyDeduction = Math.ceil(d.amount / d.installments);
   const advance = await prisma.advance.create({
     data: {

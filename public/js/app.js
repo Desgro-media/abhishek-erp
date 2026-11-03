@@ -351,7 +351,7 @@ async function loadHrModule(){
       loadMyLeaveBalance().catch(()=>{});
       const { records } = await apiJson(`/api/hr/attendance/${currentUser._dbId}/history?month=${TODAY.slice(0,7)}`);
       const todayRec = records.find(r=>isoDate(r.date)===TODAY);
-      attendanceToday[currentUser.id] = todayRec ? { status: ATTENDANCE_FROM_API[todayRec.status], in: todayRec.checkIn||null } : { status:"absent", in:null };
+      attendanceToday[currentUser.id] = todayRec ? { status: ATTENDANCE_FROM_API[todayRec.status], in: todayRec.checkIn||null } : { status:"notin", in:null };   // no record yet today = not checked in (HR records an absence explicitly)
     }
   }
 }
@@ -4554,23 +4554,35 @@ function advanceMonthOptions(selected, empCode){
   const pick = selected || months[0];
   return months.map(m=>`<option value="${m}" ${m===pick?'selected':''}>${monthLabel(m)}</option>`).join("");
 }
+// What an employee can still ask for against one salary month: their monthly salary minus advances already
+// pending or being recovered for that same month. (The server re-checks.)
+function advanceRoom(month){
+  const sal = Number((currentUser && currentUser.salary) || 0); if(!sal) return null;
+  const used = advances.filter(a=>(a.status==="Pending"||a.status==="Recovering") && a.deductFromMonth===month).reduce((t,a)=>t+(a.status==="Pending"?a.amount:a.balance),0);
+  return Math.max(0, sal - used);
+}
 function openRequestAdvance(){
   showModal(`
     <div class="modal-head"><h3>Request advance salary</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-request-advance"><div class="modal-body">
       <div class="banner muted"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div>Submitted to HR for approval — once approved, it is deducted automatically from the salary month you choose.</div></div>
       <div class="field-row">
-        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="500" step="500" required placeholder="10000"></div>
+        <div><label class="field-label">Amount (₹)</label><input class="field-input" type="number" name="amount" min="500" step="500" required placeholder="10000"><div class="subtext" id="adv-room"></div></div>
         <div><label class="field-label">Deduct from salary of</label><select class="field-input" name="deductMonth" required>${advanceMonthOptions()}</select></div>
       </div>
       <div><label class="field-label">Reason</label><textarea class="field-input" name="reason" required placeholder="Brief reason for the request"></textarea></div>
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Submit request</button></div></div>
     </form>`);
+  const advForm = document.getElementById("f-request-advance");
+  const showRoom = ()=>{ const m = advForm.elements.deductMonth.value, r = advanceRoom(m), amt = advForm.elements.amount; if(r==null) return; amt.max = r; document.getElementById("adv-room").textContent = `Up to ${inr(r)} for ${monthLabel(m)} (your salary, less advances already requested)`; };
+  advForm.elements.deductMonth.addEventListener("change", showRoom); showRoom();
   document.getElementById("f-request-advance").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
     const amount = Number(f.get("amount")); const deductFromMonth = f.get("deductMonth");
+    const room = advanceRoom(deductFromMonth);
+    if(room!=null && amount>room){ toast(room>0 ? `You can request at most ${inr(room)} against ${monthLabel(deductFromMonth)} — that's your salary minus advances already requested.` : `Your ${monthLabel(deductFromMonth)} salary is already fully requested — pick another month.`); return; }
     try{
       await apiJson("/api/hr/advances", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ amount, reason:f.get("reason"), deductFromMonth }) });
       advances = (await apiJson(`/api/hr/advances?employeeId=${currentUser._dbId}`)).advances.map(mapAdvance);
@@ -4581,14 +4593,14 @@ function openRequestAdvance(){
 
 /* ===================== HR ===================== */
 function statusKind(s){
-  const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Work From Home":"blue","Partially Paid WFH":"blue","Unpaid Leave":"neg",
+  const map = {Present:"pos",Late:"warn","Half Day":"warn","On Leave":"neutral",Absent:"neg","Not checked in":"neutral","Work From Home":"blue","Partially Paid WFH":"blue","Unpaid Leave":"neg",
     Approved:"pos",Pending:"warn",Rejected:"neg",Cancelled:"neutral",Recovering:"warn",Recovered:"pos",Paid:"pos",Open:"blue",Interview:"warn",Offer:"pos",Hired:"pos",Applied:"neutral",
     Permanent:"pos",Probation:"warn",
     Unpaid:"neg",Overpaid:"neg","Partially Paid":"warn","Payments pending":"warn","Adding entries":"neutral",
     New:"warn",Reviewed:"blue",Resolved:"pos"};
   return map[s] || "neutral";
 }
-function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",leave:"On Leave",wfh:"Work From Home",wfhp:"Partially Paid WFH",unpaid:"Unpaid Leave"}[s]; }
+function attendanceLabel(s){ return {present:"Present",late:"Late",half:"Half Day",absent:"Absent",notin:"Not checked in",leave:"On Leave",wfh:"Work From Home",wfhp:"Partially Paid WFH",unpaid:"Unpaid Leave"}[s]; }
 
 /* ===================== HR SCORE =====================
    Out of 100:  Programs run 40 (each of the 3 program types run, or still scheduled) · Feedback rating 25 · Feedback
@@ -5104,7 +5116,10 @@ function hrAdvances(){
     ...withdrawalRequests.map(w=>({kind:"Withdrawal", id:w.id, empId:w.empId, empName:w.empName, amount:w.amount, requested:w.requested, status:w.status, decided:w.decidedDate,
       detail:`Against ${esc(MONTH_LABEL[w.month]||monthLabel(w.month))} salary`, balance:w.status==='Approved'?0:null})),
   ];
-  const inView = rows.filter(r=>(advancesTypeFilter==='All' || r.kind===advancesTypeFilter) && matchesDateFilter(r.requested, advancesMonthFilter));
+  const typeRows = rows.filter(r=>advancesTypeFilter==='All' || r.kind===advancesTypeFilter);
+  // the month list follows the Type chip; if the chosen month has nothing of that type, fall back to All time
+  if(advancesMonthFilter!=='All' && advancesMonthFilter!=='Today' && !typeRows.some(r=>(r.requested||'').slice(0,7)===advancesMonthFilter)) advancesMonthFilter = 'All';
+  const inView = typeRows.filter(r=>matchesDateFilter(r.requested, advancesMonthFilter));
   const order = {Pending:0, Recovering:1, Recovered:2, Approved:2, Rejected:3};
   inView.sort((a,b)=>(order[a.status]-order[b.status]) || b.requested.localeCompare(a.requested));
   const pend = rows.filter(r=>r.status==="Pending");
@@ -5127,12 +5142,12 @@ function hrAdvances(){
   <div class="toolbar">
     <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
       <div class="filter-group"><span class="filter-label">Type</span><div>${["All","Advance","Withdrawal"].map(t=>`<button class="chip ${advancesTypeFilter===t?'active':''}" onclick="setAdvancesTypeFilter('${t}')">${t==='All'?'All':t+'s'}</button>`).join(' ')}</div></div>
-      <div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setAdvancesMonthFilter(this.value)">${dateFilterOptions(rows.map(r=>r.requested), advancesMonthFilter)}</select></div>
+      <div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setAdvancesMonthFilter(this.value)">${dateFilterOptions(typeRows.map(r=>r.requested), advancesMonthFilter)}</select></div>
     </div>
     <button class="btn primary" onclick="openAddAdvance()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New advance</button>
   </div>
   <div class="panel">
-    <div class="panel-head"><h3>Requests</h3><div class="sub">${inView.length} of ${rows.length}${dateFilterSuffix(advancesMonthFilter,'requested in')} · pending first, then newest</div></div>
+    <div class="panel-head"><h3>Requests</h3><div class="sub">${inView.length} of ${typeRows.length}${dateFilterSuffix(advancesMonthFilter,'requested in')} · pending first, then newest</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Employee</th><th>Type</th><th class="num">Amount</th><th>Details</th><th>Requested</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
       <tbody>${inView.length ? inView.map(r=>{ const emp = byId(r.empId); const shown = r.kind==="Withdrawal" && r.status==="Approved" ? "Paid" : r.status; return `<tr><td>${emp?personCell(emp):`${esc(r.empName||r.empId)}<div class="subtext mono">${esc(r.empId)}</div>`}</td><td>${kindPill(r.kind)}</td><td class="num mono">${inr(r.amount)}</td><td class="muted">${r.detail}</td><td class="muted">${fmtDate(r.requested)}</td><td class="num mono">${r.balance==null?'—':inr(r.balance)}</td><td>${pill(shown, statusKind(shown))}</td><td>${actions(r)}</td></tr>`; }).join('') : `<tr><td colspan="8"><div class="empty">No requests${advancesMonthFilter==='All'&&advancesTypeFilter==='All'?' yet':' for this view'}.</div></td></tr>`}</tbody>
     </table></div>
