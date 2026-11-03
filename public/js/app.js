@@ -6483,12 +6483,12 @@ function openSocialUpdate(month){
   showModal(`
     <div class="modal-head"><h3>Followers &amp; insights — ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-social"><div class="modal-body">
-      <div class="subtext" style="font-size:12px;margin-top:0;">Copy these from each platform's insights for the month. Only followers is required. ${pm} numbers are shown under each box.</div>
+      <div class="subtext" style="font-size:12px;margin-top:0;">Copy these from each platform's insights for the month. Fill only the platforms you have — followers is needed for each one you fill. You can type short forms like <b>16.22k</b>, <b>1.2m</b> or <b>1.5l</b> (lakh). ${pm} numbers are shown under each box.</div>
       ${socialPlatforms().map(pl=>{ const a = socialFor(month, pl), b = socialFor(prev, pl); return `
         <fieldset style="border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin:0;">
           <legend style="font-weight:700;font-size:13px;padding:0 6px;">${esc(pl)}</legend>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;">
-            ${SOCIAL_METRICS.map(m=>`<div><label class="field-label" for="soc-${pl}-${m.k}">${m.label}${m.req?' *':''}</label><input class="field-input" type="number" min="0" step="1" id="soc-${pl}-${m.k}" name="${pl}-${m.k}" value="${a&&a[m.k]!=null?a[m.k]:''}" ${m.req?'required':''}><div class="subtext">${pm}: ${b&&b[m.k]!=null?b[m.k].toLocaleString('en-IN'):'—'}</div></div>`).join('')}
+            ${SOCIAL_METRICS.map(m=>`<div><label class="field-label" for="soc-${pl}-${m.k}">${m.label}${m.req?' *':''}</label><input class="field-input" type="text" inputmode="text" autocomplete="off" placeholder="e.g. 16.22k" id="soc-${pl}-${m.k}" name="${pl}-${m.k}" value="${a&&a[m.k]!=null?a[m.k]:''}"><div class="subtext">${pm}: ${b&&b[m.k]!=null?b[m.k].toLocaleString('en-IN'):'—'}</div></div>`).join('')}
           </div>
         </fieldset>`; }).join('')}
       <div><label class="field-label" for="soc-note">What the insights say (optional)</label><textarea class="field-input" id="soc-note" name="note" rows="3" placeholder="What worked, what didn't, what we change next month">${note?esc(note.text):''}</textarea></div>
@@ -6497,9 +6497,18 @@ function openSocialUpdate(month){
     </form>`);
   document.getElementById("f-social").addEventListener("submit", async e=>{
     e.preventDefault(); const f = new FormData(e.target);
-    const val = (pl,k)=>{ const v = f.get(pl+'-'+k); return v===''||v==null ? null : Number(v); };
-    // followers, reach and engagements feed the score, so blanks there count as 0
-    const stats = socialPlatforms().map(pl=>({ platform:pl, followers:val(pl,'followers')||0, reach:val(pl,'reach')||0, engagements:val(pl,'engagements')||0, impressions:val(pl,'impressions'), profileVisits:val(pl,'profileVisits'), linkClicks:val(pl,'linkClicks') }));
+    // numbers can be typed short: 16.22k = 16,220 · 1.2m = 1,200,000 · 1.5l = 150,000 (lakh). null = blank, NaN = not a number
+    const num = (pl,k)=>{ const raw = String(f.get(pl+'-'+k)||'').replace(/[,\s]/g,'').toLowerCase(); if(raw==='') return null;
+      const m = /^(\d+(?:\.\d+)?)([kml]?)$/.exec(raw); if(!m) return NaN; return Math.round(Number(m[1]) * ({k:1e3, m:1e6, l:1e5}[m[2]]||1)); };
+    const stats = [];
+    for(const pl of socialPlatforms()){
+      const v = Object.fromEntries(SOCIAL_METRICS.map(m=>[m.k, num(pl,m.k)]));
+      if(Object.values(v).some(x=>Number.isNaN(x))){ toast(`${pl}: use numbers like 16220 or 16.22k`); return; }
+      if(Object.values(v).every(x=>x==null)) continue;   // platform left blank — skipped
+      if(v.followers==null){ toast(`${pl}: add the followers number`); return; }
+      stats.push({ platform:pl, followers:v.followers, reach:v.reach||0, engagements:v.engagements||0, impressions:v.impressions, profileVisits:v.profileVisits, linkClicks:v.linkClicks });
+    }
+    if(!stats.length){ toast("Fill in at least one platform"); return; }
     try{
       await apiJson(`/api/scores/social/${month}`, { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ stats, note:(f.get('note')||'').trim() }) });
       await Promise.all([loadSocial(), loadSocialStatus().catch(()=>{})]);
