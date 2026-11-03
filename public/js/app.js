@@ -6381,6 +6381,8 @@ function weightedScoreOf(parts){ const live = parts.filter(p=>p.v!=null), w = li
 // Marketing Score targets: defaults for every month, with optional per-month overrides set by leadership.
 let mktTargets = {followerGrowth:3, engagement:5, months:{}};
 async function loadMktTargets(){ const r = await apiJson("/api/scores/targets"); if(r.targets && r.targets.marketing) mktTargets = r.targets.marketing; }
+// Leadership/admin and the Marketing (Content) team can set the Marketing Score targets.
+const canSetMktTargets = ()=> !!currentUser && (isLeadershipRole(currentUser) || (currentUser.roles||[]).includes('CONTENT'));
 function mktTargetsFor(month){
   const o = (mktTargets.months||{})[month] || {};
   return { content:o.content||null, followerGrowth:(o.followerGrowth||mktTargets.followerGrowth||MKT_FOLLOWER_GROWTH_TARGET*100)/100, engagement:(o.engagement||mktTargets.engagement||MKT_ENGAGEMENT_TARGET*100)/100, custom:!!(mktTargets.months||{})[month] };
@@ -6406,10 +6408,10 @@ function marketingScore(month){
 // Small bar under the Marketing Score title: this month's targets, with a button for leadership to change them.
 function mktTargetsBar(month){
   const T = mktTargetsFor(month);
-  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>${monthLabel(month)} targets: ${T.content?`${mktPublishedIn(month)} of ${T.content} posts published`:`${mktPublishedIn(month)} published · target = all content due`} · followers +${+(T.followerGrowth*100).toFixed(2)}% · engagement ${+(T.engagement*100).toFixed(2)}%${T.custom?' · <b>set for this month</b>':''}</span>${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openMktTargets('${month}')">Set targets</button>`:''}</div>`;
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>${monthLabel(month)} targets: ${T.content?`${mktPublishedIn(month)} of ${T.content} posts published`:`${mktPublishedIn(month)} published · target = all content due`} · followers +${+(T.followerGrowth*100).toFixed(2)}% · engagement ${+(T.engagement*100).toFixed(2)}%${T.custom?' · <b>set for this month</b>':''}</span>${canSetMktTargets()?`<button class="btn btn-sm ghost" onclick="openMktTargets('${month}')">Set targets</button>`:''}</div>`;
 }
 function openMktTargets(month){
-  if(!isLeadershipRole(currentUser)) return;
+  if(!canSetMktTargets()) return;
   const T = mktTargetsFor(month), o = (mktTargets.months||{})[month] || {};
   showModal(`
     <div class="modal-head"><h3>Marketing targets · ${monthLabel(month)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
@@ -6748,7 +6750,7 @@ function renderContentKPIs(){
   document.getElementById('kpi-production').textContent = production;
   document.getElementById('kpi-published').textContent = published;
   const lbl = document.getElementById('kpi-published-label');
-  if(lbl) lbl.textContent = contentMonthFilter==='All' ? 'Published This Month' : contentMonthFilter==='Today' ? 'Published Today' : 'Published · '+monthLabel(contentMonthFilter);
+  if(lbl) lbl.textContent = contentMonthFilter==='All' ? 'Published · All Time' : contentMonthFilter==='Today' ? 'Published Today' : 'Published · '+monthLabel(contentMonthFilter);
   const overdueEl = document.getElementById('kpi-overdue');
   overdueEl.textContent = overdue;
   overdueEl.classList.toggle('warn', overdue>0);

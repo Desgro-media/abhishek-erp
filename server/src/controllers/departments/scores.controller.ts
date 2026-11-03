@@ -25,7 +25,11 @@ const targetsSchema = z.object({
 });
 // Leadership only. A partial body keeps the other targets as they are.
 export const setScoreTargets: RequestHandler = asyncHandler(async (req, res) => {
-  if (!(await isLeadership(req.user!))) return res.status(403).json({ error: "Forbidden — leadership only" });
+  // Leadership can change every target; the Marketing (Content) team can change the Marketing Score targets only.
+  if (!(await isLeadership(req.user!))) {
+    const marketingOnly = Object.keys(req.body ?? {}).every((k) => k === "marketing");
+    if (!(req.user!.roles ?? []).includes("CONTENT") || !marketingOnly) return res.status(403).json({ error: "Forbidden — leadership only" });
+  }
   const cur = await getTargets();
   // Marketing month overrides merge per month; a month sent as null (or with every field blank) goes back to the defaults.
   const mkt = { ...cur.marketing, ...(req.body?.marketing ?? {}), months: { ...cur.marketing.months } };
