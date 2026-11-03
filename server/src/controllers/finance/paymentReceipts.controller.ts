@@ -139,6 +139,7 @@ export const listApprovedReceipts: RequestHandler = asyncHandler(async (req, res
       approvedBy: p.recordedBy ? approverName.get(p.recordedBy) ?? null : null,
       bankAccount: { id: p.accountId, name: p.account.name },
       note: p.note,
+      isUpsell: p.isUpsell,
       // Zero, one, or several (a split) — each is a real Payable row, so an edit to its amount shows here.
       commissions: commissions
         .filter((c) => c.sourcePaymentId === p.id)

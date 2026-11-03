@@ -31,6 +31,7 @@ export const invoicePendingPaymentSchema = z.object({
   paymentDate: dateStr,
   salesPerson: z.string().optional(),
   note: z.string().optional(),
+  isUpsell: z.boolean().optional(),
 });
 
 export const invoicePendingApprovalSchema = z.object({

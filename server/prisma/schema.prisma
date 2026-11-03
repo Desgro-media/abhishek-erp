@@ -647,6 +647,8 @@ model InvoicePayment {
   account    BankAccount @relation(fields: [accountId], references: [id])
   note       String?
   recordedBy String?     @map("recorded_by")
+  // Tagged by Sales when logging it: an extra sale to an existing client. Reporting tag only.
+  isUpsell   Boolean     @default(false) @map("is_upsell")
   createdAt  DateTime    @default(now()) @map("created_at")
 
   // Commission / sales-bonus payables this payment generated — see Payable.sourcePaymentId.
@@ -669,6 +671,7 @@ model InvoicePendingPayment {
   salesPerson    String?   @map("sales_person")
   note           String?
   approved       Boolean   @default(false)
+  isUpsell       Boolean   @default(false) @map("is_upsell")
   approvedAt     DateTime? @map("approved_at")
   invoicePayment String?   @map("invoice_payment_id") // set once approved, points at the resulting InvoicePayment.id
   createdAt      DateTime  @default(now()) @map("created_at")
