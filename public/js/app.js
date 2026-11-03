@@ -153,7 +153,7 @@ function mapPosition(p){
   return { id:p.id, role:p.role, dept:p.dept, openings:p.openings, status:TITLECASE_FROM_API(p.status), postedDate:isoDate(p.postedDate), archived:!!p.archived };
 }
 function mapCandidate(c){
-  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate), appliedAt:c.appliedDate, archived:!!c.archived, hasResume:!!c.resumeFilename };
+  return { id:c.id, posId:c.positionId, name:c.name, phone:c.phone||"", email:c.email||"", stage:TITLECASE_FROM_API(c.stage), appliedDate:isoDate(c.appliedDate), appliedAt:c.appliedDate, archived:!!c.archived, hasResume:!!c.resumeFilename, notes:c.notes||"" };
 }
 function mapNotice(n){
   return { id:n.id, title:n.title, message:n.message, postedBy:n.postedByUser?.name||"", postedDate:isoDate(n.postedDate) };
@@ -241,6 +241,26 @@ async function loadHiring(){
 }
 // Matches the server's CandidateStage enum exactly.
 const CANDIDATE_STAGES = ["Applied","Shortlisted","Interview","Offer","Hired","Rejected"];
+// HR's note on a candidate (interview feedback, follow-ups). Blank clears it.
+function openCandidateNote(id){
+  const c = candidates.find(x=>x.id===id); if(!c) return;
+  showModal(`
+    <div class="modal-head"><h3>Note — ${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-candidate-note"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">Only HR sees this. Use it for interview feedback, expected salary, notice period or what to do next.</div>
+      <div><label class="field-label" for="cand-note">Note</label><textarea class="field-input" id="cand-note" name="notes" rows="6" maxlength="2000" placeholder="e.g. Good communication, expects ₹18k, can join in 2 weeks — call again Friday">${esc(c.notes||'')}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save note</button></div></div>
+    </form>`);
+  document.getElementById("f-candidate-note").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const notes = (new FormData(e.target).get("notes")||"").trim();
+    try{
+      await apiJson(`/api/hr/candidates/${id}`, { method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ notes: notes || null }) });
+      c.notes = notes; toast(notes?"Note saved":"Note cleared"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save the note"); }
+  });
+}
 async function updateCandidateStage(id, stage){
   const c = candidates.find(x=>x.id===id);
   if(!c) return;
@@ -4935,8 +4955,8 @@ function hrHiring(){
   </div>` : ""}
   <div class="panel">
     <div class="panel-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;"><div><h3>Candidates</h3><div class="sub">${filtering?`${activeCandidates.length} of ${allActiveCandidates.length} shown`:`${allActiveCandidates.length} in pipeline`}</div></div>${hiringFilterBar()}</div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Contact</th><th>Applied</th><th>Stage</th><th></th></tr></thead>
-      <tbody>${(activeCandidates.length||!filtering)?"":`<tr><td colspan="6"><div class="empty">No candidates match the filter.</div></td></tr>`}${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td><select class="select-sm" onchange="updateCandidateStage('${c.id}',this.value)">${CANDIDATE_STAGES.map(s=>`<option value="${s}" ${s===c.stage?'selected':''}>${s}</option>`).join("")}</select></td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${c.hasResume?`<button class="btn btn-sm ghost" onclick="downloadCandidateResume('${c.id}')" title="Download resume"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Resume</button>`:""}<button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="6"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Candidate</th><th>Applying for</th><th>Contact</th><th>Applied</th><th>Stage</th><th>Note</th><th></th></tr></thead>
+      <tbody>${(activeCandidates.length||!filtering)?"":`<tr><td colspan="7"><div class="empty">No candidates match the filter.</div></td></tr>`}${activeCandidates.map(c=>{ const pos=openPositions.find(p=>p.id===c.posId); return `<tr><td style="font-weight:700;">${esc(c.name)}</td><td class="muted">${pos?esc(pos.role):"—"}</td><td class="muted mono" style="font-size:12px;">${esc(c.phone)}</td><td class="muted">${fmtDate(c.appliedDate)}</td><td><select class="select-sm" onchange="updateCandidateStage('${c.id}',this.value)">${CANDIDATE_STAGES.map(s=>`<option value="${s}" ${s===c.stage?'selected':''}>${s}</option>`).join("")}</select></td><td style="max-width:220px;"><button class="btn btn-sm ghost" style="max-width:100%;justify-content:flex-start;text-align:left;font-weight:${c.notes?'600':'400'};" onclick="openCandidateNote('${c.id}')" title="${c.notes?esc(c.notes):'Add a note'}"><svg class="icon" style="width:12px;height:12px;flex:none;"><use href="#i-edit"/></svg><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.notes?esc(c.notes):'Add note'}</span></button></td><td><div style="display:flex;gap:6px;justify-content:flex-end;">${c.hasResume?`<button class="btn btn-sm ghost" onclick="downloadCandidateResume('${c.id}')" title="Download resume"><svg class="icon" style="width:12px;height:12px"><use href="#i-download"/></svg>Resume</button>`:""}<button class="btn btn-sm ghost" onclick="openOfferLetter('${c.id}')" title="Offer letter"><svg class="icon" style="width:12px;height:12px"><use href="#i-file"/></svg></button><button class="btn btn-sm ghost" onclick="archiveCandidate('${c.id}')" title="Archive"><svg class="icon" style="width:12px;height:12px"><use href="#i-archive"/></svg></button></div></td></tr>`; }).join("") || `<tr><td colspan="7"><div class="empty">No candidates in the pipeline.</div></td></tr>`}</tbody>
     </table></div>
   </div>
   ${archivedCandidates.length ? `

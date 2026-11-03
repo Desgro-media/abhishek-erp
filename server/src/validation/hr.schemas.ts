@@ -153,6 +153,8 @@ export const candidateUpdateSchema = z.object({
   phone: z.string().optional(),
   email: z.string().email().optional(),
   archived: z.boolean().optional(),
+  // HR's note — blank clears it.
+  notes: z.string().trim().max(2000).nullable().optional(),
 });
 
 export const noticeCreateSchema = z.object({
