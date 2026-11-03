@@ -421,6 +421,8 @@ model Candidate {
   // the filesystem path.
   resumeFilename     String? @map("resume_filename")
   resumeOriginalName String? @map("resume_original_name")
+  // HR's private note on the candidate (interview feedback, follow-ups).
+  notes              String?
 
   @@index([positionId])
   @@map("candidates")
