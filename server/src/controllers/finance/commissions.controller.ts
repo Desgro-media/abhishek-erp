@@ -241,7 +241,7 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
   const paymentById = new Map(payments.map((p) => [p.id, p]));
 
   // ---- transaction rows: one per commission / bonus entry in the period ----
-  type Tx = { payableId: string; kind: "Commission" | "Target bonus"; date: string; month: string; clientId: string | null; clientName: string | null; reference: string | null; invoiceNo: string | null; quoteCode: string | null; paymentAmount: number | null; rate: number | null; edited: boolean; earned: number; paid: number; balance: number; hasPayments: boolean };
+  type Tx = { payableId: string; kind: "Commission" | "Target bonus"; date: string; month: string; clientId: string | null; clientName: string | null; reference: string | null; invoiceNo: string | null; quoteCode: string | null; paymentAmount: number | null; upsellAmount: number; rate: number | null; edited: boolean; earned: number; paid: number; balance: number; hasPayments: boolean };
   const txs: Tx[] = [];
   for (const p of payables) {
     const pay = p.sourcePaymentId ? paymentById.get(p.sourcePaymentId) : undefined;
@@ -255,7 +255,7 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
       payableId: p.id, kind: p.category === "SALES_BONUS" ? "Target bonus" : "Commission", date, month: due.slice(0, 7),
       clientId: pay?.invoice.client.id ?? null, clientName: pay?.invoice.client.name ?? null,
       reference: q?.quoteCode ?? pay?.invoice.invoiceNo ?? null, invoiceNo: pay?.invoice.invoiceNo ?? null, quoteCode: q?.quoteCode ?? null,
-      paymentAmount: pay ? Number(pay.amount) : null, rate,
+      paymentAmount: pay ? Number(pay.amount) : null, upsellAmount: pay ? Number(pay.upsellAmount) : 0, rate,
       // Amount no longer matches rate x payment => it was edited or split after creation; flagged, not re-derived.
       edited: p.category === "COMMISSION" && rate != null && !!pay && Math.abs(Math.round(Number(pay.amount) * rate / 100) - amount) > 0.5,
       earned: amount, paid, balance: round2(amount - paid), hasPayments: p.payments.length > 0,
@@ -273,6 +273,7 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
     return {
       month: m, rows,
       paymentsReceived: round2(salesPayments.filter((p) => day(p.paidDate).slice(0, 7) === m).reduce((s, p) => s + Number(p.amount), 0)),
+      upsell: round2(salesPayments.filter((p) => day(p.paidDate).slice(0, 7) === m).reduce((s, p) => s + Number(p.upsellAmount), 0)),
       earned: round2(com.reduce((s, t) => s + t.earned, 0)), paid: round2(com.reduce((s, t) => s + t.paid, 0)), balance: round2(com.reduce((s, t) => s + t.balance, 0)),
       bonusEarned: round2(bon.reduce((s, t) => s + t.earned, 0)), bonusPaid: round2(bon.reduce((s, t) => s + t.paid, 0)), bonusBalance: round2(bon.reduce((s, t) => s + t.balance, 0)),
     };
@@ -322,6 +323,7 @@ export const getCommissionPersonDetail: RequestHandler = asyncHandler(async (req
     salesPerson, period,
     summary: {
       totalSales: round2(salesPayments.reduce((s, p) => s + Number(p.amount), 0)),
+      upsell: round2(salesPayments.reduce((s, p) => s + Number(p.upsellAmount), 0)),
       deals: new Set(salesPayments.map((p) => p.invoiceId)).size,
       clients: new Set(salesPayments.map((p) => p.invoice.clientId)).size,
       earned: round2(commission.reduce((s, t) => s + t.earned, 0)),

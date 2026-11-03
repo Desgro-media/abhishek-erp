@@ -8713,6 +8713,7 @@ function commissionDetailHTML(i, r){
   const settleBar = (filteredMonth && monthBalance>0.005) ? `<div style="display:flex;justify-content:flex-end;margin:0 0 10px;"><button class="btn btn-sm" onclick="openSettleCommission(${i},'${d.period}')" title="Pay only the entries received in ${esc(periodLabel)}, oldest first"><svg class="icon" style="width:11px;height:11px"><use href="#i-check"/></svg>Settle this month only · ${inr(monthBalance)}</button></div>` : '';
   const cards = `<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:10px;">
     ${card('Total sales ('+esc(periodLabel)+')', inr(S.totalSales), 'approved payments, by date received')}
+    ${S.upsell>0?card('Upsell', inr(S.upsell), 'part of the sales above', 'pos'):''}
     ${card('Deals', S.deals, 'invoices with a payment')}
     ${card('Clients', S.clients)}
     ${card('Commission earned', inr(S.earned))}
@@ -8732,12 +8733,12 @@ function commissionDetailHTML(i, r){
     const open = key in commissionMonthOpen ? commissionMonthOpen[key] : m.month===TODAY.slice(0,7);
     return `<details class="report-details" ${open?'open':''} ontoggle="onCommissionMonthToggle(this,'${esc(key).replace(/'/g,"&#39;")}')" style="border:1px solid var(--line);border-radius:8px;margin-bottom:8px;">
       <summary class="report-line" style="padding:8px 12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><span class="name" style="font-weight:700;"><svg class="icon chev" style="width:10px;height:10px"><use href="#i-chevron-right"/></svg>${esc(monthLabel(m.month))}</span>
-        <span class="mono" style="font-size:12.5px;">Received ${inr(m.paymentsReceived)} · Earned ${inr(m.earned)} · Paid ${inr(m.paid)} · Balance <b style="${m.balance>0?'color:var(--neg);':''}">${inr(m.balance)}</b>${m.bonusEarned>0?` · Target bonus ${inr(m.bonusEarned)}`:''}</span></summary>
+        <span class="mono" style="font-size:12.5px;">Received ${inr(m.paymentsReceived)}${m.upsell>0?` (incl. ${inr(m.upsell)} upsell)`:''} · Earned ${inr(m.earned)} · Paid ${inr(m.paid)} · Balance <b style="${m.balance>0?'color:var(--neg);':''}">${inr(m.balance)}</b>${m.bonusEarned>0?` · Target bonus ${inr(m.bonusEarned)}`:''}</span></summary>
       <div class="table-wrap"><table class="data"><thead><tr><th>Date received</th><th>Client</th><th>Reference</th><th class="num">Payment</th><th class="num">%</th><th class="num">Commission</th><th class="num">Paid</th><th class="num">Balance</th><th></th></tr></thead><tbody>${m.rows.map(t=>`<tr>
         <td class="muted">${fmtDateShort(t.date)}</td>
         <td>${t.kind==='Target bonus'?pill('Target bonus','blue'):(t.clientId?clientLink(t.clientId,t.clientName):'<span class="faint">—</span>')}</td>
         <td class="mono muted">${t.kind==='Target bonus'?'<span class="faint">monthly target</span>':esc(t.reference||'—')}</td>
-        <td class="num mono ${t.kind==='Target bonus'?'faint':''}">${t.paymentAmount!=null?inr(t.paymentAmount):'—'}</td>
+        <td class="num mono ${t.kind==='Target bonus'?'faint':''}">${t.paymentAmount!=null?inr(t.paymentAmount):'—'}${t.upsellAmount>0?`<div class="subtext" style="color:var(--blue);font-weight:700;">incl. ${inr(t.upsellAmount)} upsell</div>`:''}</td>
         <td class="num mono" title="${t.kind==='Target bonus'?'% of sales past target':t.edited?'Amount was edited or split after it was created':''}">${t.rate!=null?t.rate+'%':'—'}${t.edited?' <span class="faint">(edited)</span>':''}${t.kind==='Target bonus'&&t.rate!=null?'<div class="subtext">of excess</div>':''}</td>
         <td class="num mono">${inr(t.earned)}</td>
         <td class="num mono muted">${t.paid>0?inr(t.paid):'—'}</td>
