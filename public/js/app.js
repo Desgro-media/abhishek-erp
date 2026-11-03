@@ -9058,7 +9058,7 @@ function openApproveInvoicePayment(id, idx){
       </div>
       ${payment.salesPerson?`<div class="field-row">
         <div><label class="field-label">Salesperson</label><input class="field-input" value="${esc(payment.salesPerson)}" disabled></div>
-        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" data-amount="${payment.amount}" oninput="updateCommissionPreview(this)" required><div class="sub" style="margin-top:4px;"><span id="commission-amount-preview">${inr(Math.round(payment.amount*SALES_COMMISSION_RATE))}</span> commission</div></div>
+        <div><label class="field-label">Commission %</label><input class="field-input" type="number" name="commissionRate" min="0" max="100" step="0.1" value="${SALES_COMMISSION_RATE*100}" data-amount="${payment.amount-(payment.upsellAmount||0)}" oninput="updateCommissionPreview(this)" required><div class="sub" style="margin-top:4px;"><span id="commission-amount-preview">${inr(Math.round((payment.amount-(payment.upsellAmount||0))*SALES_COMMISSION_RATE))}</span> commission</div></div>
       </div>`:''}
     </div>
     <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Approve &amp; confirm</button></div></div>
@@ -9072,7 +9072,7 @@ function openApproveInvoicePayment(id, idx){
       await apiJson(`/api/finance/invoices/${id}/pending-payments/${payment.id}/approve`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ accountId, date, commissionRate }) });
       await Promise.all([loadInvoices(), loadBankAccounts(), loadPayables(), refreshFinanceReports(), loadApprovedReceipts()]);
       const updated = invoices.find(x=>x.id===id);
-      const commissionAmount = payment.salesPerson ? Math.round(payment.amount * (commissionRate/100)) : 0;
+      const commissionAmount = payment.salesPerson ? Math.round((payment.amount-(payment.upsellAmount||0)) * (commissionRate/100)) : 0;
       toast("Payment approved"+(invoiceBalance(updated)<=0?" — invoice fully settled":" — "+inr(invoiceBalance(updated))+" still outstanding")+(commissionAmount>0?" · "+inr(commissionAmount)+" commission credited to "+payment.salesPerson:"")); closeModal(); render();
     }catch(err){ toast(err.message || "Couldn't approve payment"); }
   });

@@ -200,7 +200,8 @@ export const approvePendingPayment: RequestHandler = asyncHandler(async (req, re
     let commission = null;
     let salesBonus = null;
     if (pending.salesPerson) {
-      commission = await createCommissionPayable(tx, { salesPerson: pending.salesPerson, sourceLabel: invoice.invoiceNo, paymentAmount: Number(pending.amount), dueAt: date, sourcePaymentId: payment.id, rate: d.commissionRate != null ? d.commissionRate / 100 : undefined });
+      // Commission (10%) is on the project part only; the upsell is paid separately in full once the invoice is fully paid.
+      commission = await createCommissionPayable(tx, { salesPerson: pending.salesPerson, sourceLabel: invoice.invoiceNo, paymentAmount: Math.max(0, Number(pending.amount) - Number(pending.upsellAmount ?? 0)), dueAt: date, sourcePaymentId: payment.id, rate: d.commissionRate != null ? d.commissionRate / 100 : undefined });
       // Must run BEFORE this row is marked approved below — monthlyApprovedSales()
       // sums approved rows, so flipping this one first would make it count itself as "prior"
       // sales and double it into the new total. Month bucket is the RECEIVED date, same as
