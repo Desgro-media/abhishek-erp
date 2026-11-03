@@ -1055,6 +1055,9 @@ enum LeadStatus {
 
 enum LeadStage {
   NEW
+  NOT_CONNECTED_1
+  NOT_CONNECTED_2
+  CALL_BACK
   CONTACTED
   MEETING
   PROPOSAL_SENT

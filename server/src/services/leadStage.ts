@@ -3,7 +3,7 @@ import type { LeadStage, LeadStatus } from "@prisma/client";
 // Pipeline stages a person can move a lead between by hand. WON is deliberately not here: a lead is only
 // Won by actually converting it to a client (today, via quote -> invoice). LOST goes through its own
 // endpoint because it needs a reason.
-export const MOVABLE_STAGES = ["NEW", "CONTACTED", "MEETING", "PROPOSAL_SENT", "NEGOTIATION"] as const;
+export const MOVABLE_STAGES = ["NEW", "NOT_CONNECTED_1", "NOT_CONNECTED_2", "CALL_BACK", "CONTACTED", "MEETING", "PROPOSAL_SENT", "NEGOTIATION"] as const;
 
 // Why a lead was lost. "Not recorded (migrated)" is reserved for the one-off backfill of leads that were
 // already marked Lost before reasons existed; it can't be chosen from the app.
@@ -14,6 +14,9 @@ export const MIGRATED_LOST_REASON = "Not recorded (migrated)";
 // so every stage change keeps it coherent: reaching a meeting or later counts as Qualified.
 export const STAGE_TO_STATUS: Record<LeadStage, LeadStatus> = {
   NEW: "NEW",
+  NOT_CONNECTED_1: "NEW",   // tried calling, nobody picked up — still effectively new
+  NOT_CONNECTED_2: "NEW",
+  CALL_BACK: "CONTACTED",   // spoke to them and agreed to call again
   CONTACTED: "CONTACTED",
   MEETING: "QUALIFIED",
   PROPOSAL_SENT: "QUALIFIED",

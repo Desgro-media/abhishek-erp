@@ -642,9 +642,9 @@ async function loadLeads(){
 }
 // Pipeline stages. "Won" is only ever reached by converting the lead into a client (today: quote -> invoice),
 // never by moving a card; "Lost" needs a reason. The server enforces both.
-const LEAD_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
-const LEAD_OPEN_STAGES = ["New","Contacted","Meeting","Proposal Sent","Negotiation"];
-const LEAD_STAGE_KIND = {"New":"neutral","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
+const LEAD_STAGES = ["New","Not Connected 1","Not Connected 2","Call Back","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
+const LEAD_OPEN_STAGES = ["New","Not Connected 1","Not Connected 2","Call Back","Contacted","Meeting","Proposal Sent","Negotiation"];
+const LEAD_STAGE_KIND = {"New":"neutral","Not Connected 1":"warn","Not Connected 2":"warn","Call Back":"blue","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
 const LEAD_LOST_REASONS = ["Budget","Went with a competitor","No response","Not a fit","Other"];
 let leadsView = "board";
 function setLeadsView(v){ leadsView = v; render(); }
