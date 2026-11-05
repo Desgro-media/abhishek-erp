@@ -126,14 +126,42 @@ export async function leaveCapFor(employeeId: string, month: string, db: Prisma.
   return { base, carriedIn, adjustment, cap: Math.max(0, base + carriedIn + adjustment) };
 }
 
-// Paid-WFH days available in one month: the org-wide monthly allowance plus any HR adjustments for that month.
-// WFH never carries forward, so there is no carry-in — an adjustment only ever changes the month it names.
+// Paid-WFH days available in one month: the org-wide monthly allowance, plus unused WFH days rolled in from the previous
+// months (same start month and max-days cap as paid-leave carry-forward), plus any HR adjustments for that month.
+// Carry-in is derived month by month from attendance and adjustments, so nothing extra is stored.
 export async function wfhCapFor(employeeId: string, month: string, db: Prisma.TransactionClient = prisma) {
   const policy = await db.hrPolicy.findUnique({ where: { id: 1 } });
   const base = policy?.paidWfhPerMonth ?? 1;
-  const rows = await db.leaveLedgerEntry.findMany({ where: { employeeId, month, bucket: "WFH", supersededAt: null } });
-  const adjustment = rows.reduce((s, r) => s + num(r.days), 0);
-  return { base, adjustment, cap: Math.max(0, base + adjustment) };
+  const maxCarry = policy?.carryForwardMaxDays ?? 0;
+  const startMonth = policy?.carryForwardStartMonth;
+  let first: string | null = null;
+  if (maxCarry > 0 && startMonth) {
+    const emp = await db.employee.findUnique({ where: { id: employeeId }, select: { joinedAt: true } });
+    if (emp) first = [startMonth, nextMonth(emp.joinedAt.toISOString().slice(0, 7))].sort().at(-1)!;
+  }
+  const from = first && first <= month ? prevMonth(first) : month;
+  const rows = await db.leaveLedgerEntry.findMany({ where: { employeeId, bucket: "WFH", supersededAt: null, month: { gte: from, lte: month } } });
+  const adj: Record<string, number> = {};
+  for (const r of rows) adj[r.month] = (adj[r.month] ?? 0) + num(r.days);
+
+  let carriedIn = 0;
+  if (first && first <= month) {
+    const { start } = monthRange(from);
+    const { end } = monthRange(month);
+    const wfhRecords = await db.attendanceRecord.findMany({ where: { employeeId, status: "WFH", date: { gte: start, lt: end } }, select: { date: true } });
+    const used: Record<string, number> = {};
+    for (const r of wfhRecords) { const k = r.date.toISOString().slice(0, 7); used[k] = (used[k] ?? 0) + 1; }
+    for (const [k, u] of Object.entries(await partialUsageByMonth(employeeId, start, end, db))) used[k] = (used[k] ?? 0) + u.wfh;
+    let carry = 0;
+    for (let m = first; m <= month; m = nextMonth(m)) {
+      const src = prevMonth(m);
+      const unused = Math.max(0, base + carry + (adj[src] ?? 0) - (used[src] ?? 0));
+      carry = Math.min(unused, maxCarry);
+    }
+    carriedIn = carry;
+  }
+  const adjustment = adj[month] ?? 0;
+  return { base, carriedIn, adjustment, cap: Math.max(0, base + carriedIn + adjustment) };
 }
 
 // Loss-of-pay days for a given employee + payroll month = days marked
@@ -220,6 +248,7 @@ export async function computeMonthlyLeaveUsage(employeeId: string, month: string
     pendingLeaveDays,
     pendingWfhDays,
     wfhBaseCap: wfh.base,
+    wfhCarriedIn: wfh.carriedIn,
     wfhAdjustment: wfh.adjustment,
     leaveDays,
     leaveBaseCap: leave.base,

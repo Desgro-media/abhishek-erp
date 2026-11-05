@@ -4318,7 +4318,7 @@ async function openLeaveBalance(id, month){
         ${row('HR adjustment', (b.leaveAdjustment>0?'+':'')+b.leaveAdjustment)}
         ${row('Used (approved)', b.leaveDays)}
         <div class="section-label">WFH</div>
-        ${row('Carried over', '— (WFH never carries forward)', 'faint')}
+        ${row('Carried over from previous month', b.wfhCarriedIn||0)}
         ${row('Earned this month', b.wfhBaseCap)}
         ${row('HR adjustment', (b.wfhAdjustment>0?'+':'')+b.wfhAdjustment)}
         ${row('Used (approved)', b.wfhDays)}
