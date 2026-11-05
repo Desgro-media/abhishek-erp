@@ -174,6 +174,10 @@ export const ownAdMetricSchema = z.object({
 // A Performance Marketing client's daily ad numbers have exactly the shape of DesGro's own.
 export const clientAdMetricSchema = ownAdMetricSchema;
 
+// DesGro's own numbers can also be logged against one ERP service (validated against the service list in the controller);
+// "" / missing = not tied to a service.
+export const ownAdMetricServiceSchema = ownAdMetricSchema.extend({ service: z.string().trim().max(60).optional() });
+
 // Currencies a client's ad numbers can be tracked in: India plus the GCC states (and USD, which GCC ad accounts often bill in).
 export const AD_CURRENCIES = ["INR", "AED", "SAR", "QAR", "KWD", "BHD", "OMR", "USD"] as const;
 export const adCurrencySchema = z.object({ currency: z.enum(AD_CURRENCIES) });

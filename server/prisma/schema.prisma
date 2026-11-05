@@ -1411,7 +1411,10 @@ model ClientMeeting {
 // metrics. Logging a date that already has a row updates it, so the date is unique.
 model OwnAdMetric {
   id        String   @id @default(uuid())
-  date      DateTime @unique @db.Date
+  date      DateTime @db.Date
+  // The ERP service (department) the spend was for — one of SERVICE_DEPARTMENTS. "" = not tied to a service (all older rows).
+  // A date can have one row per service.
+  service   String   @default("")
   spend     Decimal  @db.Decimal(12, 2)
   leads     Int
   purchases Int
@@ -1422,6 +1425,7 @@ model OwnAdMetric {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@unique([date, service])
   @@map("own_ad_metrics")
 }
 

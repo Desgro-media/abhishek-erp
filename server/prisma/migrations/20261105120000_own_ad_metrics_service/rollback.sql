@@ -1,0 +1,6 @@
+-- Manual rollback (not run by Prisma). Only safe while no date has more than one row:
+--   merge or delete the per-service rows first, otherwise recreating the unique date index fails.
+--   DROP INDEX IF EXISTS "own_ad_metrics_date_service_key";
+--   CREATE UNIQUE INDEX "own_ad_metrics_date_key" ON "own_ad_metrics"("date");
+--   ALTER TABLE "own_ad_metrics" DROP COLUMN "service";
+--   DELETE FROM "_prisma_migrations" WHERE migration_name = '20261105120000_own_ad_metrics_service';
