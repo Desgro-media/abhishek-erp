@@ -622,6 +622,9 @@ async function loadMetaCampaigns(){ metaAdsCampaigns = (await apiJson("/api/cont
 // server (null when there's nothing to divide by) so every screen shows the same figures.
 let ownAdMetrics = [];
 async function loadOwnAdMetrics(){ ownAdMetrics = (await apiJson("/api/content/own-ad-metrics")).metrics; }
+const NO_SERVICE_LABEL = "Not tied to a service";
+// DesGro's own entries from the last 30 days (several entries can share a date — one per service).
+const ownAdsLast30 = () => { const from = new Date(Date.now()-29*86400000).toISOString().slice(0,10); return ownAdMetrics.filter(m=>m.date>=from); };
 function adMetrics(c){
   const ctr = c.impressions ? (c.clicks/c.impressions*100) : 0;
   const cpc = c.clicks ? c.spend/c.clicks : 0;
@@ -6391,7 +6394,7 @@ function monthCardHTML(label, series, months, fmt, opts, extra){
 // Our own ads' spend / leads for a month, from the daily tracker; null when nothing was logged.
 function ownAdsForMonth(month){
   const rows = ownAdMetrics.filter(m=>m.date.slice(0,7)===month);
-  return rows.length ? { days:rows.length, spend:rows.reduce((s,m)=>s+m.spend,0), leads:rows.reduce((s,m)=>s+m.leads,0) } : null;
+  return rows.length ? { days:new Set(rows.map(m=>m.date)).size, spend:rows.reduce((s,m)=>s+m.spend,0), leads:rows.reduce((s,m)=>s+m.leads,0) } : null;
 }
 
 /* ===================== SOCIAL MEDIA NUMBERS + MARKETING SCORE =====================
@@ -7546,9 +7549,11 @@ function adDailyTrackerHTML(rows, label, opts){
   const inr = n => adMoney(n, opts.currency);
   const dash = v => v==null ? '—' : inr(v);
   const hasActions = !!(opts.editFn || opts.deleteKind);
+  const nDays = new Set(rows.map(m=>m.date)).size;
+  const svc = !!opts.services;
   return `
   <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-    <div>${esc(label)}<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;"> · ${rows.length} day${rows.length===1?'':'s'} shown</span></div>
+    <div>${esc(label)}<span class="faint" style="font-weight:600;font-size:11.5px;text-transform:none;letter-spacing:0;"> · ${nDays} day${nDays===1?'':'s'} shown${opts.services&&rows.length!==nDays?` · ${rows.length} entries`:''}</span></div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
     ${opts.currencyFn?`<select class="field-input" style="width:auto;padding:4px 8px;font-size:12px;" title="Currency these numbers are in" onchange="${opts.currencyFn}(this.value)">${AD_CURRENCIES.map(k=>`<option value="${k}" ${k===(opts.currency||'INR')?'selected':''}>${esc(AD_CURRENCY_NAMES[k])}</option>`).join('')}</select>`:''}
     ${opts.logFn?`<button class="btn btn-sm ghost" onclick="${opts.logFn}"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log today's numbers</button>`:''}
@@ -7561,21 +7566,35 @@ function adDailyTrackerHTML(rows, label, opts){
     <div class="kpi-card"><div class="kpi-label">Avg. CPL / CPA</div><div class="kpi-value mono" style="font-size:18px;">${dash(avgCpl)} / ${dash(avgCpa)}</div></div>
     <div class="kpi-card hero"><div class="kpi-label">ROAS</div><div class="kpi-value mono" style="font-size:18px;">${roas!=null?roas.toFixed(2)+'x':'—'}</div><div class="kpi-sub">${inr(t.revenue)} revenue tracked</div></div>
   </div>
-  <div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Purchases</th><th class="num">Revenue</th><th class="num">CPL</th><th class="num">CPA</th><th class="num">ROAS</th>${hasActions?'<th></th>':''}</tr></thead>
-    <tbody>${rows.map(m=>`<tr><td class="muted">${fmtDateShort(m.date)}${m.note?`<div class="subtext" style="max-width:220px;white-space:normal;" title="${esc(m.note)}">📝 ${esc(m.note)}</div>`:''}</td><td class="num mono">${inr(m.spend)}</td><td class="num mono">${m.leads}</td><td class="num mono">${m.purchases}</td><td class="num mono">${inr(m.revenue)}</td><td class="num mono">${dash(m.cpl)}</td><td class="num mono">${dash(m.cpa)}</td><td class="num mono">${m.roas!=null?m.roas.toFixed(2)+'x':'—'}</td>${hasActions?`<td><div style="display:flex;gap:6px;justify-content:flex-end;">${opts.editFn?`<button class="btn btn-sm ghost" onclick="${opts.editFn}('${esc(m.id)}')" title="Edit this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>`:''}${opts.deleteKind?`<button class="btn btn-sm ghost" onclick="openConfirmDelete('${opts.deleteKind}','${esc(m.id)}')" title="Delete this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td>`:''}</tr>`).join('')}</tbody>
-  </table></div>` : `<div class="empty">No ad performance logged yet.</div>`}`;
+  <div class="table-wrap"><table class="data"><thead><tr><th>Date</th>${svc?'<th>Service</th>':''}<th class="num">Spend</th><th class="num">Leads</th><th class="num">Purchases</th><th class="num">Revenue</th><th class="num">CPL</th><th class="num">CPA</th><th class="num">ROAS</th>${hasActions?'<th></th>':''}</tr></thead>
+    <tbody>${rows.map(m=>`<tr><td class="muted">${fmtDateShort(m.date)}${m.note?`<div class="subtext" style="max-width:220px;white-space:normal;" title="${esc(m.note)}">📝 ${esc(m.note)}</div>`:''}</td>${svc?`<td>${m.service?esc(m.service):`<span class="faint">${NO_SERVICE_LABEL}</span>`}</td>`:''}<td class="num mono">${inr(m.spend)}</td><td class="num mono">${m.leads}</td><td class="num mono">${m.purchases}</td><td class="num mono">${inr(m.revenue)}</td><td class="num mono">${dash(m.cpl)}</td><td class="num mono">${dash(m.cpa)}</td><td class="num mono">${m.roas!=null?m.roas.toFixed(2)+'x':'—'}</td>${hasActions?`<td><div style="display:flex;gap:6px;justify-content:flex-end;">${opts.editFn?`<button class="btn btn-sm ghost" onclick="${opts.editFn}('${esc(m.id)}')" title="Edit this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button>`:''}${opts.deleteKind?`<button class="btn btn-sm ghost" onclick="openConfirmDelete('${opts.deleteKind}','${esc(m.id)}')" title="Delete this day"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>`:''}</div></td>`:''}</tr>`).join('')}</tbody>
+  </table></div>
+  ${svc ? adServiceBreakdownHTML(rows, inr, dash) : ''}` : `<div class="empty">No ad performance logged yet.</div>`}`;
+}
+// Spend, leads, purchases, revenue, CPL and ROAS per ERP service, over the entries shown above.
+function adServiceBreakdownHTML(rows, inr, dash){
+  const by = {};
+  for(const m of rows){ const k = m.service||""; const a = by[k] || (by[k] = {service:k, spend:0, leads:0, purchases:0, revenue:0}); a.spend+=m.spend; a.leads+=m.leads; a.purchases+=m.purchases; a.revenue+=m.revenue; }
+  const list = Object.values(by).sort((a,b)=>b.spend-a.spend);
+  if(!list.some(a=>a.service)) return '';
+  const total = list.reduce((s,a)=>s+a.spend,0);
+  return `<div class="section-label" style="margin-top:14px;">By service</div>
+  <div class="table-wrap"><table class="data"><thead><tr><th>Service</th><th class="num">Spend</th><th class="num">Share</th><th class="num">Leads</th><th class="num">Purchases</th><th class="num">Revenue</th><th class="num">CPL</th><th class="num">ROAS</th></tr></thead>
+    <tbody>${list.map(a=>`<tr><td style="font-weight:700;">${a.service?esc(a.service):`<span class="faint" style="font-weight:600;">${NO_SERVICE_LABEL}</span>`}</td><td class="num mono">${inr(a.spend)}</td><td class="num mono">${total>0?Math.round(a.spend/total*100)+'%':'—'}</td><td class="num mono">${a.leads}</td><td class="num mono">${a.purchases}</td><td class="num mono">${inr(a.revenue)}</td><td class="num mono">${a.leads>0?dash(a.spend/a.leads):'—'}</td><td class="num mono">${a.spend>0?(a.revenue/a.spend).toFixed(2)+'x':'—'}</td></tr>`).join('')}</tbody>
+  </table></div>`;
 }
 // Log (or correct) one day's numbers. Saving a date that already exists updates it. `save` receives the
 // validated payload and POSTs it; the server re-validates everything (no future dates, no negatives).
-function logAdMetricModal(forLabel, existing, save, currency){
+function logAdMetricModal(forLabel, existing, save, currency, services){
   const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
-  const v = existing || {date:local, spend:'', revenue:'', leads:'', purchases:'', note:''};
+  const v = existing || {date:local, service:'', spend:'', revenue:'', leads:'', purchases:'', note:''};
   showModal(`
     <div class="modal-head"><h3>${existing?'Edit':'Log'} ad performance</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-log-ad-metric"><div class="modal-body">
       <div class="subtext" style="font-size:12px;margin-top:0;">${esc(forLabel)}</div>
       <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(v.date)}" max="${local}" required ${existing?'readonly':''}></div>
-      ${existing?'':'<div class="subtext" style="font-size:12px;">Logging a date that already has numbers replaces them.</div>'}
+      ${services?`<div><label class="field-label">Service</label><select class="field-input" name="service" ${existing?'disabled':''}><option value="">${NO_SERVICE_LABEL}</option>${services.map(sv=>`<option value="${esc(sv)}" ${sv===v.service?'selected':''}>${esc(sv)}</option>`).join('')}</select></div>`:''}
+      ${existing?'':`<div class="subtext" style="font-size:12px;">Logging a date${services?' and service':''} that already has numbers replaces them.${services?' Log the same date again for another service.':''}</div>`}
       <div class="field-row">
         <div><label class="field-label">Spend${currency&&currency!=='INR'?` (${esc(currency)})`:''}</label><input class="field-input" type="number" step="0.01" min="0" name="spend" value="${esc(v.spend)}" required></div>
         <div><label class="field-label">Revenue${currency&&currency!=='INR'?` (${esc(currency)})`:''}</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" placeholder="Optional — saved as 0"></div>
@@ -7591,7 +7610,7 @@ function logAdMetricModal(forLabel, existing, save, currency){
   document.getElementById("f-log-ad-metric").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    const payload = { date:f.get("date"), spend:Number(f.get("spend")), revenue:Number(f.get("revenue")), leads:Number(f.get("leads")), purchases:Number(f.get("purchases")), note:(f.get("note")||"").trim() };
+    const payload = { date:f.get("date"), ...(services?{service: existing ? (existing.service||"") : (f.get("service")||"")}:{}), spend:Number(f.get("spend")), revenue:Number(f.get("revenue")), leads:Number(f.get("leads")), purchases:Number(f.get("purchases")), note:(f.get("note")||"").trim() };
     try{ await save(payload); toast("Ad performance saved"); closeModal(); render(); }
     catch(err){ toast(err.message || "Couldn't save ad performance"); }
   });
@@ -7601,7 +7620,7 @@ function openLogOwnAdMetric(id){
   logAdMetricModal("DesGro Media — own Meta Ads", existing, async payload=>{
     await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
     await loadOwnAdMetrics();
-  });
+  }, undefined, SERVICE_DEPARTMENTS);
 }
 // Daily "ad numbers not logged" reminders (Admin only). Sending is automatic once the server has it switched on;
 // this panel only SHOWS what would be sent — it never sends anything.
@@ -7658,7 +7677,7 @@ function mktPerformance(){
     <div class="kpi-card hero"><div class="kpi-label">Cost per Lead</div><div class="kpi-value mono" style="font-size:20px;">${inr(avgCpl)}</div><div class="kpi-sub">${totals.leads} leads total</div></div>
   </div>
   <div class="panel"><div class="modal-body">
-    ${adDailyTrackerHTML(ownAdMetrics.slice(0,30), "Daily Tracking", {logFn:"openLogOwnAdMetric()", editFn:"openLogOwnAdMetric", deleteKind:"ownAdMetric"})}
+    ${adDailyTrackerHTML(ownAdsLast30(), "Daily Tracking", {services:true, logFn:"openLogOwnAdMetric()", editFn:"openLogOwnAdMetric", deleteKind:"ownAdMetric"})}
   </div></div>
   ${adRemindersPanelHTML()}
   <div class="panel">
@@ -8356,7 +8375,7 @@ function deleteWarningFor(kind, id){
   }
   if(kind==='ownAdMetric'){
     const m = ownAdMetrics.find(x=>x.id===id); if(!m) return {label:"this entry", warning:fallback};
-    return {label:"this day's ad numbers", warning:`${fmtDateShort(m.date)} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log the day again afterwards.`};
+    return {label:"this ad entry", warning:`${fmtDateShort(m.date)}${m.service?` · ${esc(m.service)}`:''} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log it again afterwards.`};
   }
   if(kind==='client'){
     const c = clientById(id); if(!c) return {label:"this client", warning:fallback};

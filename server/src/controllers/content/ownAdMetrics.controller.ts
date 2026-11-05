@@ -2,23 +2,24 @@ import { RequestHandler } from "express";
 import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
-import { ownAdMetricSchema } from "../../validation/crm.schemas";
+import { ownAdMetricServiceSchema } from "../../validation/crm.schemas";
+import { SERVICE_DEPARTMENTS } from "../../services/departmentAccess";
 import { serializeAdMetric, parseMetricDate } from "../../services/adMetrics";
 
 // DesGro Media's own daily Meta ad numbers (our lead-gen spend) — not a client's, and not the
 // campaign-level totals in metaCampaigns.controller. Admin / Content only (router-level guard).
 
-const serialize = serializeAdMetric;
+const serialize = (r: Parameters<typeof serializeAdMetric>[0] & { service: string }) => ({ ...serializeAdMetric(r), service: r.service });
 
 export const listOwnAdMetrics: RequestHandler = asyncHandler(async (_req, res) => {
-  const rows = await prisma.ownAdMetric.findMany({ orderBy: { date: "desc" } });
-  res.json({ metrics: rows.map(serialize) });
+  const rows = await prisma.ownAdMetric.findMany({ orderBy: [{ date: "desc" }, { service: "asc" }] });
+  res.json({ metrics: rows.map(serialize), services: SERVICE_DEPARTMENTS });
 });
 
-// Logging a date that already has numbers replaces them (the prototype's behaviour, and what a
-// "fix yesterday's figure" correction needs) — one row per day, enforced by the unique date.
+// Logging a date + service that already has numbers replaces them ("fix yesterday's figure"). One row per date per
+// service, enforced by the unique (date, service) — so a date can carry several services, each its own entry.
 export const upsertOwnAdMetric: RequestHandler = asyncHandler(async (req, res) => {
-  const parsed = ownAdMetricSchema.safeParse(req.body);
+  const parsed = ownAdMetricServiceSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid request", details: parsed.error.flatten().fieldErrors });
   const d = parsed.data;
 
@@ -26,9 +27,12 @@ export const upsertOwnAdMetric: RequestHandler = asyncHandler(async (req, res) =
   if ("error" in parsedDate) return res.status(400).json({ error: parsedDate.error });
   const date = parsedDate.date;
 
+  const service = d.service ?? "";
+  if (service && !SERVICE_DEPARTMENTS.includes(service)) return res.status(400).json({ error: "Pick one of the ERP services" });
+
   const data = { spend: d.spend, leads: d.leads, purchases: d.purchases, revenue: d.revenue, note: d.note || null, loggedBy: req.user!.name };
-  const before = await prisma.ownAdMetric.findUnique({ where: { date } });
-  const row = await prisma.ownAdMetric.upsert({ where: { date }, create: { date, ...data }, update: data });
+  const before = await prisma.ownAdMetric.findUnique({ where: { date_service: { date, service } } });
+  const row = await prisma.ownAdMetric.upsert({ where: { date_service: { date, service } }, create: { date, service, ...data }, update: data });
 
   await recordAudit({
     userId: req.user!.sub,

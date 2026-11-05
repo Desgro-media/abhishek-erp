@@ -106,6 +106,32 @@ test("log -> derived CPL/CPA/ROAS; same date again updates (one row per day); au
   assert.equal((audits[1].afterData as any).spend, 3000);
 });
 
+test("service-wise: one date can hold several services; same date + service updates; unknown service refused; list returns the service list", async () => {
+  const D3 = "2001-03-06";
+  try {
+    const web = await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, service: "Web Development", spend: 1000, leads: 4, purchases: 1, revenue: 8000 });
+    const gd = await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, service: "Graphic Design", spend: 500, leads: 5, purchases: 0, revenue: 0 });
+    assert.equal(web.status, 201);
+    assert.equal(gd.status, 201, "a second service on the same date is a new entry");
+    assert.equal(web.body.metric.service, "Web Development");
+    assert.equal(web.body.metric.cpl, 250);
+    assert.equal(web.body.metric.roas, 8);
+    assert.equal(gd.body.metric.roas, 0);
+    const again = await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, service: "Web Development", spend: 2000, leads: 4, purchases: 1, revenue: 8000 });
+    assert.equal(again.status, 200);
+    assert.equal(again.body.metric.id, web.body.metric.id);
+    assert.equal(await prisma.ownAdMetric.count({ where: { date: new Date(`${D3}T00:00:00Z`) } }), 2);
+    assert.equal((await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, service: "Underwater Basket Weaving", spend: 1, leads: 0, purchases: 0, revenue: 0 })).status, 400);
+    const none = await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, spend: 10, leads: 1, purchases: 0, revenue: 0 });
+    assert.equal(none.body.metric.service, "", "no service = a general, unassigned entry");
+    const list = (await call("GET", "/content/own-ad-metrics", tok.content)).body;
+    assert.ok(list.services.includes("Web Development") && list.services.includes("Performance Marketing"));
+    assert.equal(list.metrics.filter((m: { date: string }) => m.date === D3).length, 3);
+  } finally {
+    await prisma.ownAdMetric.deleteMany({ where: { date: new Date(`${D3}T00:00:00Z`) } });
+  }
+});
+
 test("a zero day gives null (not Infinity/NaN) for CPL, CPA and ROAS", async () => {
   const r = await call("POST", "/content/own-ad-metrics", tok.content, { date: D2, spend: 0, leads: 0, purchases: 0, revenue: 500 });
   assert.equal(r.status, 201);

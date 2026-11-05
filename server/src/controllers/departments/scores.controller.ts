@@ -72,7 +72,7 @@ export const metaScore: RequestHandler = asyncHandler(async (req, res) => {
     const [y, mo] = m.split("-").map(Number);
     const rows = await prisma.ownAdMetric.findMany({ where: { date: { gte: new Date(`${m}-01T00:00:00Z`), lte: new Date(Date.UTC(y, mo, 0)) } } });
     const n = (k: "spend" | "leads" | "purchases" | "revenue") => rows.reduce((s, r) => s + Number(r[k]), 0);
-    return { days: rows.length, spend: n("spend"), leads: n("leads"), purchases: n("purchases"), revenue: n("revenue") };
+    return { days: new Set(rows.map((r) => r.date.toISOString())).size, spend: n("spend"), leads: n("leads"), purchases: n("purchases"), revenue: n("revenue") };
   };
   res.json({ month, now: await metaAdsScore(month, t), prev: await metaAdsScore(prev, t), totals: { now: await totals(month), prev: await totals(prev) }, targets: t.meta });
 });
