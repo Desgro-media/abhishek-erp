@@ -31,6 +31,20 @@ export const upsertOwnAdMetric: RequestHandler = asyncHandler(async (req, res) =
   if (service && !SERVICE_DEPARTMENTS.includes(service)) return res.status(400).json({ error: "Pick one of the ERP services" });
 
   const data = { spend: d.spend, leads: d.leads, purchases: d.purchases, revenue: d.revenue, note: d.note || null, loggedBy: req.user!.name };
+  // Editing a specific entry (id given): update that row in place, including moving it to another service.
+  if (d.id) {
+    const existing = await prisma.ownAdMetric.findUnique({ where: { id: d.id } });
+    if (!existing) return res.status(404).json({ error: "Entry not found" });
+    if (existing.date.getTime() !== date.getTime()) return res.status(400).json({ error: "The date of an entry can't be changed — delete it and log the new date" });
+    if (existing.service !== service) {
+      const clash = await prisma.ownAdMetric.findUnique({ where: { date_service: { date, service } } });
+      if (clash) return res.status(409).json({ error: `${service || "A general (no service)"} entry already exists for this date — edit that one instead` });
+    }
+    const updated = await prisma.ownAdMetric.update({ where: { id: existing.id }, data: { ...data, service } });
+    await recordAudit({ userId: req.user!.sub, action: "CONTENT_OWN_AD_METRIC_UPDATE", entityType: "OwnAdMetric", entityId: updated.id, beforeData: serialize(existing), afterData: serialize(updated) });
+    return res.json({ metric: serialize(updated) });
+  }
+
   const before = await prisma.ownAdMetric.findUnique({ where: { date_service: { date, service } } });
   const row = await prisma.ownAdMetric.upsert({ where: { date_service: { date, service } }, create: { date, service, ...data }, update: data });
 

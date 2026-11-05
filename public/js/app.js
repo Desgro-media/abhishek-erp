@@ -7594,7 +7594,7 @@ function logAdMetricModal(forLabel, existing, save, currency, services){
     <form id="f-log-ad-metric"><div class="modal-body">
       <div class="subtext" style="font-size:12px;margin-top:0;">${esc(forLabel)}</div>
       <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(v.date)}" max="${local}" required ${existing?'readonly':''}></div>
-      ${services?`<div><label class="field-label">Service</label><select class="field-input" name="service" ${existing?'disabled':''}><option value="">${NO_SERVICE_LABEL}</option>${services.map(sv=>`<option value="${esc(sv)}" ${sv===v.service?'selected':''}>${esc(sv)}</option>`).join('')}</select></div>`:''}
+      ${services?`<div><label class="field-label">Service</label><select class="field-input" name="service"><option value="">${NO_SERVICE_LABEL}</option>${services.map(sv=>`<option value="${esc(sv)}" ${sv===v.service?'selected':''}>${esc(sv)}</option>`).join('')}</select></div>`:''}
       ${existing?'':`<div class="subtext" style="font-size:12px;">Logging a date${services?' and service':''} that already has numbers replaces them.${services?' Log the same date again for another service.':''}</div>`}
       <div class="field-row">
         <div><label class="field-label">Spend${currency&&currency!=='INR'?` (${esc(currency)})`:''}</label><input class="field-input" type="number" step="0.01" min="0" name="spend" value="${esc(v.spend)}" required></div>
@@ -7611,7 +7611,7 @@ function logAdMetricModal(forLabel, existing, save, currency, services){
   document.getElementById("f-log-ad-metric").addEventListener("submit", async e=>{
     e.preventDefault();
     const f = new FormData(e.target);
-    const payload = { date:f.get("date"), ...(services?{service: existing ? (existing.service||"") : (f.get("service")||"")}:{}), spend:Number(f.get("spend")), revenue:Number(f.get("revenue")), leads:Number(f.get("leads")), purchases:Number(f.get("purchases")), note:(f.get("note")||"").trim() };
+    const payload = { date:f.get("date"), ...(services?{service:f.get("service")||"", ...(existing?{id:existing.id}:{})}:{}), spend:Number(f.get("spend")), revenue:Number(f.get("revenue")), leads:Number(f.get("leads")), purchases:Number(f.get("purchases")), note:(f.get("note")||"").trim() };
     try{ await save(payload); toast("Ad performance saved"); closeModal(); render(); }
     catch(err){ toast(err.message || "Couldn't save ad performance"); }
   });
