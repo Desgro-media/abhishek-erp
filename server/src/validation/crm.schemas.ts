@@ -176,7 +176,7 @@ export const clientAdMetricSchema = ownAdMetricSchema;
 
 // DesGro's own numbers can also be logged against one ERP service (validated against the service list in the controller);
 // "" / missing = not tied to a service.
-export const ownAdMetricServiceSchema = ownAdMetricSchema.extend({ service: z.string().trim().max(60).optional() });
+export const ownAdMetricServiceSchema = ownAdMetricSchema.extend({ service: z.string().trim().max(60).optional(), id: z.string().uuid().optional() });
 
 // Currencies a client's ad numbers can be tracked in: India plus the GCC states (and USD, which GCC ad accounts often bill in).
 export const AD_CURRENCIES = ["INR", "AED", "SAR", "QAR", "KWD", "BHD", "OMR", "USD"] as const;

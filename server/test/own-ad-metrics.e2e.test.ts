@@ -124,6 +124,15 @@ test("service-wise: one date can hold several services; same date + service upda
     assert.equal((await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, service: "Underwater Basket Weaving", spend: 1, leads: 0, purchases: 0, revenue: 0 })).status, 400);
     const none = await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, spend: 10, leads: 1, purchases: 0, revenue: 0 });
     assert.equal(none.body.metric.service, "", "no service = a general, unassigned entry");
+    // Editing by id can move an entry to another service; a clash with an existing entry is refused.
+    const moved = await call("POST", "/content/own-ad-metrics", tok.content, { id: none.body.metric.id, date: D3, service: "Production", spend: 10, leads: 1, purchases: 0, revenue: 0 });
+    assert.equal(moved.status, 200);
+    assert.equal(moved.body.metric.service, "Production");
+    assert.equal(moved.body.metric.id, none.body.metric.id);
+    const clash = await call("POST", "/content/own-ad-metrics", tok.content, { id: moved.body.metric.id, date: D3, service: "Web Development", spend: 10, leads: 1, purchases: 0, revenue: 0 });
+    assert.equal(clash.status, 409);
+    const wrongDate = await call("POST", "/content/own-ad-metrics", tok.content, { id: moved.body.metric.id, date: D2, service: "Production", spend: 10, leads: 1, purchases: 0, revenue: 0 });
+    assert.equal(wrongDate.status, 400);
     const list = (await call("GET", "/content/own-ad-metrics", tok.content)).body;
     assert.ok(list.services.includes("Web Development") && list.services.includes("Performance Marketing"));
     assert.equal(list.metrics.filter((m: { date: string }) => m.date === D3).length, 3);
