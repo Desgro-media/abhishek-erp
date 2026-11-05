@@ -4564,14 +4564,15 @@ function workspaceAdvance(){
     </table></div>
   </div>`;
 }
-// Salary months an advance can be deducted from: this month and the next three, minus any month whose
+// Salary months an advance can be deducted from: last month (until its payroll is paid), this month and the next three, minus any month whose
 // payroll for this employee already has money paid against it (own payroll only — the server re-checks).
-// The first remaining month is the default.
+// This month is the default.
 function advanceMonthOptions(selected, empCode){
   const now = new Date();
   const closed = new Set(empCode===undefined ? myPayroll.filter(r=>r.payStatus!=="Unpaid").map(r=>r.month) : []);
-  const months = [0,1,2,3].map(i=>{ const d=new Date(now.getFullYear(), now.getMonth()+i, 1); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }).filter(m=>!closed.has(m) || m===selected);
-  const pick = selected || months[0];
+  const thisM = now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0");
+  const months = [-1,0,1,2,3].map(i=>{ const d=new Date(now.getFullYear(), now.getMonth()+i, 1); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }).filter(m=>!closed.has(m) || m===selected);
+  const pick = selected || (months.includes(thisM) ? thisM : months[0]);
   return months.map(m=>`<option value="${m}" ${m===pick?'selected':''}>${monthLabel(m)}</option>`).join("");
 }
 // What an employee can still ask for against one salary month: their monthly salary minus advances already

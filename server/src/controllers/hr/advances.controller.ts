@@ -5,12 +5,13 @@ import { recordAudit } from "../../services/audit.service";
 import { isHRAdmin, resolveScopedEmployeeId } from "../../middleware/hrAccess";
 import { advanceCreateSchema, advanceDecisionSchema } from "../../validation/hr.schemas";
 
-// The month an advance is deducted from must still be open: not before the current calendar month, and
+// The month an advance is deducted from must still be open: not before last calendar month, and
 // the employee's payroll for it must not have any payment against it yet. Returns an error message or null.
 async function deductMonthError(employeeId: string, month: string): Promise<string | null> {
   const now = new Date();
-  const current = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  if (month < current) return "Pick the current month or a later one — that payroll period has already passed";
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const earliest = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+  if (month < earliest) return "Pick last month or a later one — that payroll period has already passed";
   const paid = await prisma.payrollPayment.count({ where: { payrollEntry: { employeeId, month } } });
   if (paid > 0) return "Payroll for that month has already been paid — pick a later month";
   return null;
