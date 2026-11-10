@@ -4655,16 +4655,77 @@ function hrMonthScore(month){
   ];
   return {score: weightedScoreOf(parts), parts};
 }
+/* ---- HR Overview month picker: look back at what HR did in any earlier month ---- */
+let hrMonth = null;
+const hrMonthNow = ()=> hrMonth || TODAY.slice(0,7);
+function hrMonthList(){
+  const cur = TODAY.slice(0,7);
+  const ms = [cur, ...leaveRequests.map(l=>l.applied), ...advances.map(a=>a.requested), ...withdrawalRequests.map(w=>w.requested), ...complaints.map(c=>c.submitted), ...hrPrograms.map(p=>p.date), ...candidates.map(c=>c.appliedDate), ...Object.keys(payroll.history)]
+    .map(d=>String(d||'').slice(0,7)).filter(m=>/^\d{4}-\d{2}$/.test(m) && m<=cur).sort();
+  const out = []; let m = ms[0]; while(m <= cur){ out.push(m); m = new Date(Date.UTC(+m.slice(0,4), +m.slice(5,7), 1)).toISOString().slice(0,7); }
+  return out.reverse();
+}
+async function setHrMonth(m){
+  hrMonth = m===TODAY.slice(0,7) ? null : m;
+  // The Payroll figures for a past month aren't loaded until asked for.
+  if(!payroll.history[m]){ try{ await loadPayrollMonth(m); }catch(err){} }
+  render();
+}
+function shiftHrMonth(step){ const l = hrMonthList(), i = l.indexOf(hrMonthNow()), j = i - step; if(j>=0 && j<l.length) setHrMonth(l[j]); }
+function hrMonthBar(){
+  const l = hrMonthList(), m = hrMonthNow(), i = l.indexOf(m);
+  return `<div class="toolbar"><div class="filter-group"><span class="filter-label">Month</span>
+    <button class="btn btn-sm ghost" onclick="shiftHrMonth(-1)" ${i>=l.length-1?'disabled':''} aria-label="Previous month">‹</button>
+    <select class="select-sm" onchange="setHrMonth(this.value)" aria-label="Month">${l.map(x=>`<option value="${x}" ${x===m?'selected':''}>${monthLabel(x)}${x===TODAY.slice(0,7)?' (this month)':''}</option>`).join('')}</select>
+    <button class="btn btn-sm ghost" onclick="shiftHrMonth(1)" ${i<=0?'disabled':''} aria-label="Next month">›</button>
+    ${m!==TODAY.slice(0,7)?`<button class="btn btn-sm ghost" onclick="setHrMonth('${TODAY.slice(0,7)}')">Back to this month</button>`:''}</div></div>`;
+}
+// Everything HR handled in one month, counted from the records themselves (request dates, program dates, payroll rows).
+// "Pending" is as of today: a request still open from an old month is still open.
+function hrActivity(month){
+  const inM = d => String(d||'').slice(0,7)===month;
+  const leaves = leaveRequests.filter(l=>inM(l.applied)), advs = advances.filter(a=>inM(a.requested)), wds = withdrawalRequests.filter(w=>inM(w.requested));
+  const comps = complaints.filter(c=>inM(c.submitted)), hires = candidates.filter(c=>inM(c.appliedDate));
+  const progs = programsInMonth(month).filter(p=>p.status!=="Cancelled");
+  const entries = payroll.history[month] ? Object.keys(payroll.history[month].entries).map(id=>payroll.history[month].entries[id]) : null;
+  return {leaves, advs, wds, comps, hires, progs, entries};
+}
+function hrActivityPanel(month){
+  const A = hrActivity(month), isNow = month===TODAY.slice(0,7);
+  // Counts per status actually present in the records, so no status is ever left out of the breakdown.
+  const by = arr => [...new Set(arr.map(x=>x.status))].map(st=>`${arr.filter(x=>x.status===st).length} ${String(st).toLowerCase()}`).join(' · ') || '—';
+  const row = (what, n, detail)=>`<tr><td><strong>${what}</strong></td><td class="num mono">${n}</td><td>${detail}</td></tr>`;
+  const e = A.entries;
+  const paidFull = e ? e.filter(r=>r.balance===0).length : 0;
+  const payDetail = !e ? '<span class="faint">not loaded</span>' : e.length ? `${paidFull} fully paid · ${e.length-paidFull} with a balance · net ${inr(e.reduce((t,r)=>t+r.net,0))} · paid ${inr(e.reduce((t,r)=>t+r.paid,0))} · owed ${inr(e.reduce((t,r)=>t+r.balance,0))}` : '<span class="faint">no payroll entries for this month</span>';
+  const done = A.progs.filter(p=>p.status==="Completed").length;
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>What HR did · ${monthLabel(month)}</h3><div class="sub">Counted from the records of that month${isNow?' so far':''}. Open requests are as of today.</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Area</th><th class="num">Count</th><th>Breakdown</th></tr></thead><tbody>
+      ${row('Leave requests', A.leaves.length, by(A.leaves))}
+      ${row('Salary advances', A.advs.length, by(A.advs))}
+      ${row('Salary withdrawals', A.wds.length, by(A.wds))}
+      ${row('Payroll entries', e?e.length:'—', payDetail)}
+      ${row('Programs', A.progs.length, A.progs.length ? `${done} completed · ${A.progs.length-done} not completed` : '—')}
+      ${row('Complaints received', A.comps.length, by(A.comps))}
+      ${row('Candidates applied', A.hires.length, A.hires.length ? [...new Set(A.hires.map(c=>c.stage))].map(st=>`${A.hires.filter(c=>c.stage===st).length} ${st.toLowerCase()}`).join(' · ') : '—')}
+    </tbody></table></div></div>`;
+}
+
 function hrOverview(){
-  const hrMonth = TODAY.slice(0,7), hrPrev = prevMonth(hrMonth), hrP = monthLabel(hrPrev).split(' ')[0];
+  const hrM = hrMonthNow(), isNow = hrM===TODAY.slice(0,7), hrPrev = prevMonth(hrM), hrP = monthLabel(hrPrev).split(' ')[0];
   const present = Object.values(attendanceToday).filter(a=>a.status==="present").length;
   const late = Object.values(attendanceToday).filter(a=>a.status==="late").length;
   const half = Object.values(attendanceToday).filter(a=>a.status==="half").length;
   const onLeave = Object.values(attendanceToday).filter(a=>a.status==="leave"||a.status==="unpaid").length;
   const pendingLeave = leaveRequests.filter(l=>l.status==="Pending").length;
   const pendingAdvances = advances.filter(a=>a.status==="Pending").length;
-  const payrollStatus = payrollMonthStatus(payroll.selectedMonth);
-  const netPayroll = Object.keys(payroll.history[payroll.selectedMonth].entries).reduce((s,id)=>s+computePayrollRow(byId(id),payroll.selectedMonth).net,0);
+  // Payroll for the month being viewed (this month's figures are the live ones; an older month is fetched when picked).
+  const pm = payroll.history[isNow ? payroll.selectedMonth : hrM];
+  const pmKey = isNow ? payroll.selectedMonth : hrM;
+  const payrollStatus = pm ? payrollMonthStatus(pmKey) : "Adding entries";
+  const netPayroll = pm ? Object.keys(pm.entries).reduce((s,id)=>s+computePayrollRow(byId(id),pmKey).net,0) : 0;
+  const A = hrActivity(hrM);
   const onNotice = employees.filter(e=>e.employmentStatus==="Notice Period").length;
   const deptCounts = DEPARTMENTS.map(d=>({d,n:employees.filter(e=>e.dept===d).length})).sort((a,b)=>b.n-a.n);
   const maxDept = Math.max(...deptCounts.map(x=>x.n));
@@ -4672,16 +4733,24 @@ function hrOverview(){
     ...leaveRequests.filter(l=>l.status==="Pending").map(l=>({txt:`${byId(l.empId).name} requested ${l.days} day${l.days>1?'s':''} ${l.type.toLowerCase()} leave`, sub:`${fmtDateShort(l.from)}${l.from!==l.to?' – '+fmtDateShort(l.to):''} · applied ${fmtDateShort(l.applied)}`})),
     ...advances.filter(a=>a.status==="Pending").map(a=>({txt:`${byId(a.empId).name} requested a ${inr(a.amount)} advance`, sub:esc(a.reason)+" · "+fmtDateShort(a.requested)})),
   ].slice(0,5);
-
-  return `
-  ${monthScorePanelHTML(`HR Score · ${monthLabel(hrMonth)}`, `Programs, feedback, requests and complaints · vs ${hrP}`, hrMonthScore(hrMonth), hrMonthScore(hrPrev), hrP)}
-  <div class="kpi-grid">
+  const payCard = `<div class="kpi-card hero"><div class="kpi-top"><span class="kpi-label">Payroll — ${MONTH_LABEL[pmKey] || monthLabel(pmKey)}</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-wallet"/></svg></div></div><div class="kpi-value mono">${pm?inr(netPayroll):'—'}</div><div class="kpi-sub">${payrollStatus==='Paid'?'fully paid':payrollStatus==='Payments pending'?'payments pending':'entries in progress'}</div></div>`;
+  const kpis = isNow ? `
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Team Size</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-users"/></svg></div></div><div class="kpi-value mono">${employees.length}</div><div class="kpi-sub">${onNotice ? onNotice+" on notice period" : "across "+DEPARTMENTS.length+" departments"}</div></div>
     <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Present Today</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-check"/></svg></div></div><div class="kpi-value mono">${present+late+half}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${employees.length}</span></div><div class="kpi-sub">${onLeave} on leave</div></div>
-    <div class="kpi-card hero"><div class="kpi-top"><span class="kpi-label">Payroll — ${MONTH_LABEL[payroll.selectedMonth]}</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-wallet"/></svg></div></div><div class="kpi-value mono">${inr(netPayroll)}</div><div class="kpi-sub">${payrollStatus==='Paid'?'fully paid':payrollStatus==='Payments pending'?'payments pending':'entries in progress'}</div></div>
-    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Pending Approvals</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-bell"/></svg></div></div><div class="kpi-value mono ${pendingLeave+pendingAdvances>0?'warn':''}">${pendingLeave+pendingAdvances}</div><div class="kpi-sub">${pendingLeave} leave · ${pendingAdvances} advance</div></div>
-  </div>
-  <div class="grid-2">
+    ${payCard}
+    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Pending Approvals</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-bell"/></svg></div></div><div class="kpi-value mono ${pendingLeave+pendingAdvances>0?'warn':''}">${pendingLeave+pendingAdvances}</div><div class="kpi-sub">${pendingLeave} leave · ${pendingAdvances} advance</div></div>`
+  : `
+    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Requests received</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-bell"/></svg></div></div><div class="kpi-value mono">${A.leaves.length+A.advs.length+A.wds.length}</div><div class="kpi-sub">${A.leaves.length} leave · ${A.advs.length} advance · ${A.wds.length} withdrawal</div></div>
+    ${payCard}
+    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Programs</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-users"/></svg></div></div><div class="kpi-value mono">${A.progs.filter(p=>p.status==="Completed").length}<span class="faint" style="font-size:.6em"> / ${A.progs.length}</span></div><div class="kpi-sub">completed</div></div>
+    <div class="kpi-card"><div class="kpi-top"><span class="kpi-label">Complaints</span><div class="kpi-badge"><svg class="icon" style="width:15px;height:15px"><use href="#i-megaphone"/></svg></div></div><div class="kpi-value mono">${A.comps.length}</div><div class="kpi-sub">received</div></div>`;
+
+  return `
+  ${hrMonthBar()}
+  ${monthScorePanelHTML(`HR Score · ${monthLabel(hrM)}`, `Programs, feedback, requests and complaints · vs ${hrP}`, hrMonthScore(hrM), hrMonthScore(hrPrev), hrP)}
+  <div class="kpi-grid">${kpis}</div>
+  ${hrActivityPanel(hrM)}
+  ${isNow ? `<div class="grid-2">
     <div class="panel">
       <div class="panel-head"><div><h3>Headcount by department</h3><div class="sub">${employees.length} active team members</div></div></div>
       <div class="panel-body"><div class="barchart">${deptCounts.map(x=>`<div class="bar-row"><div class="bar-label">${esc(x.d)}</div><div class="bar-track"><div class="bar-fill" style="width:${(x.n/maxDept)*100}%"></div></div><div class="bar-val">${x.n}</div></div>`).join("")}</div></div>
@@ -4690,7 +4759,7 @@ function hrOverview(){
       <div class="panel-head"><h3>Needs your review</h3></div>
       <div class="panel-body">${needsReview.length ? needsReview.map(n=>`<div class="feed-item"><div class="feed-dot"></div><div><div class="feed-text"><strong>${n.txt}</strong></div><div class="feed-time">${n.sub}</div></div></div>`).join("") : '<div class="empty">All caught up.</div>'}</div>
     </div>
-  </div>`;
+  </div>` : ''}`;
 }
 
 let employeeSearch = "", employeeDept = "All";
