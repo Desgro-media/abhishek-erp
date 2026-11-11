@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { onlyDepartments } from "./departmentAccess";
 import { prisma } from "../db/prisma";
 import { nextSequentialCode } from "../utils/sequentialCode";
 import { invoiceTotal, sumAmounts } from "./finance/calc";
@@ -55,7 +56,7 @@ export async function convertLeadToClient(tx: Db, lead: { id: string; name: stri
     const client = await tx.client.create({
       data: {
         clientCode, name, industry: opts.industry || "—", city: opts.city || "—",
-        services: opts.services?.length ? opts.services : [lead.serviceInterested],
+        services: opts.services?.length ? opts.services : onlyDepartments([lead.serviceInterested]),
         status: "ACTIVE", billingType: opts.billingType ?? "PREPAID", onboardedAt: opts.onboardedAt,
         accountManager: lead.leadOwner, salesPerson: lead.leadOwner,
       },

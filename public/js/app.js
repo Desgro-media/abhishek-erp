@@ -650,7 +650,8 @@ const LEAD_OPEN_STAGES = ["New","Not Connected 1","Not Connected 2","Call Back",
 const LEAD_STAGE_KIND = {"New":"neutral","Not Connected 1":"warn","Not Connected 2":"warn","Call Back":"blue","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
 const LEAD_LOST_REASONS = ["Budget","Went with a competitor","No response","Not a fit","Other"];
 let leadsView = "board";
-function setLeadsView(v){ leadsView = v; render(); }
+// The Open-leads queue sits above the board/list and can be long, so after switching, bring the board/list into view.
+function setLeadsView(v){ leadsView = v; render(); const el = document.getElementById("leads-pipeline"); if(el) el.scrollIntoView({ behavior:"smooth", block:"start" }); }
 // A converted lead is Won no matter what; a lead the old status field already marked Lost shows as Lost even
 // before the one-off backfill has staged it.
 function leadStage(l){
@@ -795,6 +796,83 @@ function openLeadThresholdSetting(){
       closeModal(); toast("Threshold set to "+inr(r.conversionThreshold)+(r.converted.length?` · ${r.converted.length} lead${r.converted.length===1?'':'s'} converted`:'')); render();
     }catch(err){ toast(err.message || "Couldn't save"); }
   });
+}
+// ---- Meta leads sheet: the performance team's Google Sheet → Leads (Admin / Sales Head) ----
+function canSetupLeadSheet(){ return !!currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD')); }
+let leadSheetState = null;
+async function openLeadSheetSetup(){
+  if(!canSetupLeadSheet()) return;
+  try{ leadSheetState = await apiJson("/api/crm/lead-sheet"); }catch(err){ toast(err.message || "Couldn't open the sheet settings"); return; }
+  renderLeadSheetModal();
+}
+function renderLeadSheetModal(msg){
+  const st = leadSheetState, c = st.config, tabs = st.tabs || [];
+  const last = c && c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleString("en-IN",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"}) : null;
+  const sum = c && c.lastSummary;
+  showModal(`
+    <div class="modal-head"><h3>Meta leads sheet</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div>
+        <label class="field-label">Google Sheet link</label>
+        <div style="display:flex;gap:8px;"><input class="field-input" id="ls-url" placeholder="https://docs.google.com/spreadsheets/d/…" value="${c&&c.sheetId?esc('https://docs.google.com/spreadsheets/d/'+c.sheetId):''}" style="flex:1;"><button class="btn ghost" onclick="connectLeadSheet()">${c&&c.sheetId?'Reload tabs':'Connect'}</button></div>
+        <div class="subtext">In Google Sheets: Share → General access → <b>Anyone with the link</b> → <b>Viewer</b>. The ERP only reads it; it never changes the sheet.</div>
+      </div>
+      ${msg?`<div class="banner muted"><div>${esc(msg)}</div></div>`:''}
+      ${tabs.length?`
+      <div>
+        <label class="field-label">Which service is each tab for?</label>
+        <datalist id="ls-services">${[...new Set([...st.services, ...tabs.map(t=>t.service).filter(Boolean)])].map(sv=>`<option value="${esc(sv)}">`).join('')}</datalist>
+        <div style="display:grid;gap:6px;max-height:300px;overflow:auto;">
+          ${tabs.map(t=>`<div style="display:flex;gap:8px;align-items:center;"><div style="flex:1;min-width:0;" class="${t.lastError?'neg':''}"><b>${esc(t.name)}</b>${t.lastRows?` <span class="subtext">· ${t.lastRows} imported</span>`:''}${t.lastError?`<div class="subtext neg">${esc(t.lastError)}</div>`:''}</div>
+            <input class="field-input ls-tab" list="ls-services" data-gid="${esc(t.gid)}" value="${esc(t.service||'')}" placeholder="Skip this tab" style="width:210px;"></div>`).join('')}
+        </div>
+        <div class="subtext">Every tab is filed under a service name. Pick one from the list or type a new one (e.g. Personal Branding). Clear the box to skip a tab.</div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
+        <div><label class="field-label">Import leads created from</label><input class="field-input" type="date" id="ls-from" value="${c&&c.importFrom?String(c.importFrom).slice(0,10):''}"></div>
+        <label class="check-chip" style="margin-bottom:6px;"><input type="checkbox" id="ls-auto" ${c&&c.autoSync?'checked':''}>Check for new leads every 5 minutes</label>
+      </div>
+      <div class="subtext">Older rows are ignored, so the leads your team already worked don't flood the Open queue. Every lead comes in once, even if you sync many times.</div>
+      ${leadSheetDailyHTML(st)}
+      ${last?`<div class="subtext">Last checked ${esc(last)}${sum?` · ${sum.created} new lead${sum.created===1?'':'s'}`:''}</div>`:''}`:''}
+    </div>
+    <div class="modal-foot"><div>${tabs.length?`<button class="btn ghost" onclick="syncLeadSheetNow()">Save &amp; sync now</button>`:''}</div><div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Close</button>${tabs.length?`<button class="btn primary" onclick="saveLeadSheet()">Save</button>`:''}</div></div>`, true);
+}
+// Leads per service per day (last 7 days, by the lead's own date). A 0 in red = nothing came in for that service that day.
+function leadSheetDailyHTML(st){
+  const d = st.daily; if(!d) return '';
+  const services = [...new Set(st.tabs.map(t=>t.service).filter(Boolean))];
+  if(!services.length) return '';
+  const lbl = iso => new Date(iso+"T00:00:00").toLocaleDateString("en-IN",{weekday:"short",day:"numeric"});
+  const gaps = services.filter(sv=>d.days.slice(-3).every(day=>!((d.counts[sv]||{})[day])));
+  return `<div><label class="field-label">Leads coming in, day by day</label>
+    <div style="overflow:auto;"><table class="data-table" style="width:100%;"><thead><tr><th>Service</th>${d.days.map(day=>`<th style="text-align:right;">${esc(lbl(day))}</th>`).join('')}</tr></thead>
+    <tbody>${services.map(sv=>`<tr><td>${esc(sv)}</td>${d.days.map(day=>{ const n=(d.counts[sv]||{})[day]||0; return `<td class="mono" style="text-align:right;${n?'':'color:var(--neg,#c0392b);'}">${n}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>
+    ${gaps.length?`<div class="subtext neg">Nothing new for the last 3 days: ${esc(gaps.join(', '))}. Check whether the performance team has added them to the sheet.</div>`:''}</div>`;
+}
+async function connectLeadSheet(){
+  const url = document.getElementById("ls-url").value.trim();
+  if(!url){ toast("Paste the sheet link first"); return; }
+  try{ leadSheetState = await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ sheetUrl:url }) }); renderLeadSheetModal("Sheet connected. Choose a service for each tab, then Save."); }
+  catch(err){ toast(err.message || "Couldn't connect"); }
+}
+function leadSheetFormBody(){
+  return { autoSync: document.getElementById("ls-auto").checked, importFrom: document.getElementById("ls-from").value || null,
+    tabs: [...document.querySelectorAll(".ls-tab")].map(s=>({ gid:s.dataset.gid, service:s.value||null })) };
+}
+async function saveLeadSheet(){
+  try{ leadSheetState = await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(leadSheetFormBody()) }); toast("Saved"); renderLeadSheetModal(); }
+  catch(err){ toast(err.message || "Couldn't save"); }
+}
+async function syncLeadSheetNow(){
+  try{
+    await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(leadSheetFormBody()) });
+    const r = await apiJson("/api/crm/lead-sheet/sync", { method:"POST" });
+    leadSheetState = r; await loadLeads();
+    const n = r.summary.created, bad = r.summary.tabs.filter(t=>t.error).length;
+    renderLeadSheetModal(`${n} new lead${n===1?'':'s'} imported${r.summary.skippedOld?` · ${r.summary.skippedOld} older than the start date skipped`:''}${r.summary.duplicates?` · ${r.summary.duplicates} duplicate${r.summary.duplicates===1?'':'s'} rejected (phone already in Leads)`:''}${bad?` · ${bad} tab${bad===1?'':'s'} had an error (shown in red)`:''}.`);
+    render();
+  }catch(err){ toast(err.message || "Couldn't sync"); }
 }
 // What a client's lead paid before becoming a client, and where each advance is now (client detail page).
 let clientLeadAdvances = {};
@@ -7786,6 +7864,7 @@ function mktLeads(){
     <div class="kpi-card hero"><div class="kpi-label">Win Rate</div><div class="kpi-value mono">${winRate==null?'—':winRate+'%'}</div><div class="kpi-sub">${wonCount} won · ${lostCount} lost</div></div>
   </div>
   <div class="banner muted" style="align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div style="flex:1;"><b>Conversion rule.</b> Convert a lead to a client any time — paid or not. Once a lead's recorded payments reach <b>${inr(leadConversionThreshold)}</b> it converts automatically. Payments are only recorded here; they reach the books through Finance when an invoice is raised.</div>${isAdminUser()?`<button class="btn btn-sm ghost" onclick="openLeadThresholdSetting()">Change</button>`:''}</div>
+  ${canSetupLeadSheet()?`<div class="banner muted" style="align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div style="flex:1;"><b>Meta leads sheet.</b> New leads from the performance team's Google Sheet come in here by themselves, so nobody has to forward them.</div><button class="btn btn-sm ghost" onclick="openLeadSheetSetup()">Set up</button></div>`:''}
   ${openLeads.length ? `
   <div class="panel">
     <div class="panel-head">
@@ -7797,12 +7876,12 @@ function mktLeads(){
     </table></div>
   </div>` : ''}
   ${leadsView==='board' ? `
-  <div class="panel">
+  <div class="panel" id="leads-pipeline">
     <div class="panel-head"><div><h3>${isSalesViewer?'My lead flow':'Lead flow'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)} · move each lead along as it progresses</div></div></div>
     <div class="board-scroll" style="padding:0 14px 14px;"><div class="board">${LEAD_STAGES.map(st=>{ const inSt = sorted.filter(l=>leadStage(l)===st); return `<div class="col"><div class="col-head"><span class="name">${st}</span><span class="count">${inSt.length}</span></div><div class="col-cards">${inSt.map(leadCardHTML).join('') || '<div class="empty" style="padding:14px 6px;">None</div>'}</div></div>`; }).join('')}</div></div>
   </div>
   ` : `
-  <div class="panel">
+  <div class="panel" id="leads-pipeline">
     <div class="panel-head"><h3>${isSalesViewer?'My leads':'Lead pipeline'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th><th>Stage</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
       <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td>${leadStageControl(l)}${leadStage(l)==='Lost'&&l.lostReason?`<div class="subtext">${esc(l.lostReason)}</div>`:''}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?7:8}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
