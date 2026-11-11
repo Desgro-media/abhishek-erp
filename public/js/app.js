@@ -650,7 +650,8 @@ const LEAD_OPEN_STAGES = ["New","Not Connected 1","Not Connected 2","Call Back",
 const LEAD_STAGE_KIND = {"New":"neutral","Not Connected 1":"warn","Not Connected 2":"warn","Call Back":"blue","Contacted":"blue","Meeting":"blue","Proposal Sent":"blue","Negotiation":"warn","Won":"pos","Lost":"neg"};
 const LEAD_LOST_REASONS = ["Budget","Went with a competitor","No response","Not a fit","Other"];
 let leadsView = "board";
-function setLeadsView(v){ leadsView = v; render(); }
+// The Open-leads queue sits above the board/list and can be long, so after switching, bring the board/list into view.
+function setLeadsView(v){ leadsView = v; render(); const el = document.getElementById("leads-pipeline"); if(el) el.scrollIntoView({ behavior:"smooth", block:"start" }); }
 // A converted lead is Won no matter what; a lead the old status field already marked Lost shows as Lost even
 // before the one-off backfill has staged it.
 function leadStage(l){
@@ -7875,12 +7876,12 @@ function mktLeads(){
     </table></div>
   </div>` : ''}
   ${leadsView==='board' ? `
-  <div class="panel">
+  <div class="panel" id="leads-pipeline">
     <div class="panel-head"><div><h3>${isSalesViewer?'My lead flow':'Lead flow'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)} · move each lead along as it progresses</div></div></div>
     <div class="board-scroll" style="padding:0 14px 14px;"><div class="board">${LEAD_STAGES.map(st=>{ const inSt = sorted.filter(l=>leadStage(l)===st); return `<div class="col"><div class="col-head"><span class="name">${st}</span><span class="count">${inSt.length}</span></div><div class="col-cards">${inSt.map(leadCardHTML).join('') || '<div class="empty" style="padding:14px 6px;">None</div>'}</div></div>`; }).join('')}</div></div>
   </div>
   ` : `
-  <div class="panel">
+  <div class="panel" id="leads-pipeline">
     <div class="panel-head"><h3>${isSalesViewer?'My leads':'Lead pipeline'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)}</div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th><th>Stage</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
       <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td>${leadStageControl(l)}${leadStage(l)==='Lost'&&l.lostReason?`<div class="subtext">${esc(l.lostReason)}</div>`:''}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?7:8}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
