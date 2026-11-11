@@ -482,6 +482,9 @@ function monthFilterOptions(dates, current){
 }
 let leadsMonthFilter = "All";
 function setLeadsMonthFilter(v){ leadsMonthFilter = v; render(); }
+// Leads page: narrow everything (KPIs, open queue, flow, list) to one service / department.
+let leadsServiceFilter = "All";
+function setLeadsServiceFilter(v){ leadsServiceFilter = v; render(); }
 let quotesMonthFilter = "All";
 function setQuotesMonthFilter(v){ quotesMonthFilter = v; render(); }
 let clientsMonthFilter = "All";
@@ -7841,14 +7844,21 @@ function mktLeads(){
   // listLeads). They still see the shared Open leads queue below to claim
   // from. Anyone else (Leadership, Marketing/Staff, Admin) sees everyone's.
   const isSalesViewer = isSalesRepRole(currentUser);
-  const pipelineSource = isSalesViewer ? marketingLeads.filter(l=>l.leadOwner===currentUser.name) : marketingLeads;
+  const ownLeads = isSalesViewer ? marketingLeads.filter(l=>l.leadOwner===currentUser.name) : marketingLeads;
+  // Service filter: the ERP's services first, then any other label that came in from the Meta sheet (Personal Branding…).
+  const svcCounts = {}; ownLeads.concat(marketingLeads.filter(l=>!l.leadOwner)).forEach(l=>{ svcCounts[l.serviceInterested] = (svcCounts[l.serviceInterested]||0); });
+  ownLeads.forEach(l=>{ svcCounts[l.serviceInterested] = (svcCounts[l.serviceInterested]||0)+1; });
+  const svcList = [...SERVICE_DEPARTMENTS.filter(d=>svcCounts[d]!=null), ...Object.keys(svcCounts).filter(d=>!SERVICE_DEPARTMENTS.includes(d)).sort()];
+  if(leadsServiceFilter!=="All" && !svcList.includes(leadsServiceFilter)) leadsServiceFilter = "All";
+  const bySvc = l => leadsServiceFilter==="All" || l.serviceInterested===leadsServiceFilter;
+  const pipelineSource = ownLeads.filter(bySvc);
   const filtered = pipelineSource.filter(l=>matchesDateFilter(l.createdDate, leadsMonthFilter));
   const sorted = filtered.slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   // Open leads — organic sign-ups nobody's claimed yet. Surfaced across the
   // whole pipeline, not just this month's filter, so one never quietly ages
   // out of sight. Shared across everyone, Sales included — it's the queue
   // they claim from.
-  const openLeads = marketingLeads.filter(l=>!l.leadOwner).slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
+  const openLeads = marketingLeads.filter(l=>!l.leadOwner && bySvc(l)).slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
   const canClaim = isSalesRole(currentUser);
   const activeCount = pipelineSource.filter(l=>!['Won','Lost'].includes(leadStage(l))).length;
   const wonCount = pipelineSource.filter(l=>leadStage(l)==='Won').length;
@@ -7856,7 +7866,7 @@ function mktLeads(){
   const winRate = (wonCount+lostCount) ? Math.round(wonCount/(wonCount+lostCount)*100) : null;
   const paidWaiting = pipelineSource.filter(l=>!l.convertedClientId && l.paidTotal>0);
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select><span class="filter-label" style="margin-left:14px;">Service</span><select class="select-sm" onchange="setLeadsServiceFilter(this.value)"><option value="All" ${leadsServiceFilter==='All'?'selected':''}>All services</option>${svcList.map(sv=>`<option value="${esc(sv)}" ${leadsServiceFilter===sv?'selected':''}>${esc(sv)} (${svcCounts[sv]})</option>`).join('')}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">In Pipeline</div><div class="kpi-value mono">${activeCount}</div><div class="kpi-sub">not yet won or lost</div></div>
     <div class="kpi-card"><div class="kpi-label">Converted to Client</div><div class="kpi-value mono pos">${wonCount}</div></div>
