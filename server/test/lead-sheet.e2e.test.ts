@@ -1,0 +1,139 @@
+/**
+ * Marketing > Leads > Meta sheet: tab mapping, import (once only), old/test rows skipped, access rules.
+ *   TEST_DATABASE_URL=postgresql://.../desgro_erp_test npm run test:e2e
+ */
+import { test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import type { AddressInfo } from "node:net";
+import type { Server } from "node:http";
+
+const testDbUrl = process.env.TEST_DATABASE_URL;
+if (!testDbUrl || !/\/[^/?]*test[^/?]*(\?|$)/i.test(testDbUrl)) {
+  console.error("Refusing to run: set TEST_DATABASE_URL to a database whose name contains 'test'.");
+  process.exit(1);
+}
+process.env.DATABASE_URL = testDbUrl;
+process.env.NODE_ENV = "test";
+process.env.JWT_ACCESS_SECRET ||= "x".repeat(40);
+
+let server: Server, base: string;
+let prisma: typeof import("../src/db/prisma").prisma;
+let svc: typeof import("../src/services/leadSheet");
+let tok: { admin: string; head: string; rep: string };
+const run = `s${Date.now().toString(36)}`;
+const SHEET = "1CvKPMuJM5FRfaPSlNwuayWCfiBB96rdP01AfSE5MllA";
+const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET}/edit?gid=0#gid=0`;
+
+const today = new Date().toISOString().slice(0, 10);
+const old = "2020-01-01T10:00:00-05:00";
+const fresh = new Date().toISOString();
+const HEADER = "id,created_time,ad_name,campaign_name,form_name,platform,what_is_your_budget?,full_name,phone_number,city,lead_status";
+const csvWeb = [
+  HEADER,
+  `l:test-${run}-0,${fresh},,,,,<test lead: dummy data for budget>,<test lead: dummy data for full_name>,<test lead: dummy data for phone_number>,<test lead: dummy data for city>,CREATED`,
+  `l:${run}-1,${fresh},Web Dev ad,Web camp,Form A,ig,"₹40,000",Asha Nair,p:+919000000001,Kochi,CREATED`,
+  `l:${run}-2,${fresh},Web Dev ad,Web camp,Form A,fb,"₹75,000, more",Ravi K,p:+919000000002,"Calicut, Kerala",CREATED`,
+  `l:${run}-3,${old},Web Dev ad,Web camp,Form A,fb,x,Old Person,p:+919000000003,Pune,CREATED`,
+].join("\n");
+let webCsv = csvWeb;
+
+const fake = {
+  tabs: async () => [{ gid: "0", name: "Web kerala" }, { gid: "11", name: "PB NEW" }, { gid: "22", name: "PM sheet" }],
+  csv: async (_s: string, gid: string) => {
+    if (gid === "0") return webCsv;
+    if (gid === "22") return `${HEADER.replace("phone_number", "phone")}\nl:${run}-9,${fresh},,,,,x,Pm Person,p:+919000000009,Delhi,CREATED`;
+    throw new Error("PB NEW must be skipped, never fetched");
+  },
+};
+
+async function call(method: string, path: string, token: string | null, body?: unknown) {
+  const res = await fetch(base + path, { method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+}
+
+before(async () => {
+  ({ prisma } = await import("../src/db/prisma"));
+  svc = await import("../src/services/leadSheet");
+  const { __setLeadSheetSource } = await import("../src/controllers/crm/leadSheet.controller");
+  __setLeadSheetSource(fake);
+  const { app } = await import("../src/app");
+  const { signAccessToken } = await import("../src/utils/tokens");
+  const mk = async (label: string, roles: any[]) => {
+    const u = await prisma.user.create({ data: { name: `${label} ${run}`, email: `${label}-${run}@test.local`, passwordHash: "x", roles } });
+    return signAccessToken({ sub: u.id, email: u.email, name: u.name, roles, department: null, employeeId: null });
+  };
+  tok = { admin: await mk("admin", ["ADMIN"]), head: await mk("head", ["SALES_HEAD"]), rep: await mk("rep", ["SALES"]) };
+  await prisma.leadSheetTab.deleteMany(); await prisma.leadSheetConfig.deleteMany();
+  server = app.listen(0);
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
+});
+after(async () => { server?.close(); await prisma?.$disconnect(); });
+
+test("pure helpers: sheet id from URL, CSV quoting, service guess from tab name", () => {
+  assert.equal(svc.extractSheetId(SHEET_URL), SHEET);
+  assert.equal(svc.extractSheetId(SHEET), SHEET);
+  assert.equal(svc.extractSheetId("hello"), null);
+  assert.deepEqual(svc.parseCsv('a,"b,c","d ""q"""\n1,2,3\n'), [["a", "b,c", 'd "q"'], ["1", "2", "3"]]);
+  assert.equal(svc.guessService("Web kerala"), "Web Development");
+  assert.equal(svc.guessService("GRAPHIC KERALA"), "Graphic Design");
+  assert.equal(svc.guessService("PM sheet"), "Performance Marketing");
+  assert.equal(svc.guessService("consultation"), "Marketing Consultation");
+  assert.equal(svc.guessService("PB NEW"), null);
+  assert.equal(svc.guessService("ERP"), null);
+});
+
+test("only Admin / Sales Head can see or change it; a rep cannot", async () => {
+  assert.equal((await call("GET", "/crm/lead-sheet", tok.rep)).status, 403);
+  assert.equal((await call("PUT", "/crm/lead-sheet", tok.rep, { sheetUrl: SHEET_URL })).status, 403);
+  assert.equal((await call("POST", "/crm/lead-sheet/sync", tok.rep)).status, 403);
+  assert.equal((await call("GET", "/crm/lead-sheet", tok.head)).status, 200);
+});
+
+test("connecting lists the tabs with guessed services; unknown tabs are skipped; bad link refused", async () => {
+  assert.equal((await call("PUT", "/crm/lead-sheet", tok.admin, { sheetUrl: "nonsense" })).status, 400);
+  const r = await call("PUT", "/crm/lead-sheet", tok.head, { sheetUrl: SHEET_URL, autoSync: false, importFrom: "2026-01-01" });
+  assert.equal(r.status, 200);
+  const by = Object.fromEntries(r.body.tabs.map((t: any) => [t.name, t.service]));
+  assert.deepEqual(by, { "Web kerala": "Web Development", "PB NEW": null, "PM sheet": "Performance Marketing" });
+  assert.equal(r.body.config.sheetId, SHEET);
+});
+
+test("sync imports new rows once: right service, Open queue, test + old rows skipped, original date kept", async () => {
+  const first = await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.summary.created, 3, "2 web + 1 PM; the test row and the 2020 row are not imported");
+  assert.equal(first.body.summary.skippedOld, 1);
+  const leads = await prisma.lead.findMany({ where: { metaLeadId: { startsWith: `l:${run}` } }, orderBy: { metaLeadId: "asc" } });
+  assert.equal(leads.length, 3);
+  const asha = leads.find((l) => l.name === "Asha Nair")!;
+  assert.equal(asha.source, "Meta");
+  assert.equal(asha.leadOwner, null);
+  assert.equal(asha.serviceInterested, "Web Development");
+  assert.equal(asha.phone, "+919000000001");
+  assert.match(asha.notes!, /City: Kochi/);
+  assert.match(asha.notes!, /what is your budget\?: ₹40,000/);
+  assert.equal(leads.find((l) => l.name === "Pm Person")!.serviceInterested, "Performance Marketing");
+  assert.equal(await prisma.lead.count({ where: { name: "Old Person" } }), 0);
+
+  const again = await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal(again.body.summary.created, 0, "running again adds nothing");
+  assert.equal(await prisma.lead.count({ where: { metaLeadId: { startsWith: `l:${run}` } } }), 3);
+});
+
+test("a row added to the sheet later is picked up; mapping a skipped tab starts importing it", async () => {
+  webCsv = csvWeb + `\nl:${run}-4,${fresh},,,,,x,Late Joiner,p:+919000000004,Goa,CREATED`;
+  assert.equal((await call("POST", "/crm/lead-sheet/sync", tok.head)).body.summary.created, 1);
+
+  const pb = (await call("GET", "/crm/lead-sheet", tok.head)).body.tabs.find((t: any) => t.name === "PB NEW");
+  const r = await call("PUT", "/crm/lead-sheet", tok.head, { tabs: [{ gid: pb.gid, service: "Production" }, { gid: "22", service: null }] });
+  assert.equal(r.body.tabs.find((t: any) => t.name === "PB NEW").service, "Production");
+  assert.equal(r.body.tabs.find((t: any) => t.name === "PM sheet").service, null);
+});
+
+test("a tab that errors is reported, others still import", async () => {
+  // PB NEW is now mapped; the fake throws for it.
+  const r = await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal(r.status, 200);
+  assert.match(r.body.summary.tabs.find((t: any) => t.name === "PB NEW").error, /never fetched/);
+});

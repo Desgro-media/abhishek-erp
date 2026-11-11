@@ -796,6 +796,69 @@ function openLeadThresholdSetting(){
     }catch(err){ toast(err.message || "Couldn't save"); }
   });
 }
+// ---- Meta leads sheet: the performance team's Google Sheet → Leads (Admin / Sales Head) ----
+function canSetupLeadSheet(){ return !!currentUser && (currentUser.isAdmin || (currentUser.roles||[]).includes('SALES_HEAD')); }
+let leadSheetState = null;
+async function openLeadSheetSetup(){
+  if(!canSetupLeadSheet()) return;
+  try{ leadSheetState = await apiJson("/api/crm/lead-sheet"); }catch(err){ toast(err.message || "Couldn't open the sheet settings"); return; }
+  renderLeadSheetModal();
+}
+function renderLeadSheetModal(msg){
+  const st = leadSheetState, c = st.config, tabs = st.tabs || [];
+  const last = c && c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleString("en-IN",{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"}) : null;
+  const sum = c && c.lastSummary;
+  showModal(`
+    <div class="modal-head"><h3>Meta leads sheet</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <div class="modal-body">
+      <div>
+        <label class="field-label">Google Sheet link</label>
+        <div style="display:flex;gap:8px;"><input class="field-input" id="ls-url" placeholder="https://docs.google.com/spreadsheets/d/…" value="${c&&c.sheetId?esc('https://docs.google.com/spreadsheets/d/'+c.sheetId):''}" style="flex:1;"><button class="btn ghost" onclick="connectLeadSheet()">${c&&c.sheetId?'Reload tabs':'Connect'}</button></div>
+        <div class="subtext">In Google Sheets: Share → General access → <b>Anyone with the link</b> → <b>Viewer</b>. The ERP only reads it; it never changes the sheet.</div>
+      </div>
+      ${msg?`<div class="banner muted"><div>${esc(msg)}</div></div>`:''}
+      ${tabs.length?`
+      <div>
+        <label class="field-label">Which service is each tab for?</label>
+        <div style="display:grid;gap:6px;max-height:300px;overflow:auto;">
+          ${tabs.map(t=>`<div style="display:flex;gap:8px;align-items:center;"><div style="flex:1;min-width:0;" class="${t.lastError?'neg':''}"><b>${esc(t.name)}</b>${t.lastRows?` <span class="subtext">· ${t.lastRows} imported</span>`:''}${t.lastError?`<div class="subtext neg">${esc(t.lastError)}</div>`:''}</div>
+            <select class="field-input ls-tab" data-gid="${esc(t.gid)}" style="width:210px;"><option value="">Skip this tab</option>${st.services.map(sv=>`<option ${t.service===sv?'selected':''}>${esc(sv)}</option>`).join('')}</select></div>`).join('')}
+        </div>
+        <div class="subtext">Tabs set to Skip are ignored. Pick a service to start importing that tab's leads.</div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
+        <div><label class="field-label">Import leads created from</label><input class="field-input" type="date" id="ls-from" value="${c&&c.importFrom?String(c.importFrom).slice(0,10):''}"></div>
+        <label class="check-chip" style="margin-bottom:6px;"><input type="checkbox" id="ls-auto" ${c&&c.autoSync?'checked':''}>Check for new leads every 5 minutes</label>
+      </div>
+      <div class="subtext">Older rows are ignored, so the leads your team already worked don't flood the Open queue. Every lead comes in once, even if you sync many times.</div>
+      ${last?`<div class="subtext">Last checked ${esc(last)}${sum?` · ${sum.created} new lead${sum.created===1?'':'s'}`:''}</div>`:''}`:''}
+    </div>
+    <div class="modal-foot"><div>${tabs.length?`<button class="btn ghost" onclick="syncLeadSheetNow()">Save &amp; sync now</button>`:''}</div><div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Close</button>${tabs.length?`<button class="btn primary" onclick="saveLeadSheet()">Save</button>`:''}</div></div>`, true);
+}
+async function connectLeadSheet(){
+  const url = document.getElementById("ls-url").value.trim();
+  if(!url){ toast("Paste the sheet link first"); return; }
+  try{ leadSheetState = await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ sheetUrl:url }) }); renderLeadSheetModal("Sheet connected. Choose a service for each tab, then Save."); }
+  catch(err){ toast(err.message || "Couldn't connect"); }
+}
+function leadSheetFormBody(){
+  return { autoSync: document.getElementById("ls-auto").checked, importFrom: document.getElementById("ls-from").value || null,
+    tabs: [...document.querySelectorAll(".ls-tab")].map(s=>({ gid:s.dataset.gid, service:s.value||null })) };
+}
+async function saveLeadSheet(){
+  try{ leadSheetState = await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(leadSheetFormBody()) }); toast("Saved"); renderLeadSheetModal(); }
+  catch(err){ toast(err.message || "Couldn't save"); }
+}
+async function syncLeadSheetNow(){
+  try{
+    await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(leadSheetFormBody()) });
+    const r = await apiJson("/api/crm/lead-sheet/sync", { method:"POST" });
+    leadSheetState = r; await loadLeads();
+    const n = r.summary.created, bad = r.summary.tabs.filter(t=>t.error).length;
+    renderLeadSheetModal(`${n} new lead${n===1?'':'s'} imported${r.summary.skippedOld?` · ${r.summary.skippedOld} older than the start date skipped`:''}${bad?` · ${bad} tab${bad===1?'':'s'} had an error (shown in red)`:''}.`);
+    render();
+  }catch(err){ toast(err.message || "Couldn't sync"); }
+}
 // What a client's lead paid before becoming a client, and where each advance is now (client detail page).
 let clientLeadAdvances = {};
 async function loadClientLeadAdvances(id){
@@ -7786,6 +7849,7 @@ function mktLeads(){
     <div class="kpi-card hero"><div class="kpi-label">Win Rate</div><div class="kpi-value mono">${winRate==null?'—':winRate+'%'}</div><div class="kpi-sub">${wonCount} won · ${lostCount} lost</div></div>
   </div>
   <div class="banner muted" style="align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div style="flex:1;"><b>Conversion rule.</b> Convert a lead to a client any time — paid or not. Once a lead's recorded payments reach <b>${inr(leadConversionThreshold)}</b> it converts automatically. Payments are only recorded here; they reach the books through Finance when an invoice is raised.</div>${isAdminUser()?`<button class="btn btn-sm ghost" onclick="openLeadThresholdSetting()">Change</button>`:''}</div>
+  ${canSetupLeadSheet()?`<div class="banner muted" style="align-items:center;"><svg class="icon" style="width:15px;height:15px"><use href="#i-sliders"/></svg><div style="flex:1;"><b>Meta leads sheet.</b> New leads from the performance team's Google Sheet come in here by themselves, so nobody has to forward them.</div><button class="btn btn-sm ghost" onclick="openLeadSheetSetup()">Set up</button></div>`:''}
   ${openLeads.length ? `
   <div class="panel">
     <div class="panel-head">

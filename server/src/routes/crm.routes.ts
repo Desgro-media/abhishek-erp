@@ -4,6 +4,7 @@ import { requireCrmUser, requireClientsUser } from "../middleware/crmAccess";
 import { requireFinanceAdmin } from "../middleware/financeAccess";
 import * as clients from "../controllers/crm/clients.controller";
 import * as leads from "../controllers/crm/leads.controller";
+import * as leadSheet from "../controllers/crm/leadSheet.controller";
 import * as quotes from "../controllers/crm/quotes.controller";
 import * as tasks from "../controllers/crm/tasks.controller";
 import * as collab from "../controllers/crm/clientCollab.controller";
@@ -93,6 +94,10 @@ router.delete("/leads/:id/payments/:paymentId", leads.deleteLeadPayment);
 router.post("/leads/:id/convert", leads.convertLead);
 router.get("/lead-settings", leads.getLeadSettings);
 router.put("/lead-settings", leads.updateLeadSettings);
+router.get("/lead-sheet", leadSheet.getLeadSheetSettings);
+router.put("/lead-sheet", leadSheet.saveLeadSheetSettings);
+router.post("/lead-sheet/refresh-tabs", leadSheet.refreshLeadSheetTabs);
+router.post("/lead-sheet/sync", leadSheet.syncLeadSheetNow);
 router.delete("/leads/:id", leads.deleteLead);
 
 router.get("/quotes", quotes.listQuotes);

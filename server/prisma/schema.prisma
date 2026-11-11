@@ -1088,6 +1088,9 @@ model Lead {
   convertedClientId String?    @map("converted_client_id")
   convertedClient   Client?    @relation(fields: [convertedClientId], references: [id])
   createdAt         DateTime   @default(now()) @map("created_at")
+  // Meta's own id for a lead imported from the performance team's lead sheet. Unique so the same row is never
+  // imported twice (see services/leadSheet.ts). Null for every lead that didn't come from the sheet.
+  metaLeadId        String?    @unique @map("meta_lead_id")
 
   // Pipeline stage (the Leads board). `status` above is the older coarse field and is kept in step with
   // this one (see services/leadStage.ts) because the Dashboard reads it. Won is only ever reached by a
@@ -1837,4 +1840,33 @@ model ClientWebDetails {
   updatedAt  DateTime @updatedAt @map("updated_at")
 
   @@map("client_web_details")
+}
+
+// The Google Sheet the performance team keeps their Meta leads in (one row, id 1), set up from Marketing > Leads.
+// The ERP reads it on a timer and turns new rows into Leads. Reading needs the sheet shared "Anyone with the link: Viewer".
+model LeadSheetConfig {
+  id         Int       @id @default(1)
+  sheetId    String?   @map("sheet_id")
+  autoSync   Boolean   @default(false) @map("auto_sync")
+  // Only rows created on or after this day are imported, so connecting a sheet full of old, already-worked leads
+  // doesn't flood the Open queue. Defaults to the day it was connected.
+  importFrom DateTime? @map("import_from") @db.Date
+  lastSyncAt DateTime? @map("last_sync_at")
+  lastSummary Json?    @map("last_summary")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("lead_sheet_config")
+}
+
+// One tab of that sheet and the ERP service its leads belong to. service null = skip this tab.
+model LeadSheetTab {
+  id        String  @id @default(uuid())
+  gid       String  @unique
+  name      String
+  service   String?
+  lastRows  Int     @default(0) @map("last_rows")
+  lastError String? @map("last_error")
+  position  Int     @default(0)
+
+  @@map("lead_sheet_tabs")
 }
