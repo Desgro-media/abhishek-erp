@@ -7858,13 +7858,18 @@ function mktLeads(){
   // whole pipeline, not just this month's filter, so one never quietly ages
   // out of sight. Shared across everyone, Sales included — it's the queue
   // they claim from.
-  const openLeads = marketingLeads.filter(l=>!l.leadOwner && bySvc(l)).slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
+  // The unclaimed queue follows both filters too (it used to ignore the month, which made the month picker look broken);
+  // anything the filters hide is counted in a note so an old unclaimed lead can't quietly drop out of sight.
+  const openAll = marketingLeads.filter(l=>!l.leadOwner);
+  const openLeads = openAll.filter(l=>bySvc(l) && matchesDateFilter(l.createdDate, leadsMonthFilter)).slice().sort((a,b)=>b.createdDate.localeCompare(a.createdDate));
+  const openHidden = openAll.length - openLeads.length;
+  const filtersOn = leadsServiceFilter!=="All" || leadsMonthFilter!=="All";
   const canClaim = isSalesRole(currentUser);
-  const activeCount = pipelineSource.filter(l=>!['Won','Lost'].includes(leadStage(l))).length;
-  const wonCount = pipelineSource.filter(l=>leadStage(l)==='Won').length;
-  const lostCount = pipelineSource.filter(l=>leadStage(l)==='Lost').length;
+  const activeCount = filtered.filter(l=>!['Won','Lost'].includes(leadStage(l))).length;
+  const wonCount = filtered.filter(l=>leadStage(l)==='Won').length;
+  const lostCount = filtered.filter(l=>leadStage(l)==='Lost').length;
   const winRate = (wonCount+lostCount) ? Math.round(wonCount/(wonCount+lostCount)*100) : null;
-  const paidWaiting = pipelineSource.filter(l=>!l.convertedClientId && l.paidTotal>0);
+  const paidWaiting = filtered.filter(l=>!l.convertedClientId && l.paidTotal>0);
   return `
   <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select><span class="filter-label" style="margin-left:14px;">Service</span><select class="select-sm" onchange="setLeadsServiceFilter(this.value)"><option value="All" ${leadsServiceFilter==='All'?'selected':''}>All services</option>${svcList.map(sv=>`<option value="${esc(sv)}" ${leadsServiceFilter===sv?'selected':''}>${esc(sv)} (${svcCounts[sv]})</option>`).join('')}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
   <div class="kpi-grid">
@@ -7885,6 +7890,7 @@ function mktLeads(){
       <tbody>${openLeads.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("")}</tbody>
     </table></div>
   </div>` : ''}
+  ${filtersOn && openHidden>0 ? `<div class="subtext" style="margin:-6px 4px 12px;">${openHidden} more unassigned lead${openHidden===1?'':'s'} ${openLeads.length?'are':'is'} hidden by the filters above. <a href="#" onclick="setLeadsMonthFilter('All');setLeadsServiceFilter('All');return false;">Show all</a></div>` : ''}
   ${leadsView==='board' ? `
   <div class="panel" id="leads-pipeline">
     <div class="panel-head"><div><h3>${isSalesViewer?'My lead flow':'Lead flow'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)} · move each lead along as it progresses</div></div></div>
