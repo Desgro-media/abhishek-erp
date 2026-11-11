@@ -21,6 +21,9 @@ let prisma: typeof import("../src/db/prisma").prisma;
 let svc: typeof import("../src/services/leadSheet");
 let tok: { admin: string; head: string; rep: string };
 const run = `s${Date.now().toString(36)}`;
+// Phone numbers are unique per run: leads from earlier runs stay in the test DB and the importer rejects repeat numbers.
+const PB = String(Date.now()).slice(-8);
+const ph = (n: number) => `9${PB}${n}`; // 10 digits
 const SHEET = "1CvKPMuJM5FRfaPSlNwuayWCfiBB96rdP01AfSE5MllA";
 const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET}/edit?gid=0#gid=0`;
 
@@ -31,9 +34,9 @@ const HEADER = "id,created_time,ad_name,campaign_name,form_name,platform,what_is
 const csvWeb = [
   HEADER,
   `l:test-${run}-0,${fresh},,,,,<test lead: dummy data for budget>,<test lead: dummy data for full_name>,<test lead: dummy data for phone_number>,<test lead: dummy data for city>,CREATED`,
-  `l:${run}-1,${fresh},Web Dev ad,Web camp,Form A,ig,"₹40,000",Asha Nair,p:+919000000001,Kochi,CREATED`,
-  `l:${run}-2,${fresh},Web Dev ad,Web camp,Form A,fb,"₹75,000, more",Ravi K,p:+919000000002,"Calicut, Kerala",CREATED`,
-  `l:${run}-3,${old},Web Dev ad,Web camp,Form A,fb,x,Old Person,p:+919000000003,Pune,CREATED`,
+  `l:${run}-1,${fresh},Web Dev ad,Web camp,Form A,ig,"₹40,000",Asha Nair,p:+91${ph(1)},Kochi,CREATED`,
+  `l:${run}-2,${fresh},Web Dev ad,Web camp,Form A,fb,"₹75,000, more",Ravi K,p:+91${ph(2)},"Calicut, Kerala",CREATED`,
+  `l:${run}-3,${old},Web Dev ad,Web camp,Form A,fb,x,Old Person,p:+91${ph(3)},Pune,CREATED`,
 ].join("\n");
 let webCsv = csvWeb;
 let failPb = false;
@@ -42,7 +45,7 @@ const fake = {
   tabs: async () => [{ gid: "0", name: "Web kerala" }, { gid: "11", name: "PB NEW" }, { gid: "22", name: "PM sheet" }],
   csv: async (_s: string, gid: string) => {
     if (gid === "0") return webCsv;
-    if (gid === "22") return `${HEADER.replace("phone_number", "phone")}\nl:${run}-9,${fresh},,,,,x,Pm Person,p:+919000000009,Delhi,CREATED`;
+    if (gid === "22") return `${HEADER.replace("phone_number", "phone")}\nl:${run}-9,${fresh},,,,,x,Pm Person,p:+91${ph(9)},Delhi,CREATED`;
     if (gid === "11") { if (failPb) throw new Error("PB tab broke"); return HEADER; }
     throw new Error("unknown tab");
   },
@@ -80,6 +83,9 @@ test("pure helpers: sheet id from URL, CSV quoting, service guess from tab name"
   assert.equal(svc.guessService("Web kerala"), "Web Development");
   assert.equal(svc.guessService("GRAPHIC KERALA"), "Graphic Design");
   assert.equal(svc.guessService("PM sheet"), "Performance Marketing");
+  assert.equal(svc.phoneKey("+91 99999-12345"), "9999912345");
+  assert.equal(svc.phoneKey("p:09999912345"), "9999912345");
+  assert.equal(svc.phoneKey("123"), null);
   assert.equal(svc.guessService("consultation"), "Marketing Consultation");
   assert.equal(svc.guessService("PB NEW"), "Personal Branding");
   assert.equal(svc.guessService("MASTER PAKAGE NEW"), "Master Package");
@@ -114,11 +120,11 @@ test("sync imports new rows once: right service, Open queue, test + old rows ski
   assert.equal(asha.source, "Meta");
   assert.equal(asha.leadOwner, null);
   assert.equal(asha.serviceInterested, "Web Development");
-  assert.equal(asha.phone, "+919000000001");
+  assert.equal(asha.phone, `+91${ph(1)}`);
   assert.match(asha.notes!, /City: Kochi/);
   assert.match(asha.notes!, /what is your budget\?: ₹40,000/);
   assert.equal(leads.find((l) => l.name === "Pm Person")!.serviceInterested, "Performance Marketing");
-  assert.equal(await prisma.lead.count({ where: { name: "Old Person" } }), 0);
+  assert.equal(await prisma.lead.count({ where: { name: "Old Person", metaLeadId: { startsWith: `l:${run}` } } }), 0);
 
   const again = await call("POST", "/crm/lead-sheet/sync", tok.admin);
   assert.equal(again.body.summary.created, 0, "running again adds nothing");
@@ -126,7 +132,7 @@ test("sync imports new rows once: right service, Open queue, test + old rows ski
 });
 
 test("a row added to the sheet later is picked up; a tab can be re-labelled or skipped", async () => {
-  webCsv = csvWeb + `\nl:${run}-4,${fresh},,,,,x,Late Joiner,p:+919000000004,Goa,CREATED`;
+  webCsv = csvWeb + `\nl:${run}-4,${fresh},,,,,x,Late Joiner,p:+91${ph(4)},Goa,CREATED`;
   assert.equal((await call("POST", "/crm/lead-sheet/sync", tok.head)).body.summary.created, 1);
 
   const pb = (await call("GET", "/crm/lead-sheet", tok.head)).body.tabs.find((t: any) => t.name === "PB NEW");
@@ -162,4 +168,20 @@ test("a fresh connect turns auto-sync on by default", async () => {
   await prisma.leadSheetConfig.deleteMany();
   const r = await call("PUT", "/crm/lead-sheet", tok.admin, { sheetUrl: SHEET_URL });
   assert.equal(r.body.config.autoSync, true);
+});
+
+test("duplicates are rejected: same phone as an existing lead, or repeated within the sheet", async () => {
+  await prisma.leadSheetTab.updateMany({ where: { gid: "22" }, data: { service: "Performance Marketing" } });
+  failPb = false;
+  webCsv = csvWeb
+    + `\nl:${run}-5,${fresh},,,,,x,Asha Again,+91 ${ph(1).slice(0,5)} ${ph(1).slice(5)},Kochi,CREATED`            // Asha Nair's number, different Meta id and format
+    + `\nl:${run}-6,${fresh},,,,,x,Fresh Person,p:+91${ph(6)},Goa,CREATED`
+    + `\nl:${run}-7,${fresh},,,,,x,Fresh Person Twice,p:0${ph(6)},Goa,CREATED`;       // same number twice in one run
+  const r = await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal(r.body.summary.created, 1, "only Fresh Person is new");
+  assert.ok(r.body.summary.duplicates >= 2, "Asha Again and Fresh Person Twice are rejected");
+  assert.equal(await prisma.lead.count({ where: { name: { in: ["Asha Again", "Fresh Person Twice"] } } }), 0);
+  assert.equal(await prisma.lead.count({ where: { phone: { contains: ph(6) } } }), 1);
+  const again = await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal(again.body.summary.created, 0);
 });

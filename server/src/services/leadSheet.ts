@@ -66,6 +66,13 @@ export function guessService(tabName: string): string {
   return tabName.trim().slice(0, 60) || "Meta";
 }
 
+// A phone number reduced to what identifies it: digits only, last 10 (drops +91 / 0 / spaces / "p:"), so
+// "+91 99999 12345" and "09999912345" are the same person. Too short to trust (< 7 digits) = no phone to compare.
+export function phoneKey(phone?: string | null): string | null {
+  const d = (phone ?? "").replace(/\D/g, "");
+  return d.length >= 7 ? d.slice(-10) : null;
+}
+
 const STANDARD = new Set(["id", "created_time", "ad_id", "ad_name", "adset_id", "adset_name", "campaign_id", "campaign_name", "form_id", "form_name", "is_organic", "platform", "lead_status", "full_name", "name", "phone", "phone_number", "email", "city"]);
 
 export type SheetLead = { metaLeadId: string; name: string; phone?: string; email?: string; createdAt: Date; notes?: string };
@@ -155,7 +162,7 @@ export { SERVICE_DEPARTMENTS };
 
 // ---- sync ----
 
-export type SyncSummary = { created: number; skippedOld: number; seen: number; tabs: { name: string; service: string; created: number; error?: string }[]; at: string };
+export type SyncSummary = { created: number; duplicates: number; skippedOld: number; seen: number; tabs: { name: string; service: string; created: number; error?: string }[]; at: string };
 let running = false;
 
 export async function syncLeadSheet(opts: { source?: SheetSource; actorUserId?: string | null } = {}): Promise<SyncSummary | null> {
@@ -166,8 +173,11 @@ export async function syncLeadSheet(opts: { source?: SheetSource; actorUserId?: 
   try {
     const tabs = (await prisma.leadSheetTab.findMany({ orderBy: { position: "asc" } })).filter((t) => t.service);
     const from = config.importFrom ? config.importFrom.getTime() : 0;
-    const summary: SyncSummary = { created: 0, skippedOld: 0, seen: 0, tabs: [], at: new Date().toISOString() };
+    const summary: SyncSummary = { created: 0, duplicates: 0, skippedOld: 0, seen: 0, tabs: [], at: new Date().toISOString() };
     let codes: string[] | null = null;
+    // Everyone already in Leads, by phone. A row whose number is in here — or repeats earlier in this very run — is a
+    // duplicate and is rejected, not imported.
+    const phones = new Set((await prisma.lead.findMany({ where: { phone: { not: null } }, select: { phone: true } })).map((l) => phoneKey(l.phone)).filter((k): k is string => !!k));
 
     for (const tab of tabs) {
       const t = { name: tab.name, service: tab.service!, created: 0, error: undefined as string | undefined };
@@ -181,12 +191,15 @@ export async function syncLeadSheet(opts: { source?: SheetSource; actorUserId?: 
         const fresh = leads.filter((l) => !known.has(l.metaLeadId)).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
         for (const l of fresh) {
           if (l.createdAt.getTime() < from) { summary.skippedOld++; continue; }
+          const key = phoneKey(l.phone);
+          if (key && phones.has(key)) { summary.duplicates++; continue; }
           codes ??= (await prisma.lead.findMany({ select: { leadCode: true } })).map((x) => x.leadCode);
           for (let attempt = 0; ; attempt++) {
             const leadCode = nextSequentialCode("MLD-", codes);
             try {
               await prisma.lead.create({ data: { leadCode, name: l.name, phone: l.phone, email: l.email, source: "Meta", serviceInterested: tab.service!, leadOwner: null, notes: l.notes, metaLeadId: l.metaLeadId, createdAt: l.createdAt } });
               codes.push(leadCode); t.created++;
+              if (key) phones.add(key);
               break;
             } catch (err: any) {
               if (err?.code !== "P2002") throw err;

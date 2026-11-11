@@ -870,7 +870,7 @@ async function syncLeadSheetNow(){
     const r = await apiJson("/api/crm/lead-sheet/sync", { method:"POST" });
     leadSheetState = r; await loadLeads();
     const n = r.summary.created, bad = r.summary.tabs.filter(t=>t.error).length;
-    renderLeadSheetModal(`${n} new lead${n===1?'':'s'} imported${r.summary.skippedOld?` · ${r.summary.skippedOld} older than the start date skipped`:''}${bad?` · ${bad} tab${bad===1?'':'s'} had an error (shown in red)`:''}.`);
+    renderLeadSheetModal(`${n} new lead${n===1?'':'s'} imported${r.summary.skippedOld?` · ${r.summary.skippedOld} older than the start date skipped`:''}${r.summary.duplicates?` · ${r.summary.duplicates} duplicate${r.summary.duplicates===1?'':'s'} rejected (phone already in Leads)`:''}${bad?` · ${bad} tab${bad===1?'':'s'} had an error (shown in red)`:''}.`);
     render();
   }catch(err){ toast(err.message || "Couldn't sync"); }
 }
