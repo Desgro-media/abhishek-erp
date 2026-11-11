@@ -12,6 +12,7 @@ import { assertReceivedDate, lockUnapprovedPending } from "../../services/financ
 import { sumAmounts, invoiceTotal } from "../../services/finance/calc";
 import { nextInvoiceNo } from "../../services/finance/invoiceNumber";
 import { carryLeadAdvances } from "../../services/leadPayments";
+import { onlyDepartments } from "../../services/departmentAccess";
 import { nextSequentialCode } from "../../utils/sequentialCode";
 import {
   quoteCreateSchema,
@@ -143,7 +144,7 @@ export const convertQuoteToInvoice: RequestHandler = asyncHandler(async (req, re
         clientId = existing.id;
       } else {
         const clientCode = nextSequentialCode("CLI-", (await tx.client.findMany({ select: { clientCode: true } })).map((c) => c.clientCode));
-        const services = [...new Set([quote.lead.serviceInterested, ...quote.items.map((i) => i.dept)])];
+        const services = [...new Set([...onlyDepartments([quote.lead.serviceInterested]), ...quote.items.map((i) => i.dept)])];
         const newClient = await tx.client.create({
           data: {
             clientCode,
@@ -254,7 +255,7 @@ export const approveQuotePendingPayment: RequestHandler = asyncHandler(async (re
         clientId = existing.id;
       } else {
         const clientCode = nextSequentialCode("CLI-", (await tx.client.findMany({ select: { clientCode: true } })).map((c) => c.clientCode));
-        const services = [...new Set([quote.lead.serviceInterested, ...quote.items.map((i) => i.dept)])];
+        const services = [...new Set([...onlyDepartments([quote.lead.serviceInterested]), ...quote.items.map((i) => i.dept)])];
         const newClient = await tx.client.create({
           data: {
             clientCode,

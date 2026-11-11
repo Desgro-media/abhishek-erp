@@ -820,20 +820,34 @@ function renderLeadSheetModal(msg){
       ${tabs.length?`
       <div>
         <label class="field-label">Which service is each tab for?</label>
+        <datalist id="ls-services">${[...new Set([...st.services, ...tabs.map(t=>t.service).filter(Boolean)])].map(sv=>`<option value="${esc(sv)}">`).join('')}</datalist>
         <div style="display:grid;gap:6px;max-height:300px;overflow:auto;">
           ${tabs.map(t=>`<div style="display:flex;gap:8px;align-items:center;"><div style="flex:1;min-width:0;" class="${t.lastError?'neg':''}"><b>${esc(t.name)}</b>${t.lastRows?` <span class="subtext">· ${t.lastRows} imported</span>`:''}${t.lastError?`<div class="subtext neg">${esc(t.lastError)}</div>`:''}</div>
-            <select class="field-input ls-tab" data-gid="${esc(t.gid)}" style="width:210px;"><option value="">Skip this tab</option>${st.services.map(sv=>`<option ${t.service===sv?'selected':''}>${esc(sv)}</option>`).join('')}</select></div>`).join('')}
+            <input class="field-input ls-tab" list="ls-services" data-gid="${esc(t.gid)}" value="${esc(t.service||'')}" placeholder="Skip this tab" style="width:210px;"></div>`).join('')}
         </div>
-        <div class="subtext">Tabs set to Skip are ignored. Pick a service to start importing that tab's leads.</div>
+        <div class="subtext">Every tab is filed under a service name. Pick one from the list or type a new one (e.g. Personal Branding). Clear the box to skip a tab.</div>
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
         <div><label class="field-label">Import leads created from</label><input class="field-input" type="date" id="ls-from" value="${c&&c.importFrom?String(c.importFrom).slice(0,10):''}"></div>
         <label class="check-chip" style="margin-bottom:6px;"><input type="checkbox" id="ls-auto" ${c&&c.autoSync?'checked':''}>Check for new leads every 5 minutes</label>
       </div>
       <div class="subtext">Older rows are ignored, so the leads your team already worked don't flood the Open queue. Every lead comes in once, even if you sync many times.</div>
+      ${leadSheetDailyHTML(st)}
       ${last?`<div class="subtext">Last checked ${esc(last)}${sum?` · ${sum.created} new lead${sum.created===1?'':'s'}`:''}</div>`:''}`:''}
     </div>
     <div class="modal-foot"><div>${tabs.length?`<button class="btn ghost" onclick="syncLeadSheetNow()">Save &amp; sync now</button>`:''}</div><div style="display:flex;gap:8px;"><button class="btn ghost" onclick="closeModal()">Close</button>${tabs.length?`<button class="btn primary" onclick="saveLeadSheet()">Save</button>`:''}</div></div>`, true);
+}
+// Leads per service per day (last 7 days, by the lead's own date). A 0 in red = nothing came in for that service that day.
+function leadSheetDailyHTML(st){
+  const d = st.daily; if(!d) return '';
+  const services = [...new Set(st.tabs.map(t=>t.service).filter(Boolean))];
+  if(!services.length) return '';
+  const lbl = iso => new Date(iso+"T00:00:00").toLocaleDateString("en-IN",{weekday:"short",day:"numeric"});
+  const gaps = services.filter(sv=>d.days.slice(-3).every(day=>!((d.counts[sv]||{})[day])));
+  return `<div><label class="field-label">Leads coming in, day by day</label>
+    <div style="overflow:auto;"><table class="data-table" style="width:100%;"><thead><tr><th>Service</th>${d.days.map(day=>`<th style="text-align:right;">${esc(lbl(day))}</th>`).join('')}</tr></thead>
+    <tbody>${services.map(sv=>`<tr><td>${esc(sv)}</td>${d.days.map(day=>{ const n=(d.counts[sv]||{})[day]||0; return `<td class="mono" style="text-align:right;${n?'':'color:var(--neg,#c0392b);'}">${n}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>
+    ${gaps.length?`<div class="subtext neg">Nothing new for the last 3 days: ${esc(gaps.join(', '))}. Check whether the performance team has added them to the sheet.</div>`:''}</div>`;
 }
 async function connectLeadSheet(){
   const url = document.getElementById("ls-url").value.trim();

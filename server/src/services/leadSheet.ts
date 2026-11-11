@@ -51,15 +51,19 @@ export function parseCsv(text: string): string[][] {
   return rows.filter((r) => r.some((x) => x.trim() !== ""));
 }
 
-// Best guess of the ERP service from a tab's name; null = unknown, so it is skipped until someone picks one.
-export function guessService(tabName: string): string | null {
+// The service a tab's leads are filed under, guessed from its name. The five ERP services where they match; the other
+// tabs the performance team keeps (personal branding, master package…) become their own service label, and a tab nobody
+// recognises is filed under its own name — so every tab shows up in the ERP, nothing is silently skipped.
+export function guessService(tabName: string): string {
   const n = tabName.toLowerCase();
   if (/consult/.test(n)) return "Marketing Consultation";
   if (/\bweb/.test(n)) return "Web Development";
   if (/graphic/.test(n)) return "Graphic Design";
   if (/\bpm\b|performance/.test(n)) return "Performance Marketing";
   if (/production|video/.test(n)) return "Production";
-  return null;
+  if (/\bpb\b|personal.?brand/.test(n)) return "Personal Branding";
+  if (/master/.test(n)) return "Master Package";
+  return tabName.trim().slice(0, 60) || "Meta";
 }
 
 const STANDARD = new Set(["id", "created_time", "ad_id", "ad_name", "adset_id", "adset_name", "campaign_id", "campaign_name", "form_id", "form_name", "is_organic", "platform", "lead_status", "full_name", "name", "phone", "phone_number", "email", "city"]);
@@ -112,9 +116,21 @@ export const googleSheetSource: SheetSource = {
 
 // ---- config ----
 
+// How many sheet leads arrived each of the last `days` days (IST, by the lead's own date) per service — so a service
+// that got nothing on a day shows as a gap.
+export async function dailyIntake(days = 7) {
+  const rows = await prisma.$queryRaw<{ day: string; service: string; n: number }[]>`
+    SELECT to_char((created_at AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day, service_interested AS service, count(*)::int AS n
+    FROM leads WHERE meta_lead_id IS NOT NULL AND created_at >= now() - ${`${days + 1} days`}::interval GROUP BY 1, 2`;
+  const dayList = Array.from({ length: days }, (_, i) => new Date(Date.now() + 5.5 * 3600_000 - (days - 1 - i) * 86400_000).toISOString().slice(0, 10));
+  const counts: Record<string, Record<string, number>> = {};
+  for (const r of rows) (counts[r.service] ??= {})[r.day] = r.n;
+  return { days: dayList, counts };
+}
+
 export async function getLeadSheet() {
-  const [config, tabs] = await Promise.all([prisma.leadSheetConfig.findUnique({ where: { id: 1 } }), prisma.leadSheetTab.findMany({ orderBy: { position: "asc" } })]);
-  return { config, tabs };
+  const [config, tabs, daily] = await Promise.all([prisma.leadSheetConfig.findUnique({ where: { id: 1 } }), prisma.leadSheetTab.findMany({ orderBy: { position: "asc" } }), dailyIntake()]);
+  return { config, tabs, daily };
 }
 
 export const todayIst = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);

@@ -17,7 +17,7 @@ const saveSchema = z.object({
   sheetUrl: z.string().trim().min(1).optional(),
   autoSync: z.boolean().optional(),
   importFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-  tabs: z.array(z.object({ gid: z.string(), service: z.enum(SERVICE_DEPARTMENTS as [string, ...string[]]).nullable() })).optional(),
+  tabs: z.array(z.object({ gid: z.string(), service: z.string().trim().min(1).max(60).nullable() })).optional(),
 });
 
 export const getLeadSheetSettings: RequestHandler = asyncHandler(async (req, res) => {
@@ -45,7 +45,7 @@ export const saveLeadSheetSettings: RequestHandler = asyncHandler(async (req, re
   const importFrom = d.importFrom === undefined ? (before ? before.importFrom : new Date(`${todayIst()}T00:00:00Z`)) : d.importFrom ? new Date(`${d.importFrom}T00:00:00Z`) : null;
   await prisma.leadSheetConfig.upsert({
     where: { id: 1 },
-    create: { id: 1, sheetId, autoSync: d.autoSync ?? false, importFrom },
+    create: { id: 1, sheetId, autoSync: d.autoSync ?? true, importFrom },
     update: { sheetId, ...(d.autoSync !== undefined ? { autoSync: d.autoSync } : {}), importFrom },
   });
   for (const t of d.tabs ?? []) await prisma.leadSheetTab.updateMany({ where: { gid: t.gid }, data: { service: t.service } });

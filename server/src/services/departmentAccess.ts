@@ -8,6 +8,10 @@ export const DEPARTMENTS = [
 // Departments a client actually subscribes to (they carry clients and revenue).
 export const SERVICE_DEPARTMENTS: string[] = DEPARTMENTS.filter((d) => d !== "Administrative" && d !== "Sales");
 
+// A lead's "service" can now be any label from the Meta sheet (e.g. "Personal Branding"); only real departments may
+// become a client's services, so conversions pass through this.
+export const onlyDepartments = (services: string[]): string[] => services.filter((s) => SERVICE_DEPARTMENTS.includes(s));
+
 const LEADERSHIP_TITLE = /\b(CEO|COO|CMO|CTO|CFO|Chief|Founder)\b/i;
 
 type Caller = { roles?: string[]; name: string; employeeId: string | null };

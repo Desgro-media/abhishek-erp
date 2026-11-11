@@ -36,13 +36,15 @@ const csvWeb = [
   `l:${run}-3,${old},Web Dev ad,Web camp,Form A,fb,x,Old Person,p:+919000000003,Pune,CREATED`,
 ].join("\n");
 let webCsv = csvWeb;
+let failPb = false;
 
 const fake = {
   tabs: async () => [{ gid: "0", name: "Web kerala" }, { gid: "11", name: "PB NEW" }, { gid: "22", name: "PM sheet" }],
   csv: async (_s: string, gid: string) => {
     if (gid === "0") return webCsv;
     if (gid === "22") return `${HEADER.replace("phone_number", "phone")}\nl:${run}-9,${fresh},,,,,x,Pm Person,p:+919000000009,Delhi,CREATED`;
-    throw new Error("PB NEW must be skipped, never fetched");
+    if (gid === "11") { if (failPb) throw new Error("PB tab broke"); return HEADER; }
+    throw new Error("unknown tab");
   },
 };
 
@@ -79,8 +81,9 @@ test("pure helpers: sheet id from URL, CSV quoting, service guess from tab name"
   assert.equal(svc.guessService("GRAPHIC KERALA"), "Graphic Design");
   assert.equal(svc.guessService("PM sheet"), "Performance Marketing");
   assert.equal(svc.guessService("consultation"), "Marketing Consultation");
-  assert.equal(svc.guessService("PB NEW"), null);
-  assert.equal(svc.guessService("ERP"), null);
+  assert.equal(svc.guessService("PB NEW"), "Personal Branding");
+  assert.equal(svc.guessService("MASTER PAKAGE NEW"), "Master Package");
+  assert.equal(svc.guessService("ERP"), "ERP", "a tab nobody recognises is filed under its own name");
 });
 
 test("only Admin / Sales Head can see or change it; a rep cannot", async () => {
@@ -90,13 +93,14 @@ test("only Admin / Sales Head can see or change it; a rep cannot", async () => {
   assert.equal((await call("GET", "/crm/lead-sheet", tok.head)).status, 200);
 });
 
-test("connecting lists the tabs with guessed services; unknown tabs are skipped; bad link refused", async () => {
+test("connecting lists every tab with a service (own label where it is not an ERP service); bad link refused", async () => {
   assert.equal((await call("PUT", "/crm/lead-sheet", tok.admin, { sheetUrl: "nonsense" })).status, 400);
   const r = await call("PUT", "/crm/lead-sheet", tok.head, { sheetUrl: SHEET_URL, autoSync: false, importFrom: "2026-01-01" });
   assert.equal(r.status, 200);
   const by = Object.fromEntries(r.body.tabs.map((t: any) => [t.name, t.service]));
-  assert.deepEqual(by, { "Web kerala": "Web Development", "PB NEW": null, "PM sheet": "Performance Marketing" });
+  assert.deepEqual(by, { "Web kerala": "Web Development", "PB NEW": "Personal Branding", "PM sheet": "Performance Marketing" });
   assert.equal(r.body.config.sheetId, SHEET);
+  assert.equal(r.body.config.autoSync, false, "saved as the admin chose");
 });
 
 test("sync imports new rows once: right service, Open queue, test + old rows skipped, original date kept", async () => {
@@ -121,19 +125,41 @@ test("sync imports new rows once: right service, Open queue, test + old rows ski
   assert.equal(await prisma.lead.count({ where: { metaLeadId: { startsWith: `l:${run}` } } }), 3);
 });
 
-test("a row added to the sheet later is picked up; mapping a skipped tab starts importing it", async () => {
+test("a row added to the sheet later is picked up; a tab can be re-labelled or skipped", async () => {
   webCsv = csvWeb + `\nl:${run}-4,${fresh},,,,,x,Late Joiner,p:+919000000004,Goa,CREATED`;
   assert.equal((await call("POST", "/crm/lead-sheet/sync", tok.head)).body.summary.created, 1);
 
   const pb = (await call("GET", "/crm/lead-sheet", tok.head)).body.tabs.find((t: any) => t.name === "PB NEW");
-  const r = await call("PUT", "/crm/lead-sheet", tok.head, { tabs: [{ gid: pb.gid, service: "Production" }, { gid: "22", service: null }] });
-  assert.equal(r.body.tabs.find((t: any) => t.name === "PB NEW").service, "Production");
+  const r = await call("PUT", "/crm/lead-sheet", tok.head, { tabs: [{ gid: pb.gid, service: "Brand Packages" }, { gid: "22", service: null }] });
+  assert.equal(r.body.tabs.find((t: any) => t.name === "PB NEW").service, "Brand Packages");
   assert.equal(r.body.tabs.find((t: any) => t.name === "PM sheet").service, null);
 });
 
 test("a tab that errors is reported, others still import", async () => {
-  // PB NEW is now mapped; the fake throws for it.
+  failPb = true;
   const r = await call("POST", "/crm/lead-sheet/sync", tok.admin);
   assert.equal(r.status, 200);
-  assert.match(r.body.summary.tabs.find((t: any) => t.name === "PB NEW").error, /never fetched/);
+  assert.match(r.body.summary.tabs.find((t: any) => t.name === "PB NEW").error, /PB tab broke/);
+});
+
+test("daily intake: counts per service per day, from the lead's own date", async () => {
+  const r = await call("GET", "/crm/lead-sheet", tok.admin);
+  const { days, counts } = r.body.daily;
+  assert.equal(days.length, 7);
+  assert.equal(days[6], new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10));
+  assert.ok(counts["Web Development"][days[6]] >= 3, "today's web leads are counted");
+});
+
+test("a lead with a sheet-only service converts to a client without that label as a client service", async () => {
+  const lead = await prisma.lead.create({ data: { leadCode: `T-${run}`, name: `PB Client ${run}`, source: "Meta", serviceInterested: "Personal Branding", metaLeadId: `l:${run}-pbconv` } });
+  const { convertLeadToClient } = await import("../src/services/leadPayments");
+  const res = await prisma.$transaction((tx) => convertLeadToClient(tx, lead, { onboardedAt: new Date() }));
+  const client = await prisma.client.findUniqueOrThrow({ where: { id: res.clientId } });
+  assert.deepEqual(client.services, []);
+});
+
+test("a fresh connect turns auto-sync on by default", async () => {
+  await prisma.leadSheetConfig.deleteMany();
+  const r = await call("PUT", "/crm/lead-sheet", tok.admin, { sheetUrl: SHEET_URL });
+  assert.equal(r.body.config.autoSync, true);
 });
