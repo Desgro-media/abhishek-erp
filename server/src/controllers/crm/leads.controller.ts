@@ -237,7 +237,9 @@ export const convertLead: RequestHandler = asyncHandler(async (req, res) => {
 });
 
 export const getLeadSettings: RequestHandler = asyncHandler(async (_req, res) => {
-  res.json({ conversionThreshold: await getLeadConversionThreshold() });
+  // The Meta sheet's tab names are the lead services, so every screen offers exactly those.
+  const tabs = await prisma.leadSheetTab.findMany({ where: { service: { not: null } }, orderBy: { position: "asc" }, select: { service: true } });
+  res.json({ conversionThreshold: await getLeadConversionThreshold(), sheetServices: [...new Set(tabs.map((t) => t.service!))] });
 });
 
 // Admin only. Lowering it converts any lead whose recorded payments already reach the new figure, so a

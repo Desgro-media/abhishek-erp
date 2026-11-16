@@ -644,8 +644,11 @@ let leadConversionThreshold = 5000;
 async function loadLeads(){
   const [d, settings] = await Promise.all([apiJson("/api/crm/leads"), apiJson("/api/crm/lead-settings").catch(()=>null)]);
   marketingLeads = d.leads.map(mapLead);
-  if(settings) leadConversionThreshold = Number(settings.conversionThreshold);
+  if(settings){ leadConversionThreshold = Number(settings.conversionThreshold); leadSheetServices = settings.sheetServices || []; }
 }
+// The Meta sheet's tab names are the services leads are filed under; before a sheet is connected, the ERP's departments.
+let leadSheetServices = [];
+const leadServiceChoices = (current) => { const base = leadSheetServices.length ? leadSheetServices : SERVICE_DEPARTMENTS; return current && !base.includes(current) ? [...base, current] : base; };
 // Pipeline stages. "Won" is only ever reached by converting the lead into a client (today: quote -> invoice),
 // never by moving a card; "Lost" needs a reason. The server enforces both.
 const LEAD_STAGES = ["New","Not Connected 1","Not Connected 2","Call Back","Contacted","Meeting","Proposal Sent","Negotiation","Won","Lost"];
@@ -7848,7 +7851,8 @@ function mktLeads(){
   // Service filter: the ERP's services first, then any other label that came in from the Meta sheet (Personal Branding…).
   const svcCounts = {}; ownLeads.concat(marketingLeads.filter(l=>!l.leadOwner)).forEach(l=>{ svcCounts[l.serviceInterested] = (svcCounts[l.serviceInterested]||0); });
   ownLeads.forEach(l=>{ svcCounts[l.serviceInterested] = (svcCounts[l.serviceInterested]||0)+1; });
-  const svcList = [...SERVICE_DEPARTMENTS.filter(d=>svcCounts[d]!=null), ...Object.keys(svcCounts).filter(d=>!SERVICE_DEPARTMENTS.includes(d)).sort()];
+  leadSheetServices.forEach(d=>{ if(svcCounts[d]==null) svcCounts[d]=0; });
+  const svcList = leadSheetServices.length ? [...leadSheetServices, ...Object.keys(svcCounts).filter(d=>!leadSheetServices.includes(d) && svcCounts[d]>0).sort()] : [...SERVICE_DEPARTMENTS.filter(d=>svcCounts[d]!=null), ...Object.keys(svcCounts).filter(d=>!SERVICE_DEPARTMENTS.includes(d)).sort()];
   if(leadsServiceFilter!=="All" && !svcList.includes(leadsServiceFilter)) leadsServiceFilter = "All";
   const bySvc = l => leadsServiceFilter==="All" || l.serviceInterested===leadsServiceFilter;
   const pipelineSource = ownLeads.filter(bySvc);
@@ -8179,7 +8183,7 @@ function openAddLead(){
       <div><label class="field-label">Phone</label><input class="field-input" name="phone" required placeholder="9847xxxxxx"></div>
       <div class="field-row">
         <div><label class="field-label">Source</label><select class="field-input" name="source">${LEAD_SOURCES.map(s=>`<option>${s}</option>`).join('')}</select></div>
-        <div><label class="field-label">Service Interested</label><select class="field-input" name="serviceInterested">${SERVICE_DEPARTMENTS.map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Service Interested</label><select class="field-input" name="serviceInterested">${leadServiceChoices().map(d=>`<option>${esc(d)}</option>`).join('')}</select></div>
       </div>
       <div><label class="field-label">Lead Owner</label><select class="field-input" name="leadOwner"><option value="">— Open, unassigned —</option>${salesTeamOptions()}</select><div class="subtext">Leave as Open for organic website/Instagram/WhatsApp sign-ups — they'll sit in the Open leads queue until a Sales rep claims one.</div></div>
     </div>
@@ -8207,7 +8211,7 @@ function openEditLead(id){
       </div>
       <div class="field-row">
         <div><label class="field-label">Source</label><select class="field-input" name="source">${LEAD_SOURCES.map(s=>`<option ${s===l.source?'selected':''}>${s}</option>`).join('')}</select></div>
-        <div><label class="field-label">Service Interested</label><select class="field-input" name="serviceInterested">${SERVICE_DEPARTMENTS.map(d=>`<option ${d===l.serviceInterested?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+        <div><label class="field-label">Service Interested</label><select class="field-input" name="serviceInterested">${leadServiceChoices(l.serviceInterested).map(d=>`<option ${d===l.serviceInterested?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
       </div>
       <div><label class="field-label">Lead Owner</label><select class="field-input" name="leadOwner"><option value="" ${!l.leadOwner?'selected':''}>— Open, unassigned —</option>${assignableEmployees().filter(e=>e.dept==='Sales').map(e=>`<option ${e.name===l.leadOwner?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
     </div>
