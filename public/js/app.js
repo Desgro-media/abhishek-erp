@@ -503,23 +503,48 @@ function clientsFilterSelect(label, key, values){
 // (Advances, Expenses, Invoices, Payables, Commissions, Journal, Client Task
 // Board). Left the older monthFilterOptions()/*MonthFilter above untouched
 // rather than migrating them, to keep this additive.
-function dateFilterOptions(dates, current){
+// Ranges the filter understands besides a month ("YYYY-MM"). "Custom" uses customDateRange, set by the two date boxes
+// dateRangeInputs() draws next to the select (only pages that pass {custom:true} offer it).
+let customDateRange = { from:"", to:"" };
+const isoDaysAgo = n => { const d = new Date(TODAY+"T00:00:00"); d.setDate(d.getDate()-n); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); };
+function dateFilterOptions(dates, current, opts){
   const months = [...new Set(dates.filter(Boolean).map(d=>d.slice(0,7)))].sort().reverse();
-  return `<option value="Today" ${current==='Today'?'selected':''}>Today</option>`
-    + `<option value="All" ${current==='All'?'selected':''}>All time</option>`
-    + months.map(m=>`<option value="${m}" ${m===current?'selected':''}>${monthLabel(m)}</option>`).join('');
+  const o = (v,l)=>`<option value="${v}" ${v===current?'selected':''}>${l}</option>`;
+  return o("Today","Today") + o("Yesterday","Yesterday") + o("Last7","Last 7 days") + o("Last30","Last 30 days") + o("ThisMonth","This month")
+    + (opts && opts.custom ? o("Custom","Custom range…") : "")
+    + o("All","All time")
+    + months.map(m=>o(m, monthLabel(m))).join('');
+}
+function dateRangeInputs(current){
+  if(current!=="Custom") return "";
+  return `<span class="filter-label" style="margin-left:8px;">From</span><input type="date" class="select-sm" value="${customDateRange.from}" max="${TODAY}" onchange="customDateRange.from=this.value;render()"><span class="filter-label">To</span><input type="date" class="select-sm" value="${customDateRange.to}" max="${TODAY}" onchange="customDateRange.to=this.value;render()">`;
 }
 function matchesDateFilter(dateStr, filterValue){
   if(!dateStr) return false;
-  if(filterValue==='Today') return dateStr===TODAY;
-  if(filterValue==='All') return true;
-  return dateStr.slice(0,7)===filterValue;
+  const d = dateStr.slice(0,10);
+  switch(filterValue){
+    case 'Today': return d===TODAY;
+    case 'Yesterday': return d===isoDaysAgo(1);
+    case 'Last7': return d>=isoDaysAgo(6) && d<=TODAY;
+    case 'Last30': return d>=isoDaysAgo(29) && d<=TODAY;
+    case 'ThisMonth': return d.slice(0,7)===TODAY.slice(0,7);
+    case 'Custom': return (!customDateRange.from || d>=customDateRange.from) && (!customDateRange.to || d<=customDateRange.to);
+    case 'All': return true;
+    default: return d.slice(0,7)===filterValue;
+  }
 }
 function dateFilterSuffix(filterValue, verb){
   const v = verb || 'in';
-  if(filterValue==='Today') return ' today';
-  if(filterValue==='All') return ' total';
-  return ' '+v+' '+monthLabel(filterValue);
+  switch(filterValue){
+    case 'Today': return ' today';
+    case 'Yesterday': return ' yesterday';
+    case 'Last7': return ' in the last 7 days';
+    case 'Last30': return ' in the last 30 days';
+    case 'ThisMonth': return ' '+v+' '+monthLabel(TODAY.slice(0,7));
+    case 'Custom': return customDateRange.from||customDateRange.to ? ' '+v+' '+(customDateRange.from||'…')+' → '+(customDateRange.to||'…') : ' in the chosen range';
+    case 'All': return ' total';
+    default: return ' '+v+' '+monthLabel(filterValue);
+  }
 }
 let invoicesMonthFilter = "All";
 function setInvoicesMonthFilter(v){ invoicesMonthFilter = v; render(); }
@@ -7875,7 +7900,7 @@ function mktLeads(){
   const winRate = (wonCount+lostCount) ? Math.round(wonCount/(wonCount+lostCount)*100) : null;
   const paidWaiting = filtered.filter(l=>!l.convertedClientId && l.paidTotal>0);
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter)}</select><span class="filter-label" style="margin-left:14px;">Service</span><select class="select-sm" onchange="setLeadsServiceFilter(this.value)"><option value="All" ${leadsServiceFilter==='All'?'selected':''}>All services</option>${svcList.map(sv=>`<option value="${esc(sv)}" ${leadsServiceFilter===sv?'selected':''}>${esc(sv)} (${svcCounts[sv]})</option>`).join('')}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter, {custom:true})}</select>${dateRangeInputs(leadsMonthFilter)}<span class="filter-label" style="margin-left:14px;">Service</span><select class="select-sm" onchange="setLeadsServiceFilter(this.value)"><option value="All" ${leadsServiceFilter==='All'?'selected':''}>All services</option>${svcList.map(sv=>`<option value="${esc(sv)}" ${leadsServiceFilter===sv?'selected':''}>${esc(sv)} (${svcCounts[sv]})</option>`).join('')}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">In Pipeline</div><div class="kpi-value mono">${activeCount}</div><div class="kpi-sub">not yet won or lost</div></div>
     <div class="kpi-card"><div class="kpi-label">Converted to Client</div><div class="kpi-value mono pos">${wonCount}</div></div>
