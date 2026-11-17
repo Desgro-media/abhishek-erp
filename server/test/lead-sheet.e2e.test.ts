@@ -80,16 +80,16 @@ test("pure helpers: sheet id from URL, CSV quoting, service guess from tab name"
   assert.equal(svc.extractSheetId(SHEET), SHEET);
   assert.equal(svc.extractSheetId("hello"), null);
   assert.deepEqual(svc.parseCsv('a,"b,c","d ""q"""\n1,2,3\n'), [["a", "b,c", 'd "q"'], ["1", "2", "3"]]);
-  assert.equal(svc.guessService("Web kerala"), "Web Development");
-  assert.equal(svc.guessService("GRAPHIC KERALA"), "Graphic Design");
-  assert.equal(svc.guessService("PM sheet"), "Performance Marketing");
+  assert.equal(svc.guessService("Web kerala"), "Web kerala");
+  assert.equal(svc.guessService("GRAPHIC KERALA"), "GRAPHIC KERALA");
+  assert.equal(svc.guessService("PM sheet"), "PM sheet");
   assert.equal(svc.phoneKey("+91 99999-12345"), "9999912345");
   assert.equal(svc.phoneKey("p:09999912345"), "9999912345");
   assert.equal(svc.phoneKey("123"), null);
-  assert.equal(svc.guessService("consultation"), "Marketing Consultation");
-  assert.equal(svc.guessService("PB NEW"), "Personal Branding");
-  assert.equal(svc.guessService("MASTER PAKAGE NEW"), "Master Package");
-  assert.equal(svc.guessService("ERP"), "ERP", "a tab nobody recognises is filed under its own name");
+  assert.equal(svc.guessService("consultation"), "consultation");
+  assert.equal(svc.guessService("PB NEW"), "PB NEW");
+  assert.equal(svc.guessService("MASTER PAKAGE NEW"), "MASTER PAKAGE NEW");
+  assert.equal(svc.guessService("ERP"), "ERP", "every tab is filed under its own name");
 });
 
 test("only Admin / Sales Head can see or change it; a rep cannot", async () => {
@@ -104,7 +104,7 @@ test("connecting lists every tab with a service (own label where it is not an ER
   const r = await call("PUT", "/crm/lead-sheet", tok.head, { sheetUrl: SHEET_URL, autoSync: false, importFrom: "2026-01-01" });
   assert.equal(r.status, 200);
   const by = Object.fromEntries(r.body.tabs.map((t: any) => [t.name, t.service]));
-  assert.deepEqual(by, { "Web kerala": "Web Development", "PB NEW": "Personal Branding", "PM sheet": "Performance Marketing" });
+  assert.deepEqual(by, { "Web kerala": "Web kerala", "PB NEW": "PB NEW", "PM sheet": "PM sheet" });
   assert.equal(r.body.config.sheetId, SHEET);
   assert.equal(r.body.config.autoSync, false, "saved as the admin chose");
 });
@@ -119,11 +119,11 @@ test("sync imports new rows once: right service, Open queue, test + old rows ski
   const asha = leads.find((l) => l.name === "Asha Nair")!;
   assert.equal(asha.source, "Meta");
   assert.equal(asha.leadOwner, null);
-  assert.equal(asha.serviceInterested, "Web Development");
+  assert.equal(asha.serviceInterested, "Web kerala");
   assert.equal(asha.phone, `+91${ph(1)}`);
   assert.match(asha.notes!, /City: Kochi/);
   assert.match(asha.notes!, /what is your budget\?: ₹40,000/);
-  assert.equal(leads.find((l) => l.name === "Pm Person")!.serviceInterested, "Performance Marketing");
+  assert.equal(leads.find((l) => l.name === "Pm Person")!.serviceInterested, "PM sheet");
   assert.equal(await prisma.lead.count({ where: { name: "Old Person", metaLeadId: { startsWith: `l:${run}` } } }), 0);
 
   const again = await call("POST", "/crm/lead-sheet/sync", tok.admin);
@@ -153,7 +153,7 @@ test("daily intake: counts per service per day, from the lead's own date", async
   const { days, counts } = r.body.daily;
   assert.equal(days.length, 7);
   assert.equal(days[6], new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10));
-  assert.ok(counts["Web Development"][days[6]] >= 3, "today's web leads are counted");
+  assert.ok(counts["Web kerala"][days[6]] >= 3, "today's web leads are counted");
 });
 
 test("a lead with a sheet-only service converts to a client without that label as a client service", async () => {
@@ -171,7 +171,7 @@ test("a fresh connect turns auto-sync on by default", async () => {
 });
 
 test("duplicates are rejected: same phone as an existing lead, or repeated within the sheet", async () => {
-  await prisma.leadSheetTab.updateMany({ where: { gid: "22" }, data: { service: "Performance Marketing" } });
+  await prisma.leadSheetTab.updateMany({ where: { gid: "22" }, data: { service: "PM sheet" } });
   failPb = false;
   webCsv = csvWeb
     + `\nl:${run}-5,${fresh},,,,,x,Asha Again,+91 ${ph(1).slice(0,5)} ${ph(1).slice(5)},Kochi,CREATED`            // Asha Nair's number, different Meta id and format

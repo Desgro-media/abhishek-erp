@@ -51,18 +51,9 @@ export function parseCsv(text: string): string[][] {
   return rows.filter((r) => r.some((x) => x.trim() !== ""));
 }
 
-// The service a tab's leads are filed under, guessed from its name. The five ERP services where they match; the other
-// tabs the performance team keeps (personal branding, master package…) become their own service label, and a tab nobody
-// recognises is filed under its own name — so every tab shows up in the ERP, nothing is silently skipped.
+// The service a tab's leads are filed under: the tab's own name, exactly as it is written in the sheet
+// ("consultation", "Web kerala", "PB NEW"…), so the ERP shows the same service names the performance team uses.
 export function guessService(tabName: string): string {
-  const n = tabName.toLowerCase();
-  if (/consult/.test(n)) return "Marketing Consultation";
-  if (/\bweb/.test(n)) return "Web Development";
-  if (/graphic/.test(n)) return "Graphic Design";
-  if (/\bpm\b|performance/.test(n)) return "Performance Marketing";
-  if (/production|video/.test(n)) return "Production";
-  if (/\bpb\b|personal.?brand/.test(n)) return "Personal Branding";
-  if (/master/.test(n)) return "Master Package";
   return tabName.trim().slice(0, 60) || "Meta";
 }
 
