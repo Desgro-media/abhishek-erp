@@ -656,8 +656,6 @@ async function loadOwnAdMetrics(){
   ownAdMetrics = d.metrics; ownAdServices = d.services || []; ownSheetLeads = d.sheetLeads || [];
 }
 const NO_SERVICE_LABEL = "Not tied to a service";
-// DesGro's own entries from the last 30 days (several entries can share a date — one per service).
-const ownAdsLast30 = () => { const from = new Date(Date.now()-29*86400000).toISOString().slice(0,10); return ownAdMetrics.filter(m=>m.date>=from); };
 function adMetrics(c){
   const ctr = c.impressions ? (c.clicks/c.impressions*100) : 0;
   const cpc = c.clicks ? c.spend/c.clicks : 0;
@@ -6655,9 +6653,14 @@ function monthCardHTML(label, series, months, fmt, opts, extra){
     <div class="kpi-sub">${vsHTML(now, before, Object.assign({fmt, mon:monthLabel(months[months.length-2]||prevMonth(months[months.length-1])).split(' ')[0]}, opts||{}))}</div>${extra||''}${sparkBarsHTML(series, months)}</div>`;
 }
 // Our own ads' spend / leads for a month, from the daily tracker; null when nothing was logged.
+// Leads come from the Meta lead sheet once one is connected (ownAdServices then starts with its tab services and
+// sheet leads exist); before that, the leads typed into the tracker.
 function ownAdsForMonth(month){
   const rows = ownAdMetrics.filter(m=>m.date.slice(0,7)===month);
-  return rows.length ? { days:new Set(rows.map(m=>m.date)).size, spend:rows.reduce((s,m)=>s+m.spend,0), leads:rows.reduce((s,m)=>s+m.leads,0) } : null;
+  const fromSheet = ownSheetLeads.length > 0;
+  const sheetLeads = ownSheetLeads.filter(r=>r.day.slice(0,7)===month).reduce((s,r)=>s+r.n,0);
+  if(!rows.length && !(fromSheet && sheetLeads)) return null;
+  return { days:new Set(rows.map(m=>m.date)).size, spend:rows.reduce((s,m)=>s+m.spend,0), leads: fromSheet ? sheetLeads : rows.reduce((s,m)=>s+m.leads,0) };
 }
 
 /* ===================== SOCIAL MEDIA NUMBERS + MARKETING SCORE =====================
@@ -7877,9 +7880,15 @@ function adServiceBreakdownHTML(rows, inr, dash){
 }
 // Log (or correct) one day's numbers. Saving a date that already exists updates it. `save` receives the
 // validated payload and POSTs it; the server re-validates everything (no future dates, no negatives).
-function logAdMetricModal(forLabel, existing, save, currency, services){
+// opts.hideLeads: leads are counted elsewhere (our own ads: the Meta sheet) — the box is hidden and an edit keeps the old value.
+// opts.service: the service a new entry starts on.
+function logAdMetricModal(forLabel, existing, save, currency, services, opts){
+  opts = opts || {};
   const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
-  const v = existing || {date:local, service:'', spend:'', revenue:'', leads:'', purchases:'', note:''};
+  const v = existing || {date:local, service:opts.service||'', spend:'', revenue:'', leads:'', purchases:'', note:''};
+  const leadsField = opts.hideLeads
+    ? `<input type="hidden" name="leads" value="${esc(existing?existing.leads:0)}">`
+    : `<div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" placeholder="Optional — saved as 0"></div>`;
   showModal(`
     <div class="modal-head"><h3>${existing?'Edit':'Log'} ad performance</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-log-ad-metric"><div class="modal-body">
@@ -7892,7 +7901,7 @@ function logAdMetricModal(forLabel, existing, save, currency, services){
         <div><label class="field-label">Revenue${currency&&currency!=='INR'?` (${esc(currency)})`:''}</label><input class="field-input" type="number" step="0.01" min="0" name="revenue" value="${esc(v.revenue)}" placeholder="Optional — saved as 0"></div>
       </div>
       <div class="field-row">
-        <div><label class="field-label">Leads</label><input class="field-input" type="number" step="1" min="0" name="leads" value="${esc(v.leads)}" placeholder="Optional — saved as 0"></div>
+        ${leadsField}
         <div><label class="field-label">Purchases</label><input class="field-input" type="number" step="1" min="0" name="purchases" value="${esc(v.purchases)}" placeholder="Optional — saved as 0"></div>
       </div>
       <div><label class="field-label">Note <span class="faint" style="font-weight:500;">(optional)</span></label><textarea class="field-input" name="note" rows="2" maxlength="300" placeholder="e.g. Spend not available yet — Meta billing delayed">${esc(v.note||'')}</textarea></div>
@@ -7907,46 +7916,63 @@ function logAdMetricModal(forLabel, existing, save, currency, services){
     catch(err){ toast(err.message || "Couldn't save ad performance"); }
   });
 }
-function openLogOwnAdMetric(id){
+function openLogOwnAdMetric(id, service){
   const existing = id ? ownAdMetrics.find(m=>m.id===id) : null;
-  logAdMetricModal("DesGro Media — own Meta Ads", existing, async payload=>{
+  const services = ownAdServices.length ? ownAdServices : SERVICE_DEPARTMENTS;
+  // An older entry may sit under a name that's no longer offered — keep it pickable so the edit doesn't move it.
+  const list = existing && existing.service && !services.includes(existing.service) ? [...services, existing.service] : services;
+  logAdMetricModal("DesGro Media — own Meta Ads · leads are counted automatically from the Meta sheet", existing, async payload=>{
     await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-    await loadOwnAdMetrics();
-  }, undefined, ownAdServices.length ? ownAdServices : SERVICE_DEPARTMENTS);
+    await Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]);
+  }, undefined, list, { hideLeads:true, service });
 }
 // Meta Ads > Leads by service: leads counted automatically from the Meta lead sheet (by the day Meta received them),
 // next to the spend Performance Marketing logs for that service in Daily Tracking. A service only lines up when the
 // spend is logged under the same name as the sheet's tab service.
 let metaSvcRange = "ThisMonth";
+let metaSvcOpen = {};   // service -> true while its spend entries are shown
 function setMetaSvcRange(v){ metaSvcRange = v; render(); }
+function toggleMetaSvc(i){ const s = (window._metaSvcList||[])[i]; if(s==null) return; metaSvcOpen[s] = !metaSvcOpen[s]; render(); }
+function addMetaSvcSpend(i){ const s = (window._metaSvcList||[])[i]; openLogOwnAdMetric(null, s||''); }
 function ownAdsByServiceHTML(){
   const inRange = d => metaSvcRange==="Custom"
     ? (!customDateRange.from || d>=customDateRange.from) && (!customDateRange.to || d<=customDateRange.to)
     : matchesDateFilter(d, metaSvcRange);
   const by = {};
-  const row = s => by[s] || (by[s] = {service:s, leads:0, spend:0});
+  const row = s => by[s] || (by[s] = {service:s, leads:0, spend:0, revenue:0, entries:[]});
   ownSheetLeads.filter(r=>inRange(r.day)).forEach(r=>{ row(r.service).leads += r.n; });
-  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ row(m.service||"").spend += m.spend; });
-  const list = Object.values(by).filter(a=>a.leads||a.spend).sort((a,b)=>b.leads-a.leads || b.spend-a.spend);
-  const tot = list.reduce((t,a)=>({leads:t.leads+a.leads, spend:t.spend+a.spend}), {leads:0, spend:0});
+  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ const a = row(m.service||""); a.spend += m.spend; a.revenue += m.revenue; a.entries.push(m); });
+  const list = Object.values(by).filter(a=>a.leads||a.entries.length).sort((a,b)=>b.leads-a.leads || b.spend-a.spend);
+  window._metaSvcList = list.map(a=>a.service);   // row index -> service name, so onclick never has to quote a name
+  const tot = list.reduce((t,a)=>({leads:t.leads+a.leads, spend:t.spend+a.spend, revenue:t.revenue+a.revenue}), {leads:0, spend:0, revenue:0});
   const cpl = a => a.leads>0 && a.spend>0 ? inr(Math.round(a.spend/a.leads)) : '—';
+  const roas = a => a.spend>0 && a.revenue>0 ? (a.revenue/a.spend).toFixed(1)+'x' : '—';
   const dates = [...ownSheetLeads.map(r=>r.day), ...ownAdMetrics.map(m=>m.date)];
+  const ico = (id, sz) => `<svg class="icon" style="width:${sz||12}px;height:${sz||12}px"><use href="#i-${id}"/></svg>`;
+  const entryRows = a => a.entries.slice().sort((x,y)=>y.date.localeCompare(x.date)).map(m=>`<tr style="background:var(--surface-sunk);">
+      <td style="padding-left:30px;" class="muted">${fmtDateShort(m.date)}${m.note?`<div class="subtext" style="max-width:260px;white-space:normal;">📝 ${esc(m.note)}</div>`:''}</td>
+      <td></td><td></td>
+      <td class="num mono">${inr(m.spend)}</td>
+      <td class="num mono faint">${m.revenue>0?inr(m.revenue)+' rev.':''}${m.purchases>0?` · ${m.purchases} sale${m.purchases===1?'':'s'}`:''}</td>
+      <td><div style="display:flex;gap:6px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openLogOwnAdMetric('${esc(m.id)}')" title="Edit this spend">${ico('edit')}</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('ownAdMetric','${esc(m.id)}')" title="Delete this spend">${ico('x')}</button></div></td></tr>`).join('');
   return `<div class="panel">
     <div class="panel-head" style="flex-wrap:wrap;gap:8px;">
-      <div><h3>Leads by service</h3><div class="sub">Leads come in automatically from the Meta lead sheet · spend is what Performance Marketing logs</div></div>
+      <div><h3>Leads by service</h3><div class="sub">Leads come in automatically from the Meta lead sheet · spend is logged by Performance Marketing — click a service to see, edit or delete its spend</div></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
         <select class="select-sm" onchange="setMetaSvcRange(this.value)">${dateFilterOptions(dates, metaSvcRange, {custom:true})}</select>${dateRangeInputs(metaSvcRange)}
-        <button class="btn btn-sm ghost" onclick="openLogOwnAdMetric()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log spend</button>
+        <button class="btn btn-sm primary" onclick="openLogOwnAdMetric()">${ico('plus')}Log spend</button>
       </div>
     </div>
-    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Service</th><th class="num">Leads (from sheet)</th><th class="num">Share</th><th class="num">Spend</th><th class="num">Cost per lead</th></tr></thead>
-      <tbody>${list.map(a=>`<tr>
-        <td style="font-weight:700;">${a.service?esc(a.service):`<span class="faint" style="font-weight:600;">${NO_SERVICE_LABEL}</span>`}</td>
+    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Service</th><th class="num">Leads (from sheet)</th><th class="num">Share</th><th class="num">Spend</th><th class="num">Cost per lead · ROAS</th><th></th></tr></thead>
+      <tbody>${list.map((a,i)=>{ const open = !!metaSvcOpen[a.service] && a.entries.length; return `<tr>
+        <td style="font-weight:700;${a.entries.length?'cursor:pointer;':''}" ${a.entries.length?`onclick="toggleMetaSvc(${i})" title="Show this service's spend entries"`:''}>${a.entries.length?`<span class="faint" style="display:inline-block;width:14px;">${open?'▾':'▸'}</span>`:'<span style="display:inline-block;width:14px;"></span>'}${a.service?esc(a.service):`<span class="faint" style="font-weight:600;">${NO_SERVICE_LABEL}</span>`}${a.entries.length?` <span class="subtext" style="display:inline;">· ${a.entries.length} entr${a.entries.length===1?'y':'ies'}</span>`:''}</td>
         <td class="num mono" style="font-weight:700;">${a.leads}</td>
         <td class="num mono faint">${tot.leads>0?Math.round(a.leads/tot.leads*100)+'%':'—'}</td>
-        <td class="num mono">${a.spend>0?inr(a.spend):`<span class="faint" title="No spend logged for this service in this period">not logged</span>`}</td>
-        <td class="num mono">${cpl(a)}</td></tr>`).join('')}
-        <tr style="font-weight:800;"><td>Total</td><td class="num mono">${tot.leads}</td><td></td><td class="num mono">${inr(tot.spend)}</td><td class="num mono">${cpl(tot)}</td></tr>
+        <td class="num mono">${a.entries.length?inr(a.spend):`<span class="faint" title="No spend logged for this service in this period">not logged</span>`}</td>
+        <td class="num mono">${cpl(a)} <span class="faint">· ${roas(a)}</span></td>
+        <td><div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="addMetaSvcSpend(${i})" title="Log spend for this service">${ico('plus')}Spend</button></div></td></tr>
+        ${open?entryRows(a):''}`; }).join('')}
+        <tr style="font-weight:800;"><td>Total</td><td class="num mono">${tot.leads}</td><td></td><td class="num mono">${inr(tot.spend)}</td><td class="num mono">${cpl(tot)} <span class="faint">· ${roas(tot)}</span></td><td></td></tr>
       </tbody></table></div>` : `<div class="panel-body"><div class="empty">No sheet leads or logged spend in this period.</div></div>`}
   </div>`;
 }
@@ -8005,9 +8031,6 @@ function mktPerformance(){
     <div class="kpi-card"><div class="kpi-label">Avg. CTR</div><div class="kpi-value mono" style="font-size:20px;">${avgCtr.toFixed(2)}%</div></div>
     <div class="kpi-card hero"><div class="kpi-label">Cost per Lead</div><div class="kpi-value mono" style="font-size:20px;">${inr(avgCpl)}</div><div class="kpi-sub">${totals.leads} leads total</div></div>
   </div>
-  <div class="panel"><div class="modal-body">
-    ${adDailyTrackerHTML(ownAdsLast30(), "Daily Tracking", {services:true, logFn:"openLogOwnAdMetric()", editFn:"openLogOwnAdMetric", deleteKind:"ownAdMetric"})}
-  </div></div>
   ${adRemindersPanelHTML()}
   <div class="panel">
     <div class="panel-head"><div><h3>Campaigns</h3><div class="sub">DesGro Media's own Meta Ads accounts</div></div></div>
@@ -8719,7 +8742,7 @@ function deleteWarningFor(kind, id){
   }
   if(kind==='ownAdMetric'){
     const m = ownAdMetrics.find(x=>x.id===id); if(!m) return {label:"this entry", warning:fallback};
-    return {label:"this ad entry", warning:`${fmtDateShort(m.date)}${m.service?` · ${esc(m.service)}`:''} — ${inr(m.spend)} spend, ${m.leads} leads. This only removes the tracking entry; you can log it again afterwards.`};
+    return {label:"this spend entry", warning:`${fmtDateShort(m.date)}${m.service?` · ${esc(m.service)}`:''} — ${inr(m.spend)} spend. Leads from the Meta sheet aren't affected; you can log the spend again afterwards.`};
   }
   if(kind==='client'){
     const c = clientById(id); if(!c) return {label:"this client", warning:fallback};
@@ -8798,7 +8821,7 @@ async function performDelete(kind, id){
     boardCard: { url:`/api/crm/board-cards/${id}`, reload: loadTasks, label:"Card" },
     boardProject: (()=>{ const [cid, pid, svc] = id.split('|'); return { url:`/api/crm/clients/${cid}/board-projects/${pid}`, reload: async ()=>{ await loadTasks(); bState(cid, svc).project = 'All'; }, label:"Project" }; })(),
     clientAdMetric: (()=>{ const [cid, mid] = id.split('|'); return { url:`/api/crm/clients/${cid}/ad-metrics/${mid}`, reload: ()=>loadClientCollab(cid), label:"Ad performance entry" }; })(),
-    ownAdMetric: { url:`/api/content/own-ad-metrics/${id}`, reload: loadOwnAdMetrics, label:"Ad performance entry" },
+    ownAdMetric: { url:`/api/content/own-ad-metrics/${id}`, reload: ()=>Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]), label:"Ad spend entry" },
     journal: { url:`/api/finance/journal/${id}`, reload: async ()=>{ await Promise.all([loadJournalEntries(), loadBankAccounts()]); await refreshFinanceReports(); }, label:"Journal entry" },
   };
   const ep = ENDPOINTS[kind];

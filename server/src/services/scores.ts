@@ -1,5 +1,6 @@
 import { prisma } from "../db/prisma";
 import { SERVICE_DEPARTMENTS } from "./departmentAccess";
+import { sheetLeadsInMonth } from "./leadSheet";
 
 /* Monthly scores, out of 100. Each is a set of weighted parts; a part with nothing to measure that month is left out
    and the rest re-weighted (so a brand-new department isn't scored 0 for what doesn't exist yet).
@@ -146,12 +147,15 @@ export async function metaAdsScore(month: string, t: Targets): Promise<Score> {
   const rows = await prisma.ownAdMetric.findMany({ where: { date: { gte: monthStart(month), lte: monthEnd(month) } }, orderBy: { date: "asc" } });
   const prevRows = await prisma.ownAdMetric.findMany({ where: { date: { gte: monthStart(prevMonthOf(month)), lte: monthEnd(prevMonthOf(month)) } } });
   const sum = (r: typeof rows, k: "spend" | "leads" | "purchases" | "revenue") => r.reduce((s, x) => s + num(x[k]), 0);
-  const spend = sum(rows, "spend"), leads = sum(rows, "leads"), purchases = sum(rows, "purchases"), revenue = sum(rows, "revenue");
-  const roas = spend ? revenue / spend : null, cpl = leads ? spend / leads : null, conv = leads ? (purchases / leads) * 100 : null;
+  // Leads are counted from the Meta lead sheet when one is connected; otherwise the leads typed into the tracker.
+  const [sheetNow, sheetPrev] = await Promise.all([sheetLeadsInMonth(month), sheetLeadsInMonth(prevMonthOf(month))]);
+  const leads = sheetNow ?? sum(rows, "leads"), prevLeads = sheetPrev ?? sum(prevRows, "leads");
+  const spend = sum(rows, "spend"), purchases = sum(rows, "purchases"), revenue = sum(rows, "revenue");
+  const roas = spend ? revenue / spend : null, cpl = leads && spend ? spend / leads : null, conv = leads ? (purchases / leads) * 100 : null;
   const today = istToday();
   const daysSoFar = month === today.slice(0, 7) ? Number(today.slice(8)) : daysIn(month);
   const prevDays = daysIn(prevMonthOf(month));
-  const pace = rows.length ? leads / daysSoFar : null, pacePrev = prevRows.length ? sum(prevRows, "leads") / prevDays : null;
+  const pace = leads ? leads / daysSoFar : null, pacePrev = prevLeads ? prevLeads / prevDays : null;
   // Daily tracking: days logged ÷ days that should have been logged (from the first log of the month to yesterday / month end).
   let tracking: number | null = null, trackDetail = "no daily numbers logged";
   if (rows.length) {

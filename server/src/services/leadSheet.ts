@@ -122,6 +122,16 @@ export async function sheetLeadsPerDay(window: string) {
     FROM leads WHERE meta_lead_id IS NOT NULL AND created_at >= now() - ${window}::interval GROUP BY 1, 2`;
 }
 
+// How many leads the Meta sheet brought in during a month (YYYY-MM, by IST date) — or null when no sheet tab is
+// filed under a service yet, so callers can fall back to the leads typed into the ad tracker.
+export async function sheetLeadsInMonth(month: string): Promise<number | null> {
+  if (!(await prisma.leadSheetTab.count({ where: { service: { not: null } } }))) return null;
+  const [{ n }] = await prisma.$queryRaw<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM leads
+    WHERE meta_lead_id IS NOT NULL AND to_char((created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM') = ${month}`;
+  return n;
+}
+
 // The services the sheet's tabs are filed under (skipped tabs left out).
 export async function sheetServices() {
   const tabs = await prisma.leadSheetTab.findMany({ where: { service: { not: null } }, orderBy: { position: "asc" }, select: { service: true } });

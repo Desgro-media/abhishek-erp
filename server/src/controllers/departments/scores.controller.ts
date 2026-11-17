@@ -4,6 +4,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { headedDepartments, isLeadership } from "../../services/departmentAccess";
+import { sheetLeadsInMonth } from "../../services/leadSheet";
 import { DEFAULT_TARGETS, SERVICE_DEPARTMENTS, deptClientScore, getTargets, metaAdsScore, prevMonthOf, salesMonthStats, salesPeopleMonth, salesScore } from "../../services/scores";
 
 const monthRe = /^\d{4}-\d{2}$/;
@@ -72,7 +73,9 @@ export const metaScore: RequestHandler = asyncHandler(async (req, res) => {
     const [y, mo] = m.split("-").map(Number);
     const rows = await prisma.ownAdMetric.findMany({ where: { date: { gte: new Date(`${m}-01T00:00:00Z`), lte: new Date(Date.UTC(y, mo, 0)) } } });
     const n = (k: "spend" | "leads" | "purchases" | "revenue") => rows.reduce((s, r) => s + Number(r[k]), 0);
-    return { days: new Set(rows.map((r) => r.date.toISOString())).size, spend: n("spend"), leads: n("leads"), purchases: n("purchases"), revenue: n("revenue") };
+    // Leads from the Meta lead sheet when one is connected (same as the score), else the typed-in leads.
+    const leads = (await sheetLeadsInMonth(m)) ?? n("leads");
+    return { days: new Set(rows.map((r) => r.date.toISOString())).size, spend: n("spend"), leads, purchases: n("purchases"), revenue: n("revenue") };
   };
   res.json({ month, now: await metaAdsScore(month, t), prev: await metaAdsScore(prev, t), totals: { now: await totals(month), prev: await totals(prev) }, targets: t.meta });
 });
