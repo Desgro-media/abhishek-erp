@@ -3693,10 +3693,6 @@ const MODULES = [
     {id:"complaints", label:"Complaints", icon:"i-megaphone"},
   ]},
   {id:"calendar", label:"Calendar", icon:"i-calendar"},
-  {id:"departments", label:"Departments", icon:"i-building", sub:[
-    {id:"overview", label:"Overview", icon:"i-trend"},
-    ...DEPARTMENTS.map(d=>({id:deptSlug(d), label:d, icon:"i-users", when:()=>canSeeDeptPage(d)})),
-  ]},
   {id:"hr", label:"HR", icon:"i-users", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"directory", label:"Directory", icon:"i-users"},
@@ -3723,6 +3719,10 @@ const MODULES = [
   {id:"clients", label:"Clients", icon:"i-briefcase", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"all", label:"All Clients", icon:"i-briefcase"},
+  ]},
+  {id:"departments", label:"Departments", icon:"i-building", sub:[
+    {id:"overview", label:"Overview", icon:"i-trend"},
+    ...DEPARTMENTS.map(d=>({id:deptSlug(d), label:d, icon:"i-users", when:()=>canSeeDeptPage(d)})),
   ]},
   {id:"accounts", label:"Accounts", icon:"i-wallet", sub:[
     {id:"overview", label:"Overview", icon:"i-trend"},
@@ -3805,16 +3805,17 @@ function accessRolesFromForm(f, existing){
 function visibleModules(){
   let mods = visibleModulesBase();
   if(!currentUser) return mods;
-  const place = (id)=>{
+  // Adds a module the base list left out, right after the first of `afterIds` that's showing (else at the top).
+  const place = (id, afterIds = ['calendar','workspace'])=>{
     if(mods.some(m=>m.id===id)) return;
     const mod = MODULES.find(m=>m.id===id);
-    const after = [...mods].reverse().find(m=>m.id==='calendar' || m.id==='workspace');
+    const after = afterIds.map(a=>mods.find(m=>m.id===a)).find(Boolean);
     const i = after ? mods.indexOf(after) : -1;
     mods = i>=0 ? [...mods.slice(0,i+1), mod, ...mods.slice(i+1)] : [mod, ...mods];
   };
   place('calendar');
   // Departments: leadership and department heads only; each department's tab shows for those who may open it.
-  if(deptsVisibleTo().length) place('departments'); else mods = mods.filter(m=>m.id!=='departments');
+  if(deptsVisibleTo().length) place('departments', ['clients','calendar','workspace']); else mods = mods.filter(m=>m.id!=='departments');
   return mods.map(m=> (m.sub && m.sub.some(s=>s.when)) ? {...m, sub:m.sub.filter(s=>!s.when || s.when())} : m);
 }
 function visibleModulesBase(){
