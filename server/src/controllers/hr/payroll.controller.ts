@@ -23,22 +23,28 @@ export const listPayrollForMonth: RequestHandler = asyncHandler(async (req, res)
 });
 
 // Any signed-in employee's OWN payroll history (pinned to their token's employeeId —
-// no id in the URL to tamper with). Deliberately just the headline figures the
-// employee-facing screen shows (salary, pay cuts, final salary, what's paid) rather
-// than the internal Basic/HRA/PF/PT breakdown HR works with.
+// no id in the URL to tamper with). The screen shows only the headline figures
+// (salary, pay cuts, final salary); the Basic/HRA/PF/PT breakdown and the employee's
+// own details are included so their downloadable salary slip adds up.
 export const listMyPayroll: RequestHandler = asyncHandler(async (req, res) => {
   const employeeId = req.user?.employeeId;
-  if (!employeeId) return res.json({ rows: [] });
-  const entries = await prisma.payrollEntry.findMany({ where: { employeeId }, select: { month: true }, orderBy: { month: "desc" } });
+  if (!employeeId) return res.json({ rows: [], employee: null });
+  const [entries, employee] = await Promise.all([
+    prisma.payrollEntry.findMany({ where: { employeeId }, select: { month: true }, orderBy: { month: "desc" } }),
+    prisma.employee.findUnique({ where: { id: employeeId }, select: { name: true, employeeCode: true, role: true, dept: true, joinedAt: true } }),
+  ]);
   const computed = await Promise.all(entries.map((e) => computeRow(employeeId, e.month)));
   const rows = computed.filter((r): r is NonNullable<typeof r> => r !== null).map((r) => ({
-    month: r.month, gross: r.gross, lopDays: r.lopDays, lopDeduction: r.lopDeduction,
+    month: r.month, gross: r.gross, basic: r.basic, hra: r.hra, special: r.special,
+    pf: r.pf, pt: r.pt, advDeduction: r.advDeduction, lopDays: r.lopDays, lopDeduction: r.lopDeduction,
     wfhExcessDays: r.wfhExcessDays, wfhDeduction: r.wfhDeduction,
+    monthWorkingDays: r.monthWorkingDays, totalDeductions: r.totalDeductions,
     net: r.net, paid: r.paid, balance: r.balance, payStatus: r.payStatus,
+    payments: r.payments.map((p) => ({ amount: Number(p.amount), paidDate: p.paidDate, note: p.note })),
     // Read-only for the employee: when each part is due / was paid.
     schedule: r.schedule,
   }));
-  res.json({ rows });
+  res.json({ rows, employee });
 });
 
 export const getPayrollEntry: RequestHandler = asyncHandler(async (req, res) => {

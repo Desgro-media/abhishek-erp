@@ -1417,7 +1417,8 @@ function mapWithdrawalRequest(r){
   };
 }
 async function loadWithdrawalRequests(){ withdrawalRequests = (await apiJson("/api/finance/withdrawal-requests")).requests.map(mapWithdrawalRequest); }
-async function loadMyPayroll(){ myPayroll = (await apiJson("/api/hr/payroll/mine")).rows; }
+let myPayrollEmployee = null;  // {name, employeeCode, role, dept, joinedAt} — for the salary slip header
+async function loadMyPayroll(){ const d = await apiJson("/api/hr/payroll/mine"); myPayroll = d.rows; myPayrollEmployee = d.employee || null; }
 async function loadWithdrawalEligibility(){ withdrawalEligibility = await apiJson("/api/finance/withdrawal-requests/eligibility"); return withdrawalEligibility; }
 // A bare Admin login (or any login HR hasn't linked to an employee) has no payroll or requests of
 // its own — the server refuses to file anything for it, so the UI shouldn't offer to.
@@ -1460,8 +1461,8 @@ function workspacePayroll(){
   ${myPayroll.length ? `
   <div class="panel">
     <div class="panel-head"><h3>History</h3><div class="sub">Every cycle you've been part of</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th><th>Payout schedule</th></tr></thead>
-      <tbody>${myPayroll.map(r=>{ const cuts=r.lopDeduction+(r.wfhDeduction||0); return `<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${cuts>0?'warn':'faint'}">${cuts>0?'−'+inr(cuts):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td><td>${(r.schedule&&r.schedule.instalments.length)?r.schedule.instalments.map(i=>`<div style="font-size:12px;white-space:nowrap;">${inr(i.amount)} · ${i.status==='Paid'?'paid '+fmtDateShort(i.paidDate||i.dueDate):(i.status==='Overdue'?'overdue, due ':'due ')+fmtDateShort(i.dueDate)}</div>`).join(''):'<span class="faint">—</span>'}${r.schedule&&r.schedule.overpayment>0?`<div class="subtext">Overpaid ${inr(r.schedule.overpayment)} — HR will resolve</div>`:''}</td></tr>`; }).join("")}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Month</th><th class="num">Salary</th><th class="num">Pay cuts</th><th class="num">Final salary</th><th>Status</th><th>Payout schedule</th><th></th></tr></thead>
+      <tbody>${myPayroll.map(r=>{ const cuts=r.lopDeduction+(r.wfhDeduction||0); return `<tr><td>${esc(MONTH_LABEL[r.month]||r.month)}</td><td class="num mono">${inr(r.gross)}</td><td class="num mono ${cuts>0?'warn':'faint'}">${cuts>0?'−'+inr(cuts):'—'}</td><td class="num mono" style="font-weight:700;">${inr(r.net)}</td><td>${pill(r.payStatus,statusKind(r.payStatus))}</td><td>${(r.schedule&&r.schedule.instalments.length)?r.schedule.instalments.map(i=>`<div style="font-size:12px;white-space:nowrap;">${inr(i.amount)} · ${i.status==='Paid'?'paid '+fmtDateShort(i.paidDate||i.dueDate):(i.status==='Overdue'?'overdue, due ':'due ')+fmtDateShort(i.dueDate)}</div>`).join(''):'<span class="faint">—</span>'}${r.schedule&&r.schedule.overpayment>0?`<div class="subtext">Overpaid ${inr(r.schedule.overpayment)} — HR will resolve</div>`:''}</td><td><button class="btn btn-sm ghost" onclick="downloadMyPayslip('${r.month}')">Salary slip</button></td></tr>`; }).join("")}</tbody>
     </table></div>
   </div>` : ``}
   <div class="panel">
@@ -1760,6 +1761,84 @@ function downloadReceipt(invId, paymentIdx){
   const payment = inv && inv.payments[paymentIdx];
   if(!payment){ toast("Payment not found"); return; }
   openDocumentPrint(paymentReceiptDocumentHTML(inv, payment), "Receipt — "+inv.invoiceNo);
+}
+// Salary slip — same branded header / print-to-PDF path as the invoice. `who` is
+// {name, code, role, dept, joined}; `c` is a payroll row (HR's mapPayrollRow shape or the
+// employee's own /payroll/mine row — both carry the same field names).
+function payslipDocumentHTML(who, month, c){
+  const label = MONTH_LABEL[month] || monthLabel(month);
+  const lop = c.lopDays || 0;
+  const paidDays = c.monthWorkingDays!=null ? Math.max(0, c.monthWorkingDays - lop) : null;
+  const cell = "padding:9px 12px;border-bottom:1px solid #eee;";
+  const earnings = [["Basic", c.basic], ["HRA", c.hra], ["Special allowance", c.special]];
+  const deductions = [
+    ["Provident fund", c.pf], ["Professional tax", c.pt], ["Advance recovery", c.advDeduction],
+    [`Loss of Pay (${lop} day${lop===1?"":"s"})`, c.lopDeduction],
+    [`WFH at 75% (${c.wfhExcessDays||0} day${c.wfhExcessDays===1?"":"s"})`, c.wfhDeduction],
+  ].filter(([,v])=>Number(v)>0);
+  const rowsCount = Math.max(earnings.length, deductions.length, 1);
+  const totalDed = c.totalDeductions!=null ? c.totalDeductions : deductions.reduce((s,[,v])=>s+Number(v),0);
+  const detail = (k,v) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid #f0f0f0;"><span style="color:#888;">${k}</span><b style="text-align:right;">${v}</b></div>`;
+  const payments = c.payments || [];
+  return desgroHeaderHTML("SALARY SLIP") + `
+  <div style="font-size:12.5px;color:#555;margin:-14px 0 22px;text-align:center;">Pay period: <b style="color:#111;">${esc(label)}</b></div>
+  <div style="display:flex;gap:24px;align-items:stretch;margin-bottom:24px;">
+    <div style="flex:1.4;font-size:12.5px;">
+      ${detail("Employee name", esc(who.name||"—"))}
+      ${detail("Employee ID", esc(who.code||"—"))}
+      ${detail("Designation", esc(who.role||"—"))}
+      ${detail("Department", esc(who.dept||"—"))}
+      ${detail("Date of joining", who.joined?fmtDate(who.joined):"—")}
+      ${paidDays!=null?detail("Working days / Paid days", `${c.monthWorkingDays} / ${paidDays}`):""}
+    </div>
+    <div style="flex:1;background:#fdf1f1;border:1px solid #f3c9cb;border-radius:8px;padding:18px;display:flex;flex-direction:column;justify-content:center;text-align:right;">
+      <div style="font-size:10.5px;letter-spacing:1px;color:#a8141a;text-transform:uppercase;margin-bottom:4px;">Net Pay</div>
+      <div class="mono" style="font-size:26px;font-weight:800;color:#111;">${inr(c.net)}</div>
+      <div style="font-size:11px;color:#777;margin-top:6px;">Status: <b>${esc(c.payStatus||"—")}</b></div>
+    </div>
+  </div>
+  <table style="width:100%;font-size:12.5px;">
+    <thead><tr style="background:#f6f6f6;">
+      <th style="text-align:left;padding:10px 12px;border-bottom:2px solid #222;">Earnings</th>
+      <th style="text-align:right;padding:10px 12px;border-bottom:2px solid #222;">Amount</th>
+      <th style="text-align:left;padding:10px 12px;border-bottom:2px solid #222;border-left:1px solid #ddd;">Deductions</th>
+      <th style="text-align:right;padding:10px 12px;border-bottom:2px solid #222;">Amount</th>
+    </tr></thead>
+    <tbody>${Array.from({length:rowsCount},(_,i)=>{ const e=earnings[i], d=deductions[i]; return `<tr>
+      <td style="${cell}">${e?e[0]:""}</td><td class="mono" style="${cell}text-align:right;">${e?inr(e[1]||0):""}</td>
+      <td style="${cell}border-left:1px solid #ddd;">${d?d[0]:(i===0?'<span style="color:#999;">None</span>':"")}</td><td class="mono" style="${cell}text-align:right;">${d?inr(d[1]):""}</td>
+    </tr>`; }).join("")}
+    <tr style="font-weight:800;background:#fafafa;">
+      <td style="padding:10px 12px;border-top:2px solid #222;">Gross earnings</td><td class="mono" style="padding:10px 12px;border-top:2px solid #222;text-align:right;">${inr(c.gross)}</td>
+      <td style="padding:10px 12px;border-top:2px solid #222;border-left:1px solid #ddd;">Total deductions</td><td class="mono" style="padding:10px 12px;border-top:2px solid #222;text-align:right;">${inr(totalDed)}</td>
+    </tr></tbody>
+  </table>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;padding:14px 16px;border:2px solid #111;border-radius:6px;">
+    <span style="font-weight:800;font-size:14px;letter-spacing:1px;">NET PAY</span><span class="mono" style="font-weight:800;font-size:18px;">${inr(c.net)}</span>
+  </div>
+  <div style="margin-top:8px;font-size:11.5px;color:#666;">Net pay in words: <b>${numberToWordsINR(c.net)}</b></div>
+  ${payments.length?`
+  <div style="font-size:10.5px;letter-spacing:1px;color:#888;text-transform:uppercase;margin:26px 0 8px;">Payments</div>
+  <table style="width:100%;font-size:12.5px;">
+    <tbody>${payments.map(p=>`<tr><td style="${cell}">${fmtDate(isoDate(p.date||p.paidDate))}${p.note?" · "+esc(p.note):""}</td><td class="mono" style="${cell}text-align:right;">${inr(p.amount)}</td></tr>`).join("")}
+    <tr style="font-weight:700;"><td style="padding:9px 12px;">Balance due</td><td class="mono" style="padding:9px 12px;text-align:right;">${inr(c.balance||0)}</td></tr></tbody>
+  </table>`:""}
+  ${desgroSignatureHTML()}
+  <div style="margin-top:26px;font-size:10.5px;color:#999;text-align:center;">This is a computer-generated salary slip.</div>`;
+}
+// HR / Finance: the Payslip modal's selected month for one employee.
+function downloadPayslip(id){
+  const e = byId(id); const month = payroll.selectedMonth; const c = e && computePayrollRow(e, month);
+  if(!c){ toast("No payroll entry for this month"); return; }
+  openDocumentPrint(payslipDocumentHTML({name:e.name, code:e.id, role:e.role, dept:e.dept, joined:e.joined}, month, c), `Salary Slip — ${e.name} — ${MONTH_LABEL[month]||month}`);
+}
+// Employee: one of their own months from My Payroll.
+function downloadMyPayslip(month){
+  const r = myPayroll.find(x=>x.month===month);
+  if(!r){ toast("No payroll entry for that month"); return; }
+  const me = myPayrollEmployee || {};
+  const who = { name: me.name || (currentUser&&currentUser.name), code: me.employeeCode, role: me.role, dept: me.dept, joined: isoDate(me.joinedAt) };
+  openDocumentPrint(payslipDocumentHTML(who, month, r), `Salary Slip — ${who.name||""} — ${MONTH_LABEL[month]||month}`);
 }
 function openInvoicePayments(invId){
   const inv = invoices.find(x=>x.id===invId);
@@ -6319,7 +6398,7 @@ function openPayslip(id, readOnly){
       <div class="section-label">Payout schedule</div>
       ${scheduleTableHTML(c)}
     </div>
-    <div class="modal-foot">${(isHRRole(currentUser)||isFinanceAdminUser(currentUser))?`<button class="btn ghost" onclick="openEditSchedule('${e.id}')">Edit schedule</button>`:''}${(!readOnly && c.balance>0)?`<button class="btn primary" onclick="openRecordPayment('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-wallet"/></svg>Record payment</button>`:'<div></div>'}<button class="btn ghost" onclick="closeModal()">Close</button></div>`);
+    <div class="modal-foot"><button class="btn ghost" onclick="downloadPayslip('${e.id}')">Download PDF</button>${(isHRRole(currentUser)||isFinanceAdminUser(currentUser))?`<button class="btn ghost" onclick="openEditSchedule('${e.id}')">Edit schedule</button>`:''}${(!readOnly && c.balance>0)?`<button class="btn primary" onclick="openRecordPayment('${e.id}')"><svg class="icon" style="width:13px;height:13px"><use href="#i-wallet"/></svg>Record payment</button>`:'<div></div>'}<button class="btn ghost" onclick="closeModal()">Close</button></div>`);
 }
 async function setPayrollMonth(m){
   payroll.selectedMonth=m;
