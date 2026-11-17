@@ -649,7 +649,12 @@ async function loadMetaCampaigns(){ metaAdsCampaigns = (await apiJson("/api/cont
 // DesGro's own daily Meta ad numbers (Marketing > Meta Ads > Daily Tracking). CPL/CPA/ROAS come from the
 // server (null when there's nothing to divide by) so every screen shows the same figures.
 let ownAdMetrics = [];
-async function loadOwnAdMetrics(){ ownAdMetrics = (await apiJson("/api/content/own-ad-metrics")).metrics; }
+let ownAdServices = [];   // services spend can be logged against: the Meta sheet's tab services first, then the ERP's
+let ownSheetLeads = [];   // [{day, service, n}] — leads the Meta sheet brought in, per IST day per service (automatic)
+async function loadOwnAdMetrics(){
+  const d = await apiJson("/api/content/own-ad-metrics");
+  ownAdMetrics = d.metrics; ownAdServices = d.services || []; ownSheetLeads = d.sheetLeads || [];
+}
 const NO_SERVICE_LABEL = "Not tied to a service";
 // DesGro's own entries from the last 30 days (several entries can share a date — one per service).
 const ownAdsLast30 = () => { const from = new Date(Date.now()-29*86400000).toISOString().slice(0,10); return ownAdMetrics.filter(m=>m.date>=from); };
@@ -3874,7 +3879,7 @@ function visibleModulesLegacy(){
 // until a reload. Tabs that hold other people's actionable requests re-fetch each time they're opened.
 const TAB_REFRESH = {
   "hr/programs":[loadHrPrograms], "hr/overview":[loadHrPrograms],
-  "marketing/performance":[()=>loadMetaScore().catch(()=>{})], "marketing/overview":[()=>loadMktTargets().catch(()=>{}), ()=>loadMetaScore(mktMonthNow()).catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
+  "marketing/performance":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{})], "marketing/overview":[()=>loadMktTargets().catch(()=>{}), ()=>loadMetaScore(mktMonthNow()).catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
   "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadServiceBoards().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
@@ -7907,7 +7912,43 @@ function openLogOwnAdMetric(id){
   logAdMetricModal("DesGro Media — own Meta Ads", existing, async payload=>{
     await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
     await loadOwnAdMetrics();
-  }, undefined, SERVICE_DEPARTMENTS);
+  }, undefined, ownAdServices.length ? ownAdServices : SERVICE_DEPARTMENTS);
+}
+// Meta Ads > Leads by service: leads counted automatically from the Meta lead sheet (by the day Meta received them),
+// next to the spend Performance Marketing logs for that service in Daily Tracking. A service only lines up when the
+// spend is logged under the same name as the sheet's tab service.
+let metaSvcRange = "ThisMonth";
+function setMetaSvcRange(v){ metaSvcRange = v; render(); }
+function ownAdsByServiceHTML(){
+  const inRange = d => metaSvcRange==="Custom"
+    ? (!customDateRange.from || d>=customDateRange.from) && (!customDateRange.to || d<=customDateRange.to)
+    : matchesDateFilter(d, metaSvcRange);
+  const by = {};
+  const row = s => by[s] || (by[s] = {service:s, leads:0, spend:0});
+  ownSheetLeads.filter(r=>inRange(r.day)).forEach(r=>{ row(r.service).leads += r.n; });
+  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ row(m.service||"").spend += m.spend; });
+  const list = Object.values(by).filter(a=>a.leads||a.spend).sort((a,b)=>b.leads-a.leads || b.spend-a.spend);
+  const tot = list.reduce((t,a)=>({leads:t.leads+a.leads, spend:t.spend+a.spend}), {leads:0, spend:0});
+  const cpl = a => a.leads>0 && a.spend>0 ? inr(Math.round(a.spend/a.leads)) : '—';
+  const dates = [...ownSheetLeads.map(r=>r.day), ...ownAdMetrics.map(m=>m.date)];
+  return `<div class="panel">
+    <div class="panel-head" style="flex-wrap:wrap;gap:8px;">
+      <div><h3>Leads by service</h3><div class="sub">Leads come in automatically from the Meta lead sheet · spend is what Performance Marketing logs</div></div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <select class="select-sm" onchange="setMetaSvcRange(this.value)">${dateFilterOptions(dates, metaSvcRange, {custom:true})}</select>${dateRangeInputs(metaSvcRange)}
+        <button class="btn btn-sm ghost" onclick="openLogOwnAdMetric()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Log spend</button>
+      </div>
+    </div>
+    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Service</th><th class="num">Leads (from sheet)</th><th class="num">Share</th><th class="num">Spend</th><th class="num">Cost per lead</th></tr></thead>
+      <tbody>${list.map(a=>`<tr>
+        <td style="font-weight:700;">${a.service?esc(a.service):`<span class="faint" style="font-weight:600;">${NO_SERVICE_LABEL}</span>`}</td>
+        <td class="num mono" style="font-weight:700;">${a.leads}</td>
+        <td class="num mono faint">${tot.leads>0?Math.round(a.leads/tot.leads*100)+'%':'—'}</td>
+        <td class="num mono">${a.spend>0?inr(a.spend):`<span class="faint" title="No spend logged for this service in this period">not logged</span>`}</td>
+        <td class="num mono">${cpl(a)}</td></tr>`).join('')}
+        <tr style="font-weight:800;"><td>Total</td><td class="num mono">${tot.leads}</td><td></td><td class="num mono">${inr(tot.spend)}</td><td class="num mono">${cpl(tot)}</td></tr>
+      </tbody></table></div>` : `<div class="panel-body"><div class="empty">No sheet leads or logged spend in this period.</div></div>`}
+  </div>`;
 }
 // Daily "ad numbers not logged" reminders (Admin only). Sending is automatic once the server has it switched on;
 // this panel only SHOWS what would be sent — it never sends anything.
@@ -7957,6 +7998,7 @@ function mktPerformance(){
     <div><b>Our own Meta Ads.</b> Performance of DesGro Media's own Facebook/Instagram campaigns — lead generation for our services and Demand School enrollment. This is not client ad spend.</div>
   </div>
   ${metaAdsScorePanelHTML()}
+  ${ownAdsByServiceHTML()}
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">Active Campaigns</div><div class="kpi-value mono">${activeCount}<span style="font-size:14px;color:var(--ink-soft);font-family:Manrope;"> / ${rows.length}</span></div></div>
     <div class="kpi-card"><div class="kpi-label">Total Spend</div><div class="kpi-value mono" style="font-size:20px;">${inr(totals.spend)}</div></div>

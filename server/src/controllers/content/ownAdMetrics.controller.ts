@@ -5,15 +5,25 @@ import { recordAudit } from "../../services/audit.service";
 import { ownAdMetricServiceSchema } from "../../validation/crm.schemas";
 import { SERVICE_DEPARTMENTS } from "../../services/departmentAccess";
 import { serializeAdMetric, parseMetricDate } from "../../services/adMetrics";
+import { sheetLeadsPerDay, sheetServices } from "../../services/leadSheet";
 
 // DesGro Media's own daily Meta ad numbers (our lead-gen spend) — not a client's, and not the
 // campaign-level totals in metaCampaigns.controller. Admin / Content only (router-level guard).
 
 const serialize = (r: Parameters<typeof serializeAdMetric>[0] & { service: string }) => ({ ...serializeAdMetric(r), service: r.service });
 
+// Spend can be logged against an ERP service or one of the Meta lead sheet's services (its tab names), so the
+// spend lines up with the leads the sheet brings in for that service.
+const allowedServices = async () => [...new Set([...(await sheetServices()), ...SERVICE_DEPARTMENTS])];
+
 export const listOwnAdMetrics: RequestHandler = asyncHandler(async (_req, res) => {
-  const rows = await prisma.ownAdMetric.findMany({ orderBy: [{ date: "desc" }, { service: "asc" }] });
-  res.json({ metrics: rows.map(serialize), services: SERVICE_DEPARTMENTS });
+  const [rows, services, sheetLeads] = await Promise.all([
+    prisma.ownAdMetric.findMany({ orderBy: [{ date: "desc" }, { service: "asc" }] }),
+    allowedServices(),
+    // Counted automatically from the Meta lead sheet: per IST day per service, last ~13 months.
+    sheetLeadsPerDay("400 days"),
+  ]);
+  res.json({ metrics: rows.map(serialize), services, sheetLeads });
 });
 
 // Logging a date + service that already has numbers replaces them ("fix yesterday's figure"). One row per date per
@@ -28,7 +38,7 @@ export const upsertOwnAdMetric: RequestHandler = asyncHandler(async (req, res) =
   const date = parsedDate.date;
 
   const service = d.service ?? "";
-  if (service && !SERVICE_DEPARTMENTS.includes(service)) return res.status(400).json({ error: "Pick one of the ERP services" });
+  if (service && !(await allowedServices()).includes(service)) return res.status(400).json({ error: "Pick one of the services in the list" });
 
   const data = { spend: d.spend, leads: d.leads, purchases: d.purchases, revenue: d.revenue, note: d.note || null, loggedBy: req.user!.name };
   // Editing a specific entry (id given): update that row in place, including moving it to another service.
