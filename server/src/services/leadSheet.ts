@@ -177,6 +177,8 @@ export async function syncLeadSheet(opts: { source?: SheetSource; actorUserId?: 
         const header = rows[0] ?? [];
         const leads = rows.slice(1).map((r) => rowToLead(header, r)).filter((l): l is SheetLead => !!l);
         summary.seen += leads.length;
+        // One-off after tabs became services: leads imported earlier were filed under the five ERP names; file them under the tab they came from.
+        if (!config.tabNamesApplied && leads.length) await prisma.lead.updateMany({ where: { metaLeadId: { in: leads.map((l) => l.metaLeadId) }, serviceInterested: { not: tab.service! } }, data: { serviceInterested: tab.service! } });
         const known = new Set((await prisma.lead.findMany({ where: { metaLeadId: { in: leads.map((l) => l.metaLeadId) } }, select: { metaLeadId: true } })).map((l) => l.metaLeadId));
         // Oldest first, so lead codes (MLD-nn) follow the order the leads came in.
         const fresh = leads.filter((l) => !known.has(l.metaLeadId)).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
@@ -210,7 +212,7 @@ export async function syncLeadSheet(opts: { source?: SheetSource; actorUserId?: 
       await prisma.leadSheetTab.update({ where: { id: tab.id }, data: { lastError: t.error ?? null, lastRows: t.created ? tab.lastRows + t.created : tab.lastRows } });
     }
 
-    await prisma.leadSheetConfig.update({ where: { id: 1 }, data: { lastSyncAt: new Date(), lastSummary: summary as object } });
+    await prisma.leadSheetConfig.update({ where: { id: 1 }, data: { lastSyncAt: new Date(), lastSummary: summary as object, tabNamesApplied: true } });
     if (summary.created) await recordAudit({ userId: opts.actorUserId ?? null, action: "LEAD_SHEET_SYNC", entityType: "LeadSheetConfig", entityId: "1", afterData: { created: summary.created, tabs: summary.tabs.filter((x) => x.created).map((x) => `${x.name}: ${x.created}`) } });
     return summary;
   } finally {

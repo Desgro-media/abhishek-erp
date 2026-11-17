@@ -1853,6 +1853,8 @@ model LeadSheetConfig {
   importFrom DateTime? @map("import_from") @db.Date
   lastSyncAt DateTime? @map("last_sync_at")
   lastSummary Json?    @map("last_summary")
+  // Set after the first sync following the "tab name = service" change, which files already-imported leads under their tab's name once.
+  tabNamesApplied Boolean @default(false) @map("tab_names_applied")
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
   @@map("lead_sheet_config")

@@ -185,3 +185,17 @@ test("duplicates are rejected: same phone as an existing lead, or repeated withi
   const again = await call("POST", "/crm/lead-sheet/sync", tok.admin);
   assert.equal(again.body.summary.created, 0);
 });
+
+test("one-time relabel: leads imported before tab names became services are filed under their tab's name", async () => {
+  const lead = await prisma.lead.findFirstOrThrow({ where: { name: "Asha Nair", metaLeadId: { startsWith: `l:${run}` } } });
+  await prisma.lead.update({ where: { id: lead.id }, data: { serviceInterested: "Web Development" } });
+  await prisma.leadSheetConfig.update({ where: { id: 1 }, data: { tabNamesApplied: false } });
+  failPb = false;
+  await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).serviceInterested, "Web kerala");
+  assert.equal((await prisma.leadSheetConfig.findUniqueOrThrow({ where: { id: 1 } })).tabNamesApplied, true);
+  // ...and only once: a later manual change sticks
+  await prisma.lead.update({ where: { id: lead.id }, data: { serviceInterested: "Web Development" } });
+  await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).serviceInterested, "Web Development");
+});
