@@ -156,17 +156,26 @@ export async function getLeadSheet() {
 export const todayIst = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
 
 // Reads the sheet's tab list and brings lead_sheet_tabs in line: new tabs get a guessed service (or skip), tabs that
-// were already set up keep their choice, tabs that no longer exist are dropped.
+// were already set up keep their choice, tabs that no longer exist are dropped. A tab that was deleted and made again
+// (or replaced by a copy) gets a new gid from Google — when its name matches a tab that's gone, it keeps that tab's
+// service instead of a guess, so its leads keep landing under the same service.
 export async function refreshTabs(sheetId: string, source: SheetSource = googleSheetSource) {
   const found = await source.tabs(sheetId);
-  const existing = new Map((await prisma.leadSheetTab.findMany()).map((t) => [t.gid, t]));
+  const all = await prisma.leadSheetTab.findMany();
+  const existing = new Map(all.map((t) => [t.gid, t]));
+  const foundGids = new Set(found.map((f) => f.gid));
+  const key = (name: string) => name.trim().toLowerCase();
+  const goneByName = new Map(all.filter((t) => !foundGids.has(t.gid)).map((t) => [key(t.name), t]));
   await prisma.$transaction([
-    prisma.leadSheetTab.deleteMany({ where: { gid: { notIn: found.map((f) => f.gid) } } }),
-    ...found.map((f, i) => prisma.leadSheetTab.upsert({
-      where: { gid: f.gid },
-      create: { gid: f.gid, name: f.name, service: guessService(f.name), position: i },
-      update: { name: f.name, position: i },
-    })),
+    prisma.leadSheetTab.deleteMany({ where: { gid: { notIn: [...foundGids] } } }),
+    ...found.map((f, i) => {
+      const prev = existing.has(f.gid) ? undefined : goneByName.get(key(f.name));
+      return prisma.leadSheetTab.upsert({
+        where: { gid: f.gid },
+        create: { gid: f.gid, name: f.name, service: prev ? prev.service : guessService(f.name), position: i },
+        update: { name: f.name, position: i },
+      });
+    }),
   ]);
   return found.length - existing.size;
 }
@@ -184,6 +193,9 @@ export async function syncLeadSheet(opts: { source?: SheetSource; actorUserId?: 
   if (!config?.sheetId || running) return null;
   running = true;
   try {
+    // Pick up tabs that were added, renamed or recreated since the last sync. If the tab list can't be read right
+    // now, carry on with the tabs already on file — each tab's own read reports its error below.
+    await refreshTabs(config.sheetId, source).catch((err) => log.warn({ err }, "lead sheet: couldn't refresh tab list"));
     const tabs = (await prisma.leadSheetTab.findMany({ orderBy: { position: "asc" } })).filter((t) => t.service);
     const from = config.importFrom ? config.importFrom.getTime() : 0;
     const summary: SyncSummary = { created: 0, duplicates: 0, skippedOld: 0, seen: 0, tabs: [], at: new Date().toISOString() };

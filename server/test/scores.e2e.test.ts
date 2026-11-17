@@ -125,6 +125,8 @@ test("sales score: booked revenue of the team's clients against the target", asy
 test("meta ads score: from the daily numbers, Admin/Content only", async () => {
   assert.equal((await call("GET", `/scores/meta-ads?month=${M}`, tok.plain)).status, 403);
   assert.equal((await call("GET", `/scores/meta-ads?month=${M}`, tok.head)).status, 403);
+  // No Meta lead sheet connected: leads are the ones typed into the tracker. (Other test files may have left tabs.)
+  await prisma.leadSheetTab.deleteMany();
   const r = await call("GET", `/scores/meta-ads?month=${M}`, tok.content);
   assert.equal(r.status, 200);
   assert.deepEqual({ spend: r.body.totals.now.spend, leads: r.body.totals.now.leads, purchases: r.body.totals.now.purchases }, { spend: 1000, leads: 10, purchases: 2 });
@@ -136,6 +138,19 @@ test("meta ads score: from the daily numbers, Admin/Content only", async () => {
   // a past month is measured to its end: 4 of 31 days logged. (70 + 15×4/31) ÷ 85 = 85
   assert.equal(Math.round(part("tracking").v * 31), 4);
   assert.equal(r.body.now.score, 85);
+
+  // With a sheet connected, leads come from the sheet instead (by the lead's IST date): 4 sheet leads that month.
+  await prisma.leadSheetTab.create({ data: { gid: `g-${run}`, name: "Web kerala", service: "Web kerala", position: 0 } });
+  const codes = Array.from({ length: 4 }, (_, i) => `SC-${run}-${i}`);
+  await prisma.lead.createMany({ data: codes.map((c, i) => ({ leadCode: c, name: c, source: "Meta", serviceInterested: "Web kerala", metaLeadId: `m-${run}-${i}`, createdAt: new Date(`${M}-10T06:00:00Z`) })) });
+  try {
+    const s = await call("GET", `/scores/meta-ads?month=${M}`, tok.content);
+    assert.equal(s.body.totals.now.leads, 4);
+    assert.match(s.body.now.parts.find((p: any) => p.key === "cpl").detail, /₹250/);
+  } finally {
+    await prisma.lead.deleteMany({ where: { leadCode: { in: codes } } });
+    await prisma.leadSheetTab.deleteMany({ where: { gid: `g-${run}` } });
+  }
 });
 
 test("sales overview: Sales access only; team table shows each person's month against the one before", async () => {
