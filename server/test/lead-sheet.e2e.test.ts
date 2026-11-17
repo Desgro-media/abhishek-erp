@@ -41,12 +41,14 @@ const csvWeb = [
 let webCsv = csvWeb;
 let failPb = false;
 
+let tabList = [{ gid: "0", name: "Web kerala" }, { gid: "11", name: "PB NEW" }, { gid: "22", name: "PM sheet" }];
 const fake = {
-  tabs: async () => [{ gid: "0", name: "Web kerala" }, { gid: "11", name: "PB NEW" }, { gid: "22", name: "PM sheet" }],
+  tabs: async () => tabList,
   csv: async (_s: string, gid: string) => {
     if (gid === "0") return webCsv;
     if (gid === "22") return `${HEADER.replace("phone_number", "phone")}\nl:${run}-9,${fresh},,,,,x,Pm Person,p:+91${ph(9)},Delhi,CREATED`;
     if (gid === "11") { if (failPb) throw new Error("PB tab broke"); return HEADER; }
+    if (gid === "33") return `${HEADER}\nl:${run}-33,${fresh},,,,,x,Recreated Tab,p:+91${ph(7)},Kochi,CREATED`;
     throw new Error("unknown tab");
   },
 };
@@ -198,4 +200,17 @@ test("one-time relabel: leads imported before tab names became services are file
   await prisma.lead.update({ where: { id: lead.id }, data: { serviceInterested: "Web Development" } });
   await call("POST", "/crm/lead-sheet/sync", tok.admin);
   assert.equal((await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).serviceInterested, "Web Development");
+});
+
+test("a tab deleted and made again (new gid, same name) is picked up on the next sync and keeps its service", async () => {
+  const before = (await call("GET", "/crm/lead-sheet", tok.admin)).body.tabs.find((t: any) => t.name === "PB NEW");
+  tabList = [{ gid: "0", name: "Web kerala" }, { gid: "33", name: "PB NEW " }, { gid: "22", name: "PM sheet" }];
+  const r = await call("POST", "/crm/lead-sheet/sync", tok.admin);
+  assert.equal(r.status, 200);
+  const tabs = (await call("GET", "/crm/lead-sheet", tok.admin)).body.tabs;
+  assert.ok(!tabs.some((t: any) => t.gid === "11"), "the old gid is dropped");
+  const now = tabs.find((t: any) => t.gid === "33");
+  assert.equal(now.service, before.service);
+  assert.equal(r.body.summary.tabs.find((t: any) => t.name.trim() === "PB NEW").created, 1);
+  assert.equal((await prisma.lead.findFirst({ where: { metaLeadId: `l:${run}-33` } }))?.serviceInterested, before.service);
 });
