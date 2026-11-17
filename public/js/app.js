@@ -7935,6 +7935,8 @@ let metaSvcOpen = {};          // service or date -> true while its rows are sho
 function setMetaSvcRange(v){ metaSvcRange = v; render(); }
 function setMetaSvcView(v){ metaSvcView = v; render(); }
 function toggleMetaSvc(i){ const k = (window._metaSvcKeys||[])[i]; if(k==null) return; metaSvcOpen[k] = !metaSvcOpen[k]; render(); }
+// "+" on an opened row with no spend yet: the form opens on that row's date and service.
+function addMetaRowSpend(i){ const x = (window._metaAddKeys||[])[i]; if(x) openLogOwnAdMetric(null, x.service, x.date); }
 function ownAdsByServiceHTML(){
   const inRange = d => metaSvcRange==="Custom"
     ? (!customDateRange.from || d>=customDateRange.from) && (!customDateRange.to || d<=customDateRange.to)
@@ -7956,10 +7958,13 @@ function ownAdsByServiceHTML(){
   const label = k => byDay ? dayName(k) : svcName(k);
   const subLabel = k => byDay ? svcName(k) : dayName(k);
   const ico = id => `<svg class="icon" style="width:12px;height:12px"><use href="#i-${id}"/></svg>`;
-  const actions = m => m ? `<div style="display:flex;gap:4px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openLogOwnAdMetric('${esc(m.id)}')" title="Edit spend">${ico('edit')}</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('ownAdMetric','${esc(m.id)}')" title="Delete spend">${ico('x')}</button></div>` : '';
+  window._metaAddKeys = [];
+  const actions = (m, date, service) => m
+    ? `<div style="display:flex;gap:4px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openLogOwnAdMetric('${esc(m.id)}')" title="Edit spend">${ico('edit')}</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('ownAdMetric','${esc(m.id)}')" title="Delete spend">${ico('x')}</button></div>`
+    : `<div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="addMetaRowSpend(${window._metaAddKeys.push({date, service})-1})" title="Add spend for this day">${ico('plus')}</button></div>`;
   const subRows = g => Object.values(g.subs).sort(byDay ? (a,b)=>b.leads-a.leads : (a,b)=>b.key.localeCompare(a.key)).map(s=>`<tr style="background:var(--surface-sunk);">
       <td style="padding-left:32px;">${subLabel(s.key)}${s.entry&&s.entry.note?`<div class="subtext" style="max-width:280px;white-space:normal;">${esc(s.entry.note)}</div>`:''}</td>
-      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.entry?s.entry.spend:0)}</td><td class="num mono">${cpl(s.entry?s.entry.spend:0, s.leads)}</td><td>${actions(s.entry)}</td></tr>`).join('');
+      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.entry?s.entry.spend:0)}</td><td class="num mono">${cpl(s.entry?s.entry.spend:0, s.leads)}</td><td>${actions(s.entry, byDay?g.key:s.key, byDay?s.key:g.key)}</td></tr>`).join('');
   const dates = [...ownSheetLeads.map(r=>r.day), ...ownAdMetrics.map(m=>m.date)];
   return `<div class="panel">
     <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
