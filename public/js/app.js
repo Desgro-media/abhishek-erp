@@ -6832,6 +6832,33 @@ function salesScorePanelHTML(){
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--ink-soft);"><span>Targets: ${shortInr(d.targets.revenue)} a month · ${d.targets.conversion}% lead conversion · ${d.targets.meetings} meetings</span><span style="display:flex;gap:6px;">${isSalesRole(currentUser)?`<button class="btn btn-sm ghost" onclick="setSub('sales','leads')">Log meeting</button>`:''}${isLeadershipRole(currentUser)?`<button class="btn btn-sm ghost" onclick="openScoreTargets()">Edit targets</button>`:''}</span></div></div>`;
   return monthScorePanelHTML(`Sales Score · ${monthLabel(month)}`, `Target completion, lead conversion and meetings · vs ${P}`, sc, sp, P, foot);
 }
+// Sales overview: who got how many leads in each service (rows = salesperson, columns = service). Leadership view.
+let salesMatrixFilter = "ThisMonth";
+function setSalesMatrixFilter(v){ salesMatrixFilter = v; render(); }
+function salesLeadsByServiceHTML(){
+  const leads = marketingLeads.filter(l=>matchesDateFilter(l.createdDate, salesMatrixFilter));
+  const UN = "Not assigned (Open)";
+  const owners = new Set(assignableEmployees().filter(e=>e.dept==='Sales').map(e=>e.name));
+  leads.forEach(l=>{ if(l.leadOwner) owners.add(l.leadOwner); });
+  const rowsKeys = [...owners].sort((a,b)=>a.localeCompare(b)).concat(leads.some(l=>!l.leadOwner) ? [UN] : []);
+  const seen = new Set(leads.map(l=>l.serviceInterested));
+  const base = leadSheetServices.length ? leadSheetServices : SERVICE_DEPARTMENTS;
+  const allSvc = [...base, ...[...seen].filter(x=>!base.includes(x)).sort()];
+  const cols = allSvc.filter(sv=>seen.has(sv));
+  const hidden = allSvc.length - cols.length;
+  const n = (who, sv) => leads.filter(l=>(l.leadOwner||UN)===who && (sv==null || l.serviceInterested===sv)).length;
+  const rows = rowsKeys.map(who=>({who, per:cols.map(sv=>n(who,sv)), total:n(who,null)})).sort((a,b)=>b.total-a.total);
+  const colTotals = cols.map(sv=>leads.filter(l=>l.serviceInterested===sv).length);
+  const cellN = v => v ? `<b>${v}</b>` : `<span class="faint">–</span>`;
+  return `<div class="panel">
+    <div class="panel-head" style="flex-wrap:wrap;gap:10px;"><div><h3>Leads by salesperson and service</h3><div class="sub">${leads.length} lead${leads.length===1?'':'s'}${dateFilterSuffix(salesMatrixFilter)} · who is getting leads in which service${hidden?` · ${hidden} service${hidden===1?'':'s'} with no leads in this range hidden`:''}</div></div>
+      <div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setSalesMatrixFilter(this.value)">${dateFilterOptions(marketingLeads.map(l=>l.createdDate), salesMatrixFilter, {custom:true})}</select>${dateRangeInputs(salesMatrixFilter)}</div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Salesperson</th>${cols.map(sv=>`<th class="num">${esc(sv)}</th>`).join('')}<th class="num">Total</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td><b>${esc(r.who)}</b></td>${r.per.map(v=>`<td class="num mono">${cellN(v)}</td>`).join('')}<td class="num mono"><b>${r.total}</b></td></tr>`).join('') || `<tr><td colspan="${cols.length+2}"><div class="empty">No leads in this range.</div></td></tr>`}
+      ${rows.length?`<tr style="background:var(--surface-2,rgba(0,0,0,.04));"><td><b>All salespeople</b></td>${colTotals.map(v=>`<td class="num mono"><b>${v}</b></td>`).join('')}<td class="num mono"><b>${leads.length}</b></td></tr>`:''}</tbody>
+    </table></div>
+  </div>`;
+}
 function salesOverview(){
   const month = TODAY.slice(0,7), prev = prevMonth(month), P = monthLabel(prev).split(' ')[0], M = monthLabel(month).split(' ')[0];
   const months = lastMonths(month, 4);
@@ -6864,6 +6891,8 @@ function salesOverview(){
       </div>
     </div>
   </div>
+
+  ${isSalesRepRole(currentUser) ? '' : salesLeadsByServiceHTML()}
 
   ${salesOverviewData ? `<div class="panel">
     <div class="panel-head"><div><h3>Sales team · ${M}</h3><div class="sub">Each person against their own ${P} · ranked by revenue received from their clients</div></div>${best?`<div style="display:flex;align-items:center;gap:8px;"><span class="faint" style="font-size:12px;">Best this month</span>${pill('★ '+best.name,'pos')}</div>`:''}</div>
