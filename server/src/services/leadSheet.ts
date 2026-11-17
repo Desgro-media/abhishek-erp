@@ -114,12 +114,34 @@ export const googleSheetSource: SheetSource = {
 
 // ---- config ----
 
+// Sheet leads per IST day per service, over the last `window` (a Postgres interval, e.g. "400 days").
+// created_at is a plain timestamp holding UTC, so it's read as UTC first and then shifted to IST.
+export async function sheetLeadsPerDay(window: string) {
+  return prisma.$queryRaw<{ day: string; service: string; n: number }[]>`
+    SELECT to_char((created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day, service_interested AS service, count(*)::int AS n
+    FROM leads WHERE meta_lead_id IS NOT NULL AND created_at >= now() - ${window}::interval GROUP BY 1, 2`;
+}
+
+// How many leads the Meta sheet brought in during a month (YYYY-MM, by IST date) — or null when no sheet tab is
+// filed under a service yet, so callers can fall back to the leads typed into the ad tracker.
+export async function sheetLeadsInMonth(month: string): Promise<number | null> {
+  if (!(await prisma.leadSheetTab.count({ where: { service: { not: null } } }))) return null;
+  const [{ n }] = await prisma.$queryRaw<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM leads
+    WHERE meta_lead_id IS NOT NULL AND to_char((created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM') = ${month}`;
+  return n;
+}
+
+// The services the sheet's tabs are filed under (skipped tabs left out).
+export async function sheetServices() {
+  const tabs = await prisma.leadSheetTab.findMany({ where: { service: { not: null } }, orderBy: { position: "asc" }, select: { service: true } });
+  return [...new Set(tabs.map((t) => t.service!))];
+}
+
 // How many sheet leads arrived each of the last `days` days (IST, by the lead's own date) per service — so a service
 // that got nothing on a day shows as a gap.
 export async function dailyIntake(days = 7) {
-  const rows = await prisma.$queryRaw<{ day: string; service: string; n: number }[]>`
-    SELECT to_char((created_at AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day, service_interested AS service, count(*)::int AS n
-    FROM leads WHERE meta_lead_id IS NOT NULL AND created_at >= now() - ${`${days + 1} days`}::interval GROUP BY 1, 2`;
+  const rows = await sheetLeadsPerDay(`${days + 1} days`);
   const dayList = Array.from({ length: days }, (_, i) => new Date(Date.now() + 5.5 * 3600_000 - (days - 1 - i) * 86400_000).toISOString().slice(0, 10));
   const counts: Record<string, Record<string, number>> = {};
   for (const r of rows) (counts[r.service] ??= {})[r.day] = r.n;
