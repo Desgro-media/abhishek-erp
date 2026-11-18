@@ -2549,7 +2549,7 @@ function deptInsightsHTML(s){
     s.service ? {label:"Clients", now:a.clients, was:b.clients, fmt:x=>String(x)} : null,
     s.canSeeMoney && a.paid!=null ? {label:"Payments", now:a.paid, was:b.paid, fmt:shortInr, dfmt:shortInr, tip:`Payments received · ${inr(a.paid)} vs ${inr(b.paid)}`} : null,
     {label:"Team", now:a.team, was:b.team, fmt:x=>String(x), neutral:true},
-    s.service ? {label:"Rating", tip:"Average client satisfaction rating (1–5)", now:a.rating, was:b.rating, fmt:x=>x.toFixed(1)+" ★", dfmt:x=>x.toFixed(1), eps:0.05} : null,
+    s.service ? {label:"Rating", tip:"Average client satisfaction rating (1–5)", now:a.rating, was:b.rating, fmt:x=>x==null?"—":x.toFixed(1)+" ★", dfmt:x=>x.toFixed(1), eps:0.05} : null,
     s.service ? {label:"Feedbacks", now:a.feedbacks, was:b.feedbacks, fmt:x=>String(x)} : null,
   ].filter(Boolean);
   return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;">${tiles.map(t=>`
