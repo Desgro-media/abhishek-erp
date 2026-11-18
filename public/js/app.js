@@ -2689,7 +2689,148 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
+  return `${header}${deptScorePanel(d)}${insights}${d===PM_DEPT?pmDeptPanelsHTML():''}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
+}
+
+/* ===================== PERFORMANCE MARKETING TRACKING =====================
+   On the Performance Marketing department page: every client the team runs ads for (who runs it, budget, spend, leads,
+   cost per lead against target, campaign status, last meeting, days the numbers are missing) and a monthly score per
+   person. The server works the score out (/api/departments/pm/tracking); the head can add or take off up to 10 points
+   with a reason. Each team member sees only their own clients and score, under My Workspace → My Score. */
+const PM_DEPT = "Performance Marketing";
+const PM_PARTS = [["logging","Logged on time"],["cpl","Cost per lead on target"],["rating","Client rating"],["tasks","Tasks on time"]];
+let pmTrack = null, pmMine = null, pmMonth = TODAY.slice(0,7);
+async function loadPmTracking(){ pmTrack = await apiJson(`/api/departments/pm/tracking?month=${pmMonth}`); }
+async function loadPmMine(){ pmMine = await apiJson(`/api/departments/pm/tracking?month=${pmMonth}&mine=1`); }
+function isPmMember(u){ return !!u && !u.isClient && (u.dept===PM_DEPT || headDeptOf(u.name)===PM_DEPT); }
+function pmMonthOptions(){ const out = []; let m = TODAY.slice(0,7); for(let i=0;i<6;i++){ out.push(m); m = prevMonth(m); } return out; }
+function pmSetMonth(m, mine){ pmMonth = m; (mine ? loadPmMine() : loadPmTracking()).then(render).catch(err=>toast(err.message||"Couldn't load")); }
+function pmMonthSelect(mine){ return `<select class="field-input" style="width:auto;padding:5px 8px;font-size:12px;" onchange="pmSetMonth(this.value, ${mine?'true':'false'})">${pmMonthOptions().map(m=>`<option value="${m}" ${m===pmMonth?'selected':''}>${monthLabel(m)}</option>`).join('')}</select>`; }
+function pmScoreKind(s){ return s==null ? "neutral" : s>=80 ? "pos" : s>=60 ? "warn" : "neg"; }
+const PM_STATUS_KIND = {Running:"pos", Learning:"blue", Paused:"warn", Stopped:"neg"};
+
+function pmClientsTableHTML(t, opts){
+  opts = opts || {};
+  const rows = t.clients;
+  if(!rows.length) return `<div class="empty">${opts.mine?'No clients assigned to you yet.':'No active Performance Marketing clients.'}</div>`;
+  return `<div class="table-wrap"><table class="data"><thead><tr><th>Client</th>${opts.mine?'':'<th>Handled by</th>'}<th>Budget</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Cost per lead</th><th>Campaign</th><th>Last meeting</th><th>Numbers</th>${opts.manage?'<th></th>':''}</tr></thead><tbody>${rows.map(c=>{
+    const cur = c.currency, miss = c.missingDays.length;
+    const cplCell = c.cpl==null ? '<span class="faint">—</span>' : `<span class="${c.cplOk===false?'neg':c.cplOk?'pos':''}" style="font-weight:700;">${adMoney(c.cpl, cur)}</span>`;
+    const numbers = c.access!=="GRANTED" ? `<span class="faint" style="font-size:11.5px;">No ad access${c.access?' ('+esc(c.access.toLowerCase())+')':''}</span>`
+      : !c.daysDue ? '<span class="faint">—</span>'
+      : miss ? `<span title="Missing: ${esc(c.missingDays.map(fmtDateShort).join(', '))}">${pill(miss+' day'+(miss===1?'':'s')+' missing','neg')}</span>`
+      : pill(c.daysOnTime===c.daysDue?'All logged':'Logged, '+(c.daysDue-c.daysOnTime)+' late', c.daysOnTime===c.daysDue?'pos':'warn');
+    return `<tr class="row-click" ${clientById(c.id)?`onclick="goToClient('${c.id}')"`:''}>
+      <td><div style="font-weight:700;">${esc(c.name)}</div><div class="subtext">${c.platform?esc(c.platform):''}${c.accountManager?(c.platform?' · ':'')+'AM '+esc(c.accountManager):''}</div></td>
+      ${opts.mine?'':`<td>${c.owner?esc(c.owner.name):'<span class="neg" style="font-size:12px;font-weight:700;">Not assigned</span>'}</td>`}
+      <td style="font-size:12.5px;">${c.budget?esc(c.budget):'<span class="faint">—</span>'}</td>
+      <td class="num mono">${c.spend?adMoney(c.spend, cur):'—'}</td>
+      <td class="num mono">${c.leads||'—'}</td>
+      <td class="num mono" style="white-space:nowrap;">${cplCell}<div class="subtext">${c.targetCpl!=null?'target '+adMoney(c.targetCpl, cur):'no target'}</div></td>
+      <td>${c.campaignStatus?pill(c.campaignStatus, PM_STATUS_KIND[c.campaignStatus]||'neutral'):'<span class="faint">—</span>'}</td>
+      <td style="white-space:nowrap;font-size:12.5px;">${c.lastMeeting?fmtDateShort(c.lastMeeting):'<span class="faint">None</span>'}</td>
+      <td>${numbers}</td>
+      ${opts.manage?`<td class="num"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openPmClient('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></td>`:''}
+    </tr>`; }).join('')}</tbody></table></div>`;
+}
+
+function pmScoreRowsHTML(t, opts){
+  opts = opts || {};
+  if(!t.scorecard.length) return `<div class="empty">No one in Performance Marketing.</div>`;
+  return `<div class="table-wrap"><table class="data"><thead><tr><th>Person</th><th class="num">Clients</th>${PM_PARTS.map(([k,l])=>`<th class="num" title="${t.weights[k]}% of the score">${l} <span class="faint" style="font-weight:600;">${t.weights[k]}%</span></th>`).join('')}<th class="num">Adjustment</th><th class="num">Score</th>${opts.manage?'<th></th>':''}</tr></thead><tbody>${t.scorecard.map(s=>`<tr>
+    <td><div style="font-weight:700;">${esc(s.name)}</div><div class="subtext">${esc(s.role||'')}</div></td>
+    <td class="num mono">${s.clients||'—'}</td>
+    ${PM_PARTS.map(([k])=>{ const p = s.parts[k]; return `<td class="num">${p?`<b class="mono">${p.pct}%</b><div class="subtext">${esc(p.detail)}</div>`:'<span class="faint">—</span>'}</td>`; }).join('')}
+    <td class="num">${s.adjustment?`<b class="mono ${s.adjustment.points>0?'pos':'neg'}">${s.adjustment.points>0?'+':''}${s.adjustment.points}</b><div class="subtext" title="${esc(s.adjustment.reason)} — ${esc(s.adjustment.by)}" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:auto;">${esc(s.adjustment.reason)}</div>`:'<span class="faint">—</span>'}</td>
+    <td class="num">${s.score!=null?`<span class="pill ${pmScoreKind(s.score)}" style="font-size:13px;font-weight:800;">${s.score}</span>`:'<span class="faint" style="font-size:11.5px;">No data</span>'}</td>
+    ${opts.manage?`<td class="num">${s.employeeId===t.me && !isLeadershipRole(currentUser)?'':`<button class="btn btn-sm ghost" onclick="openPmAdjust('${s.employeeId}')">Adjust</button>`}</td>`:''}
+  </tr>`).join('')}</tbody></table></div>`;
+}
+
+const PM_SCORE_HELP = t => `Logged on time: working days up to ${fmtDateShort(t.judgedUntil)} whose ad numbers were in by the end of the next day (clients with ad access only, leave days skipped). Cost per lead: clients with a target and spend this month at or under it. Rating: client ratings this month, 5★ = 100%. Tasks: tasks due this month finished by their due date. A part with nothing to measure is left out. The head can add or take off up to ${t.adjustLimit} points with a reason.`;
+
+function pmDeptPanelsHTML(){
+  const t = pmTrack;
+  if(!t) return `<div class="panel"><div class="panel-body"><div class="empty">Loading Performance Marketing tracking…</div></div></div>`;
+  const unassigned = t.clients.filter(c=>!c.owner).length, missing = t.clients.filter(c=>c.missingDays.length).length, offTarget = t.clients.filter(c=>c.cplOk===false).length;
+  const scored = t.scorecard.filter(s=>s.score!=null), avg = scored.length ? Math.round(scored.reduce((a,s)=>a+s.score,0)/scored.length) : null;
+  const kpi = (label, val, sub, kind) => `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value mono" ${kind?`style="color:var(--${kind});"`:''}>${val}</div><div class="kpi-sub">${sub}</div></div>`;
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Performance Marketing clients · ${monthLabel(t.month)}</h3><div class="sub">Who runs each client's ads, spend and leads this month, and whether the daily numbers are in</div></div>${pmMonthSelect(false)}</div>
+    <div class="panel-body" style="padding-bottom:0;"><div class="kpi-grid" style="margin:0;">
+      ${kpi("Clients", t.clients.length, "active this month")}
+      ${kpi("Not assigned", unassigned, "no one running their ads", unassigned?'neg':null)}
+      ${kpi("Numbers missing", missing, "clients with days not logged", missing?'neg':null)}
+      ${kpi("Over target", offTarget, "cost per lead above target", offTarget?'warn':null)}
+      ${kpi("Team score", avg==null?'—':avg, scored.length+" of "+t.scorecard.length+" scored")}
+    </div></div>
+    ${pmClientsTableHTML(t, {manage:t.canManage})}
+  </div>
+  <div class="panel">
+    <div class="panel-head"><div><h3>Team scorecard · ${monthLabel(t.month)}</h3><div class="sub">Worked out from each person's clients and tasks. Hover a column for its weight.</div></div></div>
+    ${pmScoreRowsHTML(t, {manage:t.canManage})}
+    <div class="panel-body" style="padding-top:8px;"><div class="subtext">${esc(PM_SCORE_HELP(t))}</div></div>
+  </div>`;
+}
+
+function workspaceMyScore(){
+  const t = pmMine;
+  if(!t) return `<div class="empty">Loading your score…</div>`;
+  const s = t.scorecard[0];
+  const parts = s ? PM_PARTS.map(([k,l])=>{ const p = s.parts[k]; return `<div class="kpi-card"><div class="kpi-label">${l} · ${t.weights[k]}%</div><div class="kpi-value mono">${p?p.pct+'%':'—'}</div><div class="kpi-sub">${p?esc(p.detail):'nothing to measure yet'}</div></div>`; }).join('') : '';
+  return `<div class="panel" style="padding:16px 18px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between;">
+      <div><div class="kpi-label">My score · ${monthLabel(t.month)}</div><div class="mono" style="font-size:34px;font-weight:800;line-height:1.1;">${s&&s.score!=null?`<span style="color:var(--${pmScoreKind(s.score)==='neutral'?'ink':pmScoreKind(s.score)});">${s.score}</span><span class="faint" style="font-size:16px;"> / 100</span>`:'<span class="faint" style="font-size:18px;">No data yet</span>'}</div>
+        ${s&&s.adjustment?`<div class="subtext">${s.auto} worked out, ${s.adjustment.points>0?'+':''}${s.adjustment.points} from ${esc(s.adjustment.by)}: “${esc(s.adjustment.reason)}”</div>`:''}</div>
+      ${pmMonthSelect(true)}
+    </div>
+    <div class="kpi-grid">${parts}</div>
+    <div class="panel"><div class="panel-head"><div><h3>My clients</h3><div class="sub">The clients whose ads you run</div></div></div>${pmClientsTableHTML(t, {mine:true})}
+      <div class="panel-body" style="padding-top:8px;"><div class="subtext">${esc(PM_SCORE_HELP(t))}</div></div></div>`;
+}
+
+function openPmClient(id){
+  const t = pmTrack, c = t && t.clients.find(x=>x.id===id); if(!c || !t.canManage) return;
+  showModal(`
+    <div class="modal-head"><h3>${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-pm-client"><div class="modal-body">
+      <div><label class="field-label" for="pm-owner">Handled by</label><select class="field-input" id="pm-owner" name="owner"><option value="">Not assigned</option>${t.team.concat(c.owner && !t.team.some(e=>e.id===c.owner.id)?[c.owner]:[]).map(e=>`<option value="${e.id}" ${c.owner&&c.owner.id===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><div class="subtext">The person who runs this client's ads. Their score counts this client.</div></div>
+      <div><label class="field-label" for="pm-target">Target cost per lead (${esc(c.currency)})</label><input class="field-input mono" id="pm-target" name="target" type="number" min="0" step="0.01" value="${c.targetCpl!=null?c.targetCpl:''}" placeholder="Leave empty for no target"></div>
+      <div><label class="field-label" for="pm-status">Campaign status</label><select class="field-input" id="pm-status" name="status"><option value="">Not set</option>${t.statuses.map(s2=>`<option ${c.campaignStatus===s2?'selected':''}>${s2}</option>`).join('')}</select></div>
+      <div class="subtext">Budget comes from the client's campaign brief (client page).</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div></form>`);
+  document.getElementById("f-pm-client").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target), target = String(f.get("target")||"").trim();
+    if(target && !(Number(target)>0)){ toast("Target must be more than 0"); return; }
+    try{
+      await apiJson(`/api/departments/pm/clients/${id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ownerId:f.get("owner")||null, targetCpl:target?Number(target):null, campaignStatus:f.get("status")||null})});
+      await loadPmTracking(); closeModal(); toast("Saved"); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
+}
+
+function openPmAdjust(empId){
+  const t = pmTrack, s = t && t.scorecard.find(x=>x.employeeId===empId); if(!s || !t.canManage) return;
+  const a = s.adjustment;
+  showModal(`
+    <div class="modal-head"><h3>Adjust ${esc(s.name)}'s score</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-pm-adj"><div class="modal-body">
+      <div class="subtext">${monthLabel(t.month)} · worked out: <b class="mono">${s.auto==null?'no data':s.auto}</b></div>
+      <div><label class="field-label" for="pm-pts">Points (−${t.adjustLimit} to +${t.adjustLimit})</label><input class="field-input mono" id="pm-pts" name="points" type="number" min="-${t.adjustLimit}" max="${t.adjustLimit}" step="1" value="${a?a.points:0}" required><div class="subtext">0 removes the adjustment.</div></div>
+      <div><label class="field-label" for="pm-why">Reason</label><textarea class="field-input" id="pm-why" name="reason" rows="3" maxlength="500" placeholder="What the numbers don't show">${a?esc(a.reason):''}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div></form>`);
+  document.getElementById("f-pm-adj").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target), points = Math.round(Number(f.get("points"))), reason = String(f.get("reason")||"").trim();
+    if(!Number.isFinite(points) || Math.abs(points)>t.adjustLimit){ toast(`Points must be from −${t.adjustLimit} to +${t.adjustLimit}`); return; }
+    if(points && !reason){ toast("Write a reason"); return; }
+    try{
+      await apiJson(`/api/departments/pm/adjustments/${empId}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({month:t.month, points, reason})});
+      await loadPmTracking(); closeModal(); toast(points?"Adjustment saved":"Adjustment removed"); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
 }
 
 /* ===================== DEPARTMENT ACTION PLANS =====================
@@ -3686,6 +3827,7 @@ const MODULES = [
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
     {id:"plans", label:"Dept Action Plans", icon:"i-target", when:()=>canSeePlans(currentUser), count:()=>openNeedsInput().length},
+    {id:"score", label:"My Score", icon:"i-trend", when:()=>isPmMember(currentUser)},
     {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>isMyTask(t) && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
     {id:"attendance", label:"My Attendance", icon:"i-attendance", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
@@ -3880,7 +4022,7 @@ const TAB_REFRESH = {
   "hr/programs":[loadHrPrograms], "hr/overview":[loadHrPrograms],
   "marketing/performance":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{})], "marketing/overview":[()=>loadMktTargets().catch(()=>{}), ()=>loadMetaScore(mktMonthNow()).catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
-  "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
+  "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/score":[loadDeptHeads, loadPmMine], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadServiceBoards().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems, ()=>loadMktTargets().catch(()=>{}), ()=>loadSocial().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{})],
@@ -3894,7 +4036,7 @@ const TAB_REFRESH = {
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
   let jobs = TAB_REFRESH[mid+"/"+sid];
-  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid))] : null);
+  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid)), ...(deptFromSlug(sid)===PM_DEPT?[()=>loadPmTracking().catch(()=>{})]:[])] : null);
   if(!jobs) return;
   Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
 }
@@ -3938,6 +4080,7 @@ const TOPBAR_TITLES = {
   workspace: {
     overview:["My Workspace", ()=>currentUser?currentUser.role+" · "+currentUser.name:"Your personal snapshot"],
     plan:["My Action Plan", ()=>{ const d = currentUser?headDeptOf(currentUser.name):null; return d ? d+" · file today's plan" : ""; }],
+    score:["My Score", ()=>pmMine&&pmMine.scorecard[0]&&pmMine.scorecard[0].score!=null ? pmMine.scorecard[0].score+" / 100 · "+monthLabel(pmMine.month) : "Performance Marketing · "+monthLabel(pmMonth)],
     plans:["Dept Action Plans", ()=>{ const h = DEPARTMENTS.filter(d=>deptHeads[d]); return h.filter(d=>planFor(d,TODAY)).length+" of "+h.length+" heads filed today"; }],
     tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>isMyTask(t) && t.status!=="Done").length+" open across your clients":""],
     attendance:["My Attendance","Check-in, this month's record, and your leave & WFH"],
@@ -4095,7 +4238,7 @@ function render(){
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
   else if(nav.module==="calendar") root.innerHTML = calendarView();
   else if(nav.module==="departments") root.innerHTML = nav.sub.departments==="overview" ? deptsOverview() : deptPage(deptFromSlug(nav.sub.departments));
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,tasks:workspaceTasks,attendance:workspaceAttendance,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,score:workspaceMyScore,tasks:workspaceTasks,attendance:workspaceAttendance,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,hiring:hrHiring,programs:hrProgramsView,payroll:hrPayroll,advances:hrAdvances,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance})[nav.sub.marketing]();
   else if(nav.module==="sales") root.innerHTML = ({overview:salesOverview,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.sales]();
