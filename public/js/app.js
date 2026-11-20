@@ -650,10 +650,11 @@ async function loadMetaCampaigns(){ metaAdsCampaigns = (await apiJson("/api/cont
 // server (null when there's nothing to divide by) so every screen shows the same figures.
 let ownAdMetrics = [];
 let ownAdServices = [];   // services spend can be logged against: the Meta sheet's tab services first, then the ERP's
+let ownAdServiceDepts = {};   // service -> department (sheet tabs' chosen department; an ERP department maps to itself)
 let ownSheetLeads = [];   // [{day, service, n}] — leads the Meta sheet brought in, per IST day per service (automatic)
 async function loadOwnAdMetrics(){
   const d = await apiJson("/api/content/own-ad-metrics");
-  ownAdMetrics = d.metrics; ownAdServices = d.services || []; ownSheetLeads = d.sheetLeads || [];
+  ownAdMetrics = d.metrics; ownAdServices = d.services || []; ownSheetLeads = d.sheetLeads || []; ownAdServiceDepts = d.departments || {};
 }
 const NO_SERVICE_LABEL = "Not tied to a service";
 function adMetrics(c){
@@ -854,13 +855,14 @@ function renderLeadSheetModal(msg){
       ${msg?`<div class="banner muted"><div>${esc(msg)}</div></div>`:''}
       ${tabs.length?`
       <div>
-        <label class="field-label">Which service is each tab for?</label>
+        <label class="field-label">Which service and department is each tab for?</label>
         <datalist id="ls-services">${[...new Set([...st.services, ...tabs.map(t=>t.service).filter(Boolean)])].map(sv=>`<option value="${esc(sv)}">`).join('')}</datalist>
         <div style="display:grid;gap:6px;max-height:300px;overflow:auto;">
           ${tabs.map(t=>`<div style="display:flex;gap:8px;align-items:center;"><div style="flex:1;min-width:0;" class="${t.lastError?'neg':''}"><b>${esc(t.name)}</b>${t.lastRows?` <span class="subtext">· ${t.lastRows} imported</span>`:''}${t.lastError?`<div class="subtext neg">${esc(t.lastError)}</div>`:''}</div>
-            <input class="field-input ls-tab" list="ls-services" data-gid="${esc(t.gid)}" value="${esc(t.service||'')}" placeholder="Skip this tab" style="width:210px;"></div>`).join('')}
+            <input class="field-input ls-tab" list="ls-services" data-gid="${esc(t.gid)}" value="${esc(t.service||'')}" placeholder="Skip this tab" style="width:190px;">
+            <select class="field-input ls-dept" data-gid="${esc(t.gid)}" style="width:190px;" title="Department this tab's leads and spend count under"><option value="">Department…</option>${st.services.map(dp=>`<option value="${esc(dp)}" ${t.department===dp?'selected':''}>${esc(dp)}</option>`).join('')}</select></div>`).join('')}
         </div>
-        <div class="subtext">Every tab is filed under a service name. Pick one from the list or type a new one (e.g. Personal Branding). Clear the box to skip a tab.</div>
+        <div class="subtext">Every tab is filed under a service name. Pick one from the list or type a new one (e.g. Personal Branding). Clear the box to skip a tab. The department decides where the tab's leads and spend count in Meta Ads → Leads &amp; spend → By department.</div>
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
         <div><label class="field-label">Import leads created from</label><input class="field-input" type="date" id="ls-from" value="${c&&c.importFrom?String(c.importFrom).slice(0,10):''}"></div>
@@ -892,7 +894,7 @@ async function connectLeadSheet(){
 }
 function leadSheetFormBody(){
   return { autoSync: document.getElementById("ls-auto").checked, importFrom: document.getElementById("ls-from").value || null,
-    tabs: [...document.querySelectorAll(".ls-tab")].map(s=>({ gid:s.dataset.gid, service:s.value||null })) };
+    tabs: [...document.querySelectorAll(".ls-tab")].map(s=>{ const dp = document.querySelector(`.ls-dept[data-gid="${CSS.escape(s.dataset.gid)}"]`); return { gid:s.dataset.gid, service:s.value||null, department: dp ? (dp.value||null) : undefined }; }) };
 }
 async function saveLeadSheet(){
   try{ leadSheetState = await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(leadSheetFormBody()) }); toast("Saved"); renderLeadSheetModal(); }
@@ -2549,7 +2551,7 @@ function deptInsightsHTML(s){
     s.service ? {label:"Clients", now:a.clients, was:b.clients, fmt:x=>String(x)} : null,
     s.canSeeMoney && a.paid!=null ? {label:"Payments", now:a.paid, was:b.paid, fmt:shortInr, dfmt:shortInr, tip:`Payments received · ${inr(a.paid)} vs ${inr(b.paid)}`} : null,
     {label:"Team", now:a.team, was:b.team, fmt:x=>String(x), neutral:true},
-    s.service ? {label:"Rating", tip:"Average client satisfaction rating (1–5)", now:a.rating, was:b.rating, fmt:x=>x.toFixed(1)+" ★", dfmt:x=>x.toFixed(1), eps:0.05} : null,
+    s.service ? {label:"Rating", tip:"Average client satisfaction rating (1–5)", now:a.rating, was:b.rating, fmt:x=>x==null?"—":x.toFixed(1)+" ★", dfmt:x=>x.toFixed(1), eps:0.05} : null,
     s.service ? {label:"Feedbacks", now:a.feedbacks, was:b.feedbacks, fmt:x=>String(x)} : null,
   ].filter(Boolean);
   return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;">${tiles.map(t=>`
@@ -2689,7 +2691,148 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${deptScorePanel(d)}${insights}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
+  return `${header}${deptScorePanel(d)}${insights}${d===PM_DEPT?pmDeptPanelsHTML():''}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
+}
+
+/* ===================== PERFORMANCE MARKETING TRACKING =====================
+   On the Performance Marketing department page: every client the team runs ads for (who runs it, budget, spend, leads,
+   cost per lead against target, campaign status, last meeting, days the numbers are missing) and a monthly score per
+   person. The server works the score out (/api/departments/pm/tracking); the head can add or take off up to 10 points
+   with a reason. Each team member sees only their own clients and score, under My Workspace → My Score. */
+const PM_DEPT = "Performance Marketing";
+const PM_PARTS = [["logging","Logged on time"],["cpl","Cost per lead on target"],["rating","Client rating"],["tasks","Tasks on time"]];
+let pmTrack = null, pmMine = null, pmMonth = TODAY.slice(0,7);
+async function loadPmTracking(){ pmTrack = await apiJson(`/api/departments/pm/tracking?month=${pmMonth}`); }
+async function loadPmMine(){ pmMine = await apiJson(`/api/departments/pm/tracking?month=${pmMonth}&mine=1`); }
+function isPmMember(u){ return !!u && !u.isClient && (u.dept===PM_DEPT || headDeptOf(u.name)===PM_DEPT); }
+function pmMonthOptions(){ const out = []; let m = TODAY.slice(0,7); for(let i=0;i<6;i++){ out.push(m); m = prevMonth(m); } return out; }
+function pmSetMonth(m, mine){ pmMonth = m; (mine ? loadPmMine() : loadPmTracking()).then(render).catch(err=>toast(err.message||"Couldn't load")); }
+function pmMonthSelect(mine){ return `<select class="field-input" style="width:auto;padding:5px 8px;font-size:12px;" onchange="pmSetMonth(this.value, ${mine?'true':'false'})">${pmMonthOptions().map(m=>`<option value="${m}" ${m===pmMonth?'selected':''}>${monthLabel(m)}</option>`).join('')}</select>`; }
+function pmScoreKind(s){ return s==null ? "neutral" : s>=80 ? "pos" : s>=60 ? "warn" : "neg"; }
+const PM_STATUS_KIND = {Running:"pos", Learning:"blue", Paused:"warn", Stopped:"neg"};
+
+function pmClientsTableHTML(t, opts){
+  opts = opts || {};
+  const rows = t.clients;
+  if(!rows.length) return `<div class="empty">${opts.mine?'No clients assigned to you yet.':'No active Performance Marketing clients.'}</div>`;
+  return `<div class="table-wrap"><table class="data"><thead><tr><th>Client</th>${opts.mine?'':'<th>Handled by</th>'}<th>Budget</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Cost per lead</th><th>Campaign</th><th>Last meeting</th><th>Numbers</th>${opts.manage?'<th></th>':''}</tr></thead><tbody>${rows.map(c=>{
+    const cur = c.currency, miss = c.missingDays.length;
+    const cplCell = c.cpl==null ? '<span class="faint">—</span>' : `<span class="${c.cplOk===false?'neg':c.cplOk?'pos':''}" style="font-weight:700;">${adMoney(c.cpl, cur)}</span>`;
+    const numbers = c.access!=="GRANTED" ? `<span class="faint" style="font-size:11.5px;">No ad access${c.access?' ('+esc(c.access.toLowerCase())+')':''}</span>`
+      : !c.daysDue ? '<span class="faint">—</span>'
+      : miss ? `<span title="Missing: ${esc(c.missingDays.map(fmtDateShort).join(', '))}">${pill(miss+' day'+(miss===1?'':'s')+' missing','neg')}</span>`
+      : pill(c.daysOnTime===c.daysDue?'All logged':'Logged, '+(c.daysDue-c.daysOnTime)+' late', c.daysOnTime===c.daysDue?'pos':'warn');
+    return `<tr class="row-click" ${clientById(c.id)?`onclick="goToClient('${c.id}')"`:''}>
+      <td><div style="font-weight:700;">${esc(c.name)}</div><div class="subtext">${c.platform?esc(c.platform):''}${c.accountManager?(c.platform?' · ':'')+'AM '+esc(c.accountManager):''}</div></td>
+      ${opts.mine?'':`<td>${c.owner?esc(c.owner.name):'<span class="neg" style="font-size:12px;font-weight:700;">Not assigned</span>'}</td>`}
+      <td style="font-size:12.5px;">${c.budget?esc(c.budget):'<span class="faint">—</span>'}</td>
+      <td class="num mono">${c.spend?adMoney(c.spend, cur):'—'}</td>
+      <td class="num mono">${c.leads||'—'}</td>
+      <td class="num mono" style="white-space:nowrap;">${cplCell}<div class="subtext">${c.targetCpl!=null?'target '+adMoney(c.targetCpl, cur):'no target'}</div></td>
+      <td>${c.campaignStatus?pill(c.campaignStatus, PM_STATUS_KIND[c.campaignStatus]||'neutral'):'<span class="faint">—</span>'}</td>
+      <td style="white-space:nowrap;font-size:12.5px;">${c.lastMeeting?fmtDateShort(c.lastMeeting):'<span class="faint">None</span>'}</td>
+      <td>${numbers}</td>
+      ${opts.manage?`<td class="num"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openPmClient('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></td>`:''}
+    </tr>`; }).join('')}</tbody></table></div>`;
+}
+
+function pmScoreRowsHTML(t, opts){
+  opts = opts || {};
+  if(!t.scorecard.length) return `<div class="empty">No one in Performance Marketing.</div>`;
+  return `<div class="table-wrap"><table class="data"><thead><tr><th>Person</th><th class="num">Clients</th>${PM_PARTS.map(([k,l])=>`<th class="num" title="${t.weights[k]}% of the score">${l} <span class="faint" style="font-weight:600;">${t.weights[k]}%</span></th>`).join('')}<th class="num">Adjustment</th><th class="num">Score</th>${opts.manage?'<th></th>':''}</tr></thead><tbody>${t.scorecard.map(s=>`<tr>
+    <td><div style="font-weight:700;">${esc(s.name)}</div><div class="subtext">${esc(s.role||'')}</div></td>
+    <td class="num mono">${s.clients||'—'}</td>
+    ${PM_PARTS.map(([k])=>{ const p = s.parts[k]; return `<td class="num">${p?`<b class="mono">${p.pct}%</b><div class="subtext">${esc(p.detail)}</div>`:'<span class="faint">—</span>'}</td>`; }).join('')}
+    <td class="num">${s.adjustment?`<b class="mono ${s.adjustment.points>0?'pos':'neg'}">${s.adjustment.points>0?'+':''}${s.adjustment.points}</b><div class="subtext" title="${esc(s.adjustment.reason)} — ${esc(s.adjustment.by)}" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:auto;">${esc(s.adjustment.reason)}</div>`:'<span class="faint">—</span>'}</td>
+    <td class="num">${s.score!=null?`<span class="pill ${pmScoreKind(s.score)}" style="font-size:13px;font-weight:800;">${s.score}</span>`:'<span class="faint" style="font-size:11.5px;">No data</span>'}</td>
+    ${opts.manage?`<td class="num">${s.employeeId===t.me && !isLeadershipRole(currentUser)?'':`<button class="btn btn-sm ghost" onclick="openPmAdjust('${s.employeeId}')">Adjust</button>`}</td>`:''}
+  </tr>`).join('')}</tbody></table></div>`;
+}
+
+const PM_SCORE_HELP = t => `Logged on time: working days up to ${fmtDateShort(t.judgedUntil)} whose ad numbers were in by the end of the next day (clients with ad access only, leave days skipped). Cost per lead: clients with a target and spend this month at or under it. Rating: client ratings this month, 5★ = 100%. Tasks: tasks due this month finished by their due date. A part with nothing to measure is left out. The head can add or take off up to ${t.adjustLimit} points with a reason.`;
+
+function pmDeptPanelsHTML(){
+  const t = pmTrack;
+  if(!t) return `<div class="panel"><div class="panel-body"><div class="empty">Loading Performance Marketing tracking…</div></div></div>`;
+  const unassigned = t.clients.filter(c=>!c.owner).length, missing = t.clients.filter(c=>c.missingDays.length).length, offTarget = t.clients.filter(c=>c.cplOk===false).length;
+  const scored = t.scorecard.filter(s=>s.score!=null), avg = scored.length ? Math.round(scored.reduce((a,s)=>a+s.score,0)/scored.length) : null;
+  const kpi = (label, val, sub, kind) => `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value mono" ${kind?`style="color:var(--${kind});"`:''}>${val}</div><div class="kpi-sub">${sub}</div></div>`;
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Performance Marketing clients · ${monthLabel(t.month)}</h3><div class="sub">Who runs each client's ads, spend and leads this month, and whether the daily numbers are in</div></div>${pmMonthSelect(false)}</div>
+    <div class="panel-body" style="padding-bottom:0;"><div class="kpi-grid" style="margin:0;">
+      ${kpi("Clients", t.clients.length, "active this month")}
+      ${kpi("Not assigned", unassigned, "no one running their ads", unassigned?'neg':null)}
+      ${kpi("Numbers missing", missing, "clients with days not logged", missing?'neg':null)}
+      ${kpi("Over target", offTarget, "cost per lead above target", offTarget?'warn':null)}
+      ${kpi("Team score", avg==null?'—':avg, scored.length+" of "+t.scorecard.length+" scored")}
+    </div></div>
+    ${pmClientsTableHTML(t, {manage:t.canManage})}
+  </div>
+  <div class="panel">
+    <div class="panel-head"><div><h3>Team scorecard · ${monthLabel(t.month)}</h3><div class="sub">Worked out from each person's clients and tasks. Hover a column for its weight.</div></div></div>
+    ${pmScoreRowsHTML(t, {manage:t.canManage})}
+    <div class="panel-body" style="padding-top:8px;"><div class="subtext">${esc(PM_SCORE_HELP(t))}</div></div>
+  </div>`;
+}
+
+function workspaceMyScore(){
+  const t = pmMine;
+  if(!t) return `<div class="empty">Loading your score…</div>`;
+  const s = t.scorecard[0];
+  const parts = s ? PM_PARTS.map(([k,l])=>{ const p = s.parts[k]; return `<div class="kpi-card"><div class="kpi-label">${l} · ${t.weights[k]}%</div><div class="kpi-value mono">${p?p.pct+'%':'—'}</div><div class="kpi-sub">${p?esc(p.detail):'nothing to measure yet'}</div></div>`; }).join('') : '';
+  return `<div class="panel" style="padding:16px 18px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between;">
+      <div><div class="kpi-label">My score · ${monthLabel(t.month)}</div><div class="mono" style="font-size:34px;font-weight:800;line-height:1.1;">${s&&s.score!=null?`<span style="color:var(--${pmScoreKind(s.score)==='neutral'?'ink':pmScoreKind(s.score)});">${s.score}</span><span class="faint" style="font-size:16px;"> / 100</span>`:'<span class="faint" style="font-size:18px;">No data yet</span>'}</div>
+        ${s&&s.adjustment?`<div class="subtext">${s.auto} worked out, ${s.adjustment.points>0?'+':''}${s.adjustment.points} from ${esc(s.adjustment.by)}: “${esc(s.adjustment.reason)}”</div>`:''}</div>
+      ${pmMonthSelect(true)}
+    </div>
+    <div class="kpi-grid">${parts}</div>
+    <div class="panel"><div class="panel-head"><div><h3>My clients</h3><div class="sub">The clients whose ads you run</div></div></div>${pmClientsTableHTML(t, {mine:true})}
+      <div class="panel-body" style="padding-top:8px;"><div class="subtext">${esc(PM_SCORE_HELP(t))}</div></div></div>`;
+}
+
+function openPmClient(id){
+  const t = pmTrack, c = t && t.clients.find(x=>x.id===id); if(!c || !t.canManage) return;
+  showModal(`
+    <div class="modal-head"><h3>${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-pm-client"><div class="modal-body">
+      <div><label class="field-label" for="pm-owner">Handled by</label><select class="field-input" id="pm-owner" name="owner"><option value="">Not assigned</option>${t.team.concat(c.owner && !t.team.some(e=>e.id===c.owner.id)?[c.owner]:[]).map(e=>`<option value="${e.id}" ${c.owner&&c.owner.id===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><div class="subtext">The person who runs this client's ads. Their score counts this client.</div></div>
+      <div><label class="field-label" for="pm-target">Target cost per lead (${esc(c.currency)})</label><input class="field-input mono" id="pm-target" name="target" type="number" min="0" step="0.01" value="${c.targetCpl!=null?c.targetCpl:''}" placeholder="Leave empty for no target"></div>
+      <div><label class="field-label" for="pm-status">Campaign status</label><select class="field-input" id="pm-status" name="status"><option value="">Not set</option>${t.statuses.map(s2=>`<option ${c.campaignStatus===s2?'selected':''}>${s2}</option>`).join('')}</select></div>
+      <div class="subtext">Budget comes from the client's campaign brief (client page).</div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div></form>`);
+  document.getElementById("f-pm-client").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target), target = String(f.get("target")||"").trim();
+    if(target && !(Number(target)>0)){ toast("Target must be more than 0"); return; }
+    try{
+      await apiJson(`/api/departments/pm/clients/${id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ownerId:f.get("owner")||null, targetCpl:target?Number(target):null, campaignStatus:f.get("status")||null})});
+      await loadPmTracking(); closeModal(); toast("Saved"); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
+}
+
+function openPmAdjust(empId){
+  const t = pmTrack, s = t && t.scorecard.find(x=>x.employeeId===empId); if(!s || !t.canManage) return;
+  const a = s.adjustment;
+  showModal(`
+    <div class="modal-head"><h3>Adjust ${esc(s.name)}'s score</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-pm-adj"><div class="modal-body">
+      <div class="subtext">${monthLabel(t.month)} · worked out: <b class="mono">${s.auto==null?'no data':s.auto}</b></div>
+      <div><label class="field-label" for="pm-pts">Points (−${t.adjustLimit} to +${t.adjustLimit})</label><input class="field-input mono" id="pm-pts" name="points" type="number" min="-${t.adjustLimit}" max="${t.adjustLimit}" step="1" value="${a?a.points:0}" required><div class="subtext">0 removes the adjustment.</div></div>
+      <div><label class="field-label" for="pm-why">Reason</label><textarea class="field-input" id="pm-why" name="reason" rows="3" maxlength="500" placeholder="What the numbers don't show">${a?esc(a.reason):''}</textarea></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div></form>`);
+  document.getElementById("f-pm-adj").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = new FormData(e.target), points = Math.round(Number(f.get("points"))), reason = String(f.get("reason")||"").trim();
+    if(!Number.isFinite(points) || Math.abs(points)>t.adjustLimit){ toast(`Points must be from −${t.adjustLimit} to +${t.adjustLimit}`); return; }
+    if(points && !reason){ toast("Write a reason"); return; }
+    try{
+      await apiJson(`/api/departments/pm/adjustments/${empId}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({month:t.month, points, reason})});
+      await loadPmTracking(); closeModal(); toast(points?"Adjustment saved":"Adjustment removed"); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
 }
 
 /* ===================== DEPARTMENT ACTION PLANS =====================
@@ -3686,6 +3829,7 @@ const MODULES = [
     {id:"overview", label:"Overview", icon:"i-trend"},
     {id:"plan", label:"My Action Plan", icon:"i-target", when:()=>isDeptHead(currentUser), count:()=>myPlanPending()},
     {id:"plans", label:"Dept Action Plans", icon:"i-target", when:()=>canSeePlans(currentUser), count:()=>openNeedsInput().length},
+    {id:"score", label:"My Score", icon:"i-trend", when:()=>isPmMember(currentUser)},
     {id:"tasks", label:"My Tasks", icon:"i-board", count:()=>currentUser?clientTasks.filter(t=>isMyTask(t) && t.status!=="Done").length+myContentItems.filter(i=>i.stage!=="Published").length:0},
     {id:"attendance", label:"My Attendance", icon:"i-attendance", count:()=>currentUser?leaveRequests.filter(l=>l.empId===currentUser.id && l.status==="Pending").length:0},
     {id:"payroll", label:"My Payroll", icon:"i-wallet", count:()=>currentUser?advances.filter(a=>a.empId===currentUser.id && a.status==="Pending").length + withdrawalRequests.filter(w=>w.empId===currentUser.id && w.status==="Pending").length:0},
@@ -3880,7 +4024,7 @@ const TAB_REFRESH = {
   "hr/programs":[loadHrPrograms], "hr/overview":[loadHrPrograms],
   "marketing/performance":[()=>loadMetaScore().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{})], "marketing/overview":[()=>loadMktTargets().catch(()=>{}), ()=>loadMetaScore(mktMonthNow()).catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{}), ()=>loadSocial().catch(()=>{})], "workspace/overview":[()=>loadSocialStatus().catch(()=>{})],
   "sales/overview":[()=>loadSalesOverview().catch(()=>{}), ()=>loadLeads().catch(()=>{})],
-  "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/plans":[loadDeptHeads, loadActionPlans],
+  "workspace/plan":[loadDeptHeads, loadActionPlans], "workspace/score":[loadDeptHeads, loadPmMine], "workspace/plans":[loadDeptHeads, loadActionPlans],
   "calendar/main":[()=>loadCalendarDept().catch(()=>{}), ()=>loadCalendarPrograms().catch(()=>{}), ()=>loadCompanyEvents().catch(()=>{}), ()=>loadCalendarClientMeetings(), ()=>loadServiceBoards().catch(()=>{}), ()=>loadTasks().catch(()=>{}), ()=>loadPolicy().catch(()=>{})],
   "workspace/payments":[loadPaymentRequests], "hr/payments":[loadPaymentRequests], "accounts/requests":[loadPaymentRequests, loadPendingAdvanceDisbursements],
   "workspace/tasks":[loadTasks, loadMyContentItems], "marketing/content":[loadContentItems, ()=>loadMktTargets().catch(()=>{}), ()=>loadSocial().catch(()=>{}), ()=>loadOwnAdMetrics().catch(()=>{})],
@@ -3894,7 +4038,7 @@ const TAB_REFRESH = {
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
   let jobs = TAB_REFRESH[mid+"/"+sid];
-  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid))] : null);
+  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid)), ...(deptFromSlug(sid)===PM_DEPT?[()=>loadPmTracking().catch(()=>{})]:[])] : null);
   if(!jobs) return;
   Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
 }
@@ -3938,6 +4082,7 @@ const TOPBAR_TITLES = {
   workspace: {
     overview:["My Workspace", ()=>currentUser?currentUser.role+" · "+currentUser.name:"Your personal snapshot"],
     plan:["My Action Plan", ()=>{ const d = currentUser?headDeptOf(currentUser.name):null; return d ? d+" · file today's plan" : ""; }],
+    score:["My Score", ()=>pmMine&&pmMine.scorecard[0]&&pmMine.scorecard[0].score!=null ? pmMine.scorecard[0].score+" / 100 · "+monthLabel(pmMine.month) : "Performance Marketing · "+monthLabel(pmMonth)],
     plans:["Dept Action Plans", ()=>{ const h = DEPARTMENTS.filter(d=>deptHeads[d]); return h.filter(d=>planFor(d,TODAY)).length+" of "+h.length+" heads filed today"; }],
     tasks:["My Tasks", ()=>currentUser?clientTasks.filter(t=>isMyTask(t) && t.status!=="Done").length+" open across your clients":""],
     attendance:["My Attendance","Check-in, this month's record, and your leave & WFH"],
@@ -4095,7 +4240,7 @@ function render(){
   if(nav.module==="dashboard") root.innerHTML = viewDashboard();
   else if(nav.module==="calendar") root.innerHTML = calendarView();
   else if(nav.module==="departments") root.innerHTML = nav.sub.departments==="overview" ? deptsOverview() : deptPage(deptFromSlug(nav.sub.departments));
-  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,tasks:workspaceTasks,attendance:workspaceAttendance,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
+  else if(nav.module==="workspace") root.innerHTML = ({overview:workspaceOverview,plan:workspacePlan,plans:workspacePlansTeam,score:workspaceMyScore,tasks:workspaceTasks,attendance:workspaceAttendance,payroll:workspacePayroll,advance:workspaceAdvance,payments:workspacePaymentRequests,commission:workspaceCommission,leaderboard:workspaceLeaderboard,complaints:workspaceComplaints})[nav.sub.workspace]();
   else if(nav.module==="hr") root.innerHTML = ({overview:hrOverview,directory:hrDirectory,attendance:hrAttendance,hiring:hrHiring,programs:hrProgramsView,payroll:hrPayroll,advances:hrAdvances,payments:workspacePaymentRequests,complaints:hrComplaints,notices:hrNotices,policies:hrPolicies})[nav.sub.hr]();
   else if(nav.module==="marketing") root.innerHTML = ({overview:mktOverview,content:mktContent,performance:mktPerformance})[nav.sub.marketing]();
   else if(nav.module==="sales") root.innerHTML = ({overview:salesOverview,leads:mktLeads,quotes:mktQuotes,invoices:mktInvoices})[nav.sub.sales]();
@@ -7917,24 +8062,136 @@ function logAdMetricModal(forLabel, existing, save, currency, services, opts){
     catch(err){ toast(err.message || "Couldn't save ad performance"); }
   });
 }
+// Our own Meta ad spend. Spend goes to a department — either the whole department or one of the Meta sheet services
+// filed under it. "Log spend" takes several lines for one date (each line is its own record) and adds up the total;
+// ✎ on a record edits that one record, date included.
+const OWN_SPEND_OTHER = "__other";   // department picker value for services with no department (and "no service")
+function ownSpendDeptOf(sv){ return SERVICE_DEPARTMENTS.includes(sv) ? sv : (ownAdServiceDepts[sv] || OWN_SPEND_OTHER); }
+function ownSpendServices(keep){
+  const list = ownAdServices.length ? ownAdServices : SERVICE_DEPARTMENTS;
+  // An older entry may sit under a name that's no longer offered — keep it pickable so an edit doesn't move it.
+  return keep && !list.includes(keep) ? [...list, keep] : list;
+}
+function ownSpendDeptOptions(dept){
+  const other = ownSpendServices().some(sv=>ownSpendDeptOf(sv)===OWN_SPEND_OTHER);
+  return SERVICE_DEPARTMENTS.map(dp=>`<option value="${esc(dp)}" ${dp===dept?'selected':''}>${esc(dp)}</option>`).join('')
+    + `<option value="${OWN_SPEND_OTHER}" ${dept===OWN_SPEND_OTHER?'selected':''}>${other?'No department set':'Not tied to a department'}</option>`;
+}
+function ownSpendServiceOptions(dept, service, keep){
+  const svcs = ownSpendServices(keep).filter(sv=>!SERVICE_DEPARTMENTS.includes(sv) && ownSpendDeptOf(sv)===dept);
+  const first = dept===OWN_SPEND_OTHER ? `<option value="">${NO_SERVICE_LABEL}</option>` : `<option value="${esc(dept)}">Whole department</option>`;
+  return first + svcs.map(sv=>`<option value="${esc(sv)}" ${sv===service?'selected':''}>${esc(sv)}</option>`).join('');
+}
 function openLogOwnAdMetric(id, service, date){
-  const existing = id ? ownAdMetrics.find(m=>m.id===id) : null;
-  const services = ownAdServices.length ? ownAdServices : SERVICE_DEPARTMENTS;
-  // An older entry may sit under a name that's no longer offered — keep it pickable so the edit doesn't move it.
-  const list = existing && existing.service && !services.includes(existing.service) ? [...services, existing.service] : services;
-  logAdMetricModal("DesGro Media — own Meta Ads · leads are counted automatically from the Meta sheet", existing, async payload=>{
-    await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-    await Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]);
-  }, undefined, list, { hideLeads:true, service, date });
+  if(id) return openEditOwnSpend(id);
+  const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  showModal(`
+    <div class="modal-head"><h3>Log spend</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-own-spend"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">DesGro Media's own Meta Ads · leads are counted automatically from the Meta sheet</div>
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(date||local)}" max="${local}" required style="max-width:200px;" onchange="ownSpendRefresh()"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 120px 32px;gap:6px;align-items:end;">
+        <label class="field-label" style="margin:0;">Department</label><label class="field-label" style="margin:0;">Service</label><label class="field-label" style="margin:0;">Amount (₹)</label><span></span>
+      </div>
+      <div id="own-spend-lines" style="display:grid;gap:6px;"></div>
+      <div><button type="button" class="btn btn-sm ghost" onclick="ownSpendAddLine()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add line</button></div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;align-items:baseline;border-top:1px solid var(--line);padding-top:10px;">
+        <span class="field-label" style="margin:0;">Total</span><b class="mono" id="own-spend-total" style="font-size:17px;">₹0</b>
+      </div>
+      <div><label class="field-label">Note <span class="faint" style="font-weight:500;">(optional, saved on every line)</span></label><input class="field-input" name="note" maxlength="300" placeholder="e.g. Meta billing for the morning campaigns"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`, true);
+  ownSpendAddLine(service);
+  document.getElementById("f-own-spend").addEventListener("submit", saveOwnSpendLines);
+}
+function ownSpendAddLine(service){
+  const dept = service!=null && service!=='' ? ownSpendDeptOf(service) : (service==='' ? OWN_SPEND_OTHER : SERVICE_DEPARTMENTS[0]);
+  const row = document.createElement("div");
+  row.className = "own-spend-line";
+  row.style.cssText = "display:grid;grid-template-columns:1fr 1fr 120px 32px;gap:6px;align-items:center;";
+  row.innerHTML = `<select class="field-input osl-dept" onchange="this.parentNode.querySelector('.osl-svc').innerHTML=ownSpendServiceOptions(this.value);ownSpendRefresh()">${ownSpendDeptOptions(dept)}</select>
+    <select class="field-input osl-svc" onchange="ownSpendRefresh()">${ownSpendServiceOptions(dept, service, service)}</select>
+    <input class="field-input osl-amt mono" type="number" step="0.01" min="0" placeholder="0" oninput="ownSpendRefresh()">
+    <button type="button" class="btn btn-sm ghost" title="Remove line" onclick="this.parentNode.remove();ownSpendRefresh()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>
+    <div class="osl-hint subtext" style="grid-column:1 / -1;margin:0;"></div>`;
+  document.getElementById("own-spend-lines").appendChild(row);
+  ownSpendRefresh();
+  const amt = row.querySelector(".osl-amt"); if(amt) amt.focus();
+}
+// Keeps the total up to date and warns on each line that would replace spend already logged (or repeats a line).
+function ownSpendRefresh(){
+  const form = document.getElementById("f-own-spend"); if(!form) return;
+  const date = form.elements.date.value, seen = {};
+  let total = 0;
+  document.querySelectorAll(".own-spend-line").forEach(row=>{
+    const sv = row.querySelector(".osl-svc").value, amt = Number(row.querySelector(".osl-amt").value) || 0;
+    total += amt;
+    const had = ownAdMetrics.find(m=>m.date===date && (m.service||"")===sv);
+    row.querySelector(".osl-hint").innerHTML = seen[sv] ? `<span class="neg">Already on another line — put it on one line.</span>`
+      : had ? `Already ${inr(had.spend)} logged for this on ${fmtDateShort(date)} — saving replaces it.` : '';
+    seen[sv] = true;
+  });
+  document.getElementById("own-spend-total").textContent = inr(total);
+}
+async function saveOwnSpendLines(e){
+  e.preventDefault();
+  const form = e.target, date = form.elements.date.value, note = form.elements.note.value.trim();
+  const lines = [...document.querySelectorAll(".own-spend-line")].map(r=>({ service: r.querySelector(".osl-svc").value, raw: r.querySelector(".osl-amt").value }));
+  const filled = lines.filter(l=>l.raw!=='');
+  if(!filled.length){ toast("Enter an amount on at least one line"); return; }
+  if(new Set(filled.map(l=>l.service)).size !== filled.length){ toast("The same service is on two lines — put it on one line"); return; }
+  const btn = form.querySelector("button[type=submit]"); btn.disabled = true;
+  let saved = 0;
+  try{
+    for(const l of filled){
+      const had = ownAdMetrics.find(m=>m.date===date && (m.service||"")===l.service);
+      await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
+        date, service: l.service, spend: Number(l.raw), leads: had?had.leads:0, purchases: had?had.purchases:0, revenue: had?had.revenue:0, note }) });
+      saved++;
+    }
+    toast(`${saved} spend line${saved===1?'':'s'} saved · ${inr(filled.reduce((t,l)=>t+Number(l.raw),0))}`); closeModal();
+  }catch(err){ toast(`${saved?`${saved} line${saved===1?'':'s'} saved, then: `:''}${err.message || "Couldn't save spend"}`); btn.disabled = false; }
+  await Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]);
+  render();
+}
+function openEditOwnSpend(id){
+  const m = ownAdMetrics.find(x=>x.id===id); if(!m) return;
+  const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  const dept = m.service ? ownSpendDeptOf(m.service) : OWN_SPEND_OTHER;
+  showModal(`
+    <div class="modal-head"><h3>Edit spend</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-own-spend-edit"><div class="modal-body">
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(m.date)}" max="${local}" required style="max-width:200px;"></div>
+      <div class="field-row">
+        <div><label class="field-label">Department</label><select class="field-input" name="dept" onchange="this.form.elements.service.innerHTML=ownSpendServiceOptions(this.value)">${ownSpendDeptOptions(dept)}</select></div>
+        <div><label class="field-label">Service</label><select class="field-input" name="service">${ownSpendServiceOptions(dept, m.service, m.service)}</select></div>
+      </div>
+      <div><label class="field-label">Amount (₹)</label><input class="field-input mono" type="number" step="0.01" min="0" name="spend" value="${esc(m.spend)}" required style="max-width:200px;"></div>
+      <div><label class="field-label">Note <span class="faint" style="font-weight:500;">(optional)</span></label><input class="field-input" name="note" maxlength="300" value="${esc(m.note||'')}"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-own-spend-edit").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = e.target.elements;
+    try{
+      await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
+        id: m.id, date: f.date.value, service: f.service.value, spend: Number(f.spend.value), leads: m.leads, purchases: m.purchases, revenue: m.revenue, note: f.note.value.trim() }) });
+      await Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]);
+      toast("Spend saved"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save spend"); }
+  });
 }
 // Meta Ads > Leads by service / by day: leads counted automatically from the Meta lead sheet (by the day Meta received
 // them), next to the spend Performance Marketing logs. Spend only lines up with a service's leads when it's logged
 // under the same name as the sheet's tab service. Kept deliberately plain: Leads · Spend · Cost per lead.
 let metaSvcRange = "ThisMonth";
-let metaSvcView = "service";   // "service" | "day"
+let metaSvcView = "service";   // "service" | "dept" (department → its services) | "day" | "month" (month → its departments)
 let metaSvcOpen = {};          // service or date -> true while its rows are shown
 function setMetaSvcRange(v){ metaSvcRange = v; render(); }
-function setMetaSvcView(v){ metaSvcView = v; render(); }
+// A month view inside a single day/week/month shows one row at most, so it widens to all time.
+function setMetaSvcView(v){ metaSvcView = v; if(v==="month" && ["Today","Yesterday","Last7","Last30","ThisMonth"].includes(metaSvcRange)) metaSvcRange = "All"; render(); }
 function toggleMetaSvc(i){ const k = (window._metaSvcKeys||[])[i]; if(k==null) return; metaSvcOpen[k] = !metaSvcOpen[k]; render(); }
 // "+" on an opened row with no spend yet: the form opens on that row's date and service.
 function addMetaRowSpend(i){ const x = (window._metaAddKeys||[])[i]; if(x) openLogOwnAdMetric(null, x.service, x.date); }
@@ -7942,47 +8199,54 @@ function ownAdsByServiceHTML(){
   const inRange = d => metaSvcRange==="Custom"
     ? (!customDateRange.from || d>=customDateRange.from) && (!customDateRange.to || d<=customDateRange.to)
     : matchesDateFilter(d, metaSvcRange);
-  const byDay = metaSvcView==="day";
-  // Group by service or by date; each group also keeps its sub-rows (dates of a service, services of a date).
+  const byDay = metaSvcView==="day", byDept = metaSvcView==="dept", byMonth = metaSvcView==="month";
+  // Group by service, by date or by department; each group also keeps its sub-rows (dates of a service, services of
+  // a date, services of a department). A department's sub-rows add up the whole period, so they have no edit buttons.
+  const deptOf = sv => ownAdServiceDepts[sv] || "";
+  const keys = (day, sv) => byDay ? [day, sv] : byDept ? [deptOf(sv), sv] : byMonth ? [day.slice(0,7), deptOf(sv)] : [sv, day];
   const groups = {};
   const grp = k => groups[k] || (groups[k] = {key:k, leads:0, spend:0, subs:{}});
-  const sub = (g, k) => g.subs[k] || (g.subs[k] = {key:k, leads:0, entry:null});
-  ownSheetLeads.filter(r=>inRange(r.day)).forEach(r=>{ const g = grp(byDay?r.day:r.service); g.leads += r.n; sub(g, byDay?r.service:r.day).leads += r.n; });
-  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ const s = m.service||""; const g = grp(byDay?m.date:s); g.spend += m.spend; sub(g, byDay?s:m.date).entry = m; });
-  const list = Object.values(groups).sort(byDay ? (a,b)=>b.key.localeCompare(a.key) : (a,b)=>b.leads-a.leads || b.spend-a.spend);
+  const sub = (g, k) => g.subs[k] || (g.subs[k] = {key:k, leads:0, spend:0, entry:null});
+  ownSheetLeads.filter(r=>inRange(r.day)).forEach(r=>{ const [gk, sk] = keys(r.day, r.service); const g = grp(gk); g.leads += r.n; sub(g, sk).leads += r.n; });
+  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ const [gk, sk] = keys(m.date, m.service||""); const g = grp(gk); g.spend += m.spend; const x = sub(g, sk); x.spend += m.spend; if(!byDept && !byMonth) x.entry = m; });
+  const list = Object.values(groups).sort(byDay || byMonth ? (a,b)=>b.key.localeCompare(a.key) : byDept ? (a,b)=>(!a.key)-(!b.key) || b.spend-a.spend || b.leads-a.leads : (a,b)=>b.leads-a.leads || b.spend-a.spend);
   window._metaSvcKeys = list.map(g=>g.key);   // row index -> key, so onclick never has to quote a service name
   const tot = list.reduce((t,g)=>({leads:t.leads+g.leads, spend:t.spend+g.spend}), {leads:0, spend:0});
   const money = v => v>0 ? inr(v) : '<span class="faint">—</span>';
   const cpl = (spend, leads) => spend>0 && leads>0 ? inr(Math.round(spend/leads)) : '<span class="faint">—</span>';
   const svcName = s => s ? esc(s) : `<span class="faint">${NO_SERVICE_LABEL}</span>`;
   const dayName = d => `${fmtDateShort(d)} <span class="faint" style="font-weight:500;">${new Date(d+"T00:00:00").toLocaleDateString("en-IN",{weekday:"short"})}</span>`;
-  const label = k => byDay ? dayName(k) : svcName(k);
-  const subLabel = k => byDay ? svcName(k) : dayName(k);
+  const deptName = d => d ? esc(d) : `<span class="faint">No department set</span>`;
+  const label = k => byDay ? dayName(k) : byDept ? deptName(k) : byMonth ? esc(monthLabel(k)) : svcName(k);
+  // In the day view each record also says which department it counts under.
+  const deptTag = sv => byDay && sv && deptOf(sv) && deptOf(sv)!==sv ? ` <span class="faint" style="font-weight:500;">· ${esc(deptOf(sv))}</span>` : '';
+  const subLabel = k => byMonth ? deptName(k) : byDay || byDept ? svcName(k) + deptTag(k) : dayName(k);
   const ico = id => `<svg class="icon" style="width:12px;height:12px"><use href="#i-${id}"/></svg>`;
   window._metaAddKeys = [];
   const actions = (m, date, service) => m
     ? `<div style="display:flex;gap:4px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openLogOwnAdMetric('${esc(m.id)}')" title="Edit spend">${ico('edit')}</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('ownAdMetric','${esc(m.id)}')" title="Delete spend">${ico('x')}</button></div>`
     : `<div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="addMetaRowSpend(${window._metaAddKeys.push({date, service})-1})" title="Add spend for this day">${ico('plus')}</button></div>`;
-  const subRows = g => Object.values(g.subs).sort(byDay ? (a,b)=>b.leads-a.leads : (a,b)=>b.key.localeCompare(a.key)).map(s=>`<tr style="background:var(--surface-sunk);">
+  const subRows = g => Object.values(g.subs).sort(byDay ? (a,b)=>b.leads-a.leads : byDept || byMonth ? (a,b)=>(!a.key)-(!b.key) || b.spend-a.spend || b.leads-a.leads : (a,b)=>b.key.localeCompare(a.key)).map(s=>`<tr style="background:var(--surface-sunk);">
       <td style="padding-left:32px;">${subLabel(s.key)}${s.entry&&s.entry.note?`<div class="subtext" style="max-width:280px;white-space:normal;">${esc(s.entry.note)}</div>`:''}</td>
-      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.entry?s.entry.spend:0)}</td><td class="num mono">${cpl(s.entry?s.entry.spend:0, s.leads)}</td><td>${actions(s.entry, byDay?g.key:s.key, byDay?s.key:g.key)}</td></tr>`).join('');
+      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.spend)}</td><td class="num mono">${cpl(s.spend, s.leads)}</td><td>${byDept || byMonth ? '' : actions(s.entry, byDay?g.key:s.key, byDay?s.key:g.key)}</td></tr>`).join('');
+  const share = g => byDept && tot.spend>0 && g.spend>0 ? ` <span class="faint" style="font-weight:500;">${Math.round(g.spend/tot.spend*100)}%</span>` : '';
   const dates = [...ownSheetLeads.map(r=>r.day), ...ownAdMetrics.map(m=>m.date)];
   return `<div class="panel">
     <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
-      <div><h3>Leads &amp; spend</h3><div class="sub">Leads come from the Meta sheet automatically · click a row to edit or delete spend</div></div>
+      <div><h3>Leads &amp; spend</h3><div class="sub">${byMonth ? 'Total spend per month · click a month to see it per department' : byDay ? 'Total spend per day · click a day to edit or delete its spend records' : byDept ? 'Where the ad budget goes, per department · click a department to see its services' : 'Leads come from the Meta sheet automatically · click a row to edit or delete spend'}</div></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-        ${[["service","By service"],["day","By day"]].map(([k,l])=>`<button class="chip ${metaSvcView===k?'active':''}" onclick="setMetaSvcView('${k}')">${l}</button>`).join('')}
+        ${[["service","By service"],["dept","By department"],["day","By day"],["month","By month"]].map(([k,l])=>`<button class="chip ${metaSvcView===k?'active':''}" onclick="setMetaSvcView('${k}')">${l}</button>`).join('')}
         <select class="select-sm" onchange="setMetaSvcRange(this.value)">${dateFilterOptions(dates, metaSvcRange, {custom:true})}</select>${dateRangeInputs(metaSvcRange)}
         <button class="btn btn-sm primary" onclick="openLogOwnAdMetric()">${ico('plus')}Log spend</button>
       </div>
     </div>
-    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>${byDay?'Date':'Service'}</th><th class="num">Leads</th><th class="num">Spend</th><th class="num">Cost per lead</th><th style="width:80px;"></th></tr></thead>
+    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>${byDay?'Date':byMonth?'Month':byDept?'Department':'Service'}</th><th class="num">Leads</th><th class="num">Spend</th><th class="num">Cost per lead</th><th style="width:80px;"></th></tr></thead>
       <tbody>${list.map((g,i)=>{ const open = !!metaSvcOpen[g.key]; return `<tr style="cursor:pointer;" onclick="toggleMetaSvc(${i})">
         <td style="font-weight:700;"><span class="faint" style="display:inline-block;width:16px;">${open?'▾':'▸'}</span>${label(g.key)}</td>
-        <td class="num mono" style="font-weight:700;">${g.leads}</td><td class="num mono">${money(g.spend)}</td><td class="num mono">${cpl(g.spend, g.leads)}</td><td></td></tr>
+        <td class="num mono" style="font-weight:700;">${g.leads}</td><td class="num mono">${money(g.spend)}${share(g)}</td><td class="num mono">${cpl(g.spend, g.leads)}</td><td></td></tr>
         ${open?subRows(g):''}`; }).join('')}
         <tr style="font-weight:800;"><td>Total</td><td class="num mono">${tot.leads}</td><td class="num mono">${money(tot.spend)}</td><td class="num mono">${cpl(tot.spend, tot.leads)}</td><td></td></tr>
-      </tbody></table></div>` : `<div class="panel-body"><div class="empty">No leads or spend in this period.</div></div>`}
+      </tbody></table></div>${(byDept && groups[""]) || (byMonth && list.some(g=>g.subs[""])) ? `<div class="panel-body" style="padding-top:8px;"><div class="subtext">“No department set” holds services whose Meta sheet tab has no department yet — set it in Marketing → Leads → Meta sheet.</div></div>` : ''}` : `<div class="panel-body"><div class="empty">No leads or spend in this period.</div></div>`}
   </div>`;
 }
 // Daily "ad numbers not logged" reminders (Admin only). Sending is automatic once the server has it switched on;

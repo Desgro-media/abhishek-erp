@@ -214,3 +214,20 @@ test("a tab deleted and made again (new gid, same name) is picked up on the next
   assert.equal(r.body.summary.tabs.find((t: any) => t.name.trim() === "PB NEW").created, 1);
   assert.equal((await prisma.lead.findFirst({ where: { metaLeadId: `l:${run}-33` } }))?.serviceInterested, before.service);
 });
+
+test("each tab can be filed under a department; Meta Ads gets service → department; a save without it keeps it", async () => {
+  assert.equal((await call("PUT", "/crm/lead-sheet", tok.admin, { tabs: [{ gid: "22", service: "PM sheet", department: "Not a department" }] })).status, 400);
+  const r = await call("PUT", "/crm/lead-sheet", tok.admin, { tabs: [{ gid: "22", service: "PM sheet", department: "Performance Marketing" }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.tabs.find((t: any) => t.gid === "22").department, "Performance Marketing");
+  await call("PUT", "/crm/lead-sheet", tok.admin, { tabs: [{ gid: "22", service: "PM sheet" }] });
+  const m = await call("GET", "/content/own-ad-metrics", tok.admin);
+  assert.equal(m.status, 200);
+  assert.equal(m.body.departments["PM sheet"], "Performance Marketing");
+  assert.equal(m.body.departments["Graphic Design"], "Graphic Design", "an ERP department is its own department");
+  assert.equal(m.body.departments["Web kerala"], undefined, "a tab with no department is left out");
+  // A tab deleted and made again keeps its department, like its service.
+  tabList = [{ gid: "0", name: "Web kerala" }, { gid: "33", name: "PB NEW " }, { gid: "44", name: "PM sheet" }];
+  await call("POST", "/crm/lead-sheet/refresh-tabs", tok.admin);
+  assert.equal((await prisma.leadSheetTab.findUniqueOrThrow({ where: { gid: "44" } })).department, "Performance Marketing");
+});

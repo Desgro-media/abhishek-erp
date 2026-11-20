@@ -239,6 +239,8 @@ model Employee {
   departmentTeamLeads DepartmentTeamLead[]
   programAttendances HrProgramAttendee[]
   programFeedback    HrProgramFeedback[]
+  pmClients          Client[]             @relation("PmOwner")
+  pmScoreAdjustments PmScoreAdjustment[]
 }
 
 // Append-only — a correction is a new row, not an edit to history. HR/Admin
@@ -1027,6 +1029,10 @@ model Client {
   // ISO code the client's daily ad numbers are tracked in (INR for India, AED/SAR/... for GCC clients). A label only —
   // no conversion happens anywhere.
   adCurrency     String       @default("INR") @map("ad_currency")
+  // Performance Marketing: the team member who runs this client's ads (scored on it). Separate from the account manager,
+  // who is often Sales. Null = nobody assigned yet.
+  pmOwnerId      String?      @map("pm_owner_id")
+  pmOwner        Employee?    @relation("PmOwner", fields: [pmOwnerId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1351,6 +1357,10 @@ model ClientCampaignBrief {
   objective String?
   audience  String?
   budget    String?
+  // Performance Marketing: the cost per lead the client's ads should stay at or under (client's ad currency), and how the
+  // campaign is running ("Running" | "Learning" | "Paused" | "Stopped").
+  targetCpl      Decimal? @map("target_cpl") @db.Decimal(12, 2)
+  campaignStatus String?  @map("campaign_status")
   updatedBy String  @map("updated_by")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -1866,9 +1876,30 @@ model LeadSheetTab {
   gid       String  @unique
   name      String
   service   String?
+  // The ERP department this tab's service belongs to (Performance Marketing, Web Development…), so Meta Ads can
+  // show leads and spend per department. Null = not set yet.
+  department String?
   lastRows  Int     @default(0) @map("last_rows")
   lastError String? @map("last_error")
   position  Int     @default(0)
 
   @@map("lead_sheet_tabs")
+}
+
+// Performance Marketing scorecard: the department head's (or leadership's) adjustment to one person's automatic monthly
+// score, -10..+10, always with a reason. One row per person per month.
+model PmScoreAdjustment {
+  id         String   @id @default(uuid())
+  employeeId String   @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  month      String
+  points     Int
+  reason     String
+  updatedBy  String   @map("updated_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([employeeId, month])
+  @@map("pm_score_adjustments")
 }

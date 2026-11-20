@@ -5,7 +5,7 @@ import { recordAudit } from "../../services/audit.service";
 import { ownAdMetricServiceSchema } from "../../validation/crm.schemas";
 import { SERVICE_DEPARTMENTS } from "../../services/departmentAccess";
 import { serializeAdMetric, parseMetricDate } from "../../services/adMetrics";
-import { sheetLeadsPerDay, sheetServices } from "../../services/leadSheet";
+import { sheetLeadsPerDay, sheetServices, serviceDepartments } from "../../services/leadSheet";
 
 // DesGro Media's own daily Meta ad numbers (our lead-gen spend) — not a client's, and not the
 // campaign-level totals in metaCampaigns.controller. Admin / Content only (router-level guard).
@@ -17,13 +17,14 @@ const serialize = (r: Parameters<typeof serializeAdMetric>[0] & { service: strin
 const allowedServices = async () => [...new Set([...(await sheetServices()), ...SERVICE_DEPARTMENTS])];
 
 export const listOwnAdMetrics: RequestHandler = asyncHandler(async (_req, res) => {
-  const [rows, services, sheetLeads] = await Promise.all([
+  const [rows, services, sheetLeads, departments] = await Promise.all([
     prisma.ownAdMetric.findMany({ orderBy: [{ date: "desc" }, { service: "asc" }] }),
     allowedServices(),
     // Counted automatically from the Meta lead sheet: per IST day per service, last ~13 months.
     sheetLeadsPerDay("400 days"),
+    serviceDepartments(),
   ]);
-  res.json({ metrics: rows.map(serialize), services, sheetLeads });
+  res.json({ metrics: rows.map(serialize), services, sheetLeads, departments });
 });
 
 // Logging a date + service that already has numbers replaces them ("fix yesterday's figure"). One row per date per
@@ -41,16 +42,15 @@ export const upsertOwnAdMetric: RequestHandler = asyncHandler(async (req, res) =
   if (service && !(await allowedServices()).includes(service)) return res.status(400).json({ error: "Pick one of the services in the list" });
 
   const data = { spend: d.spend, leads: d.leads, purchases: d.purchases, revenue: d.revenue, note: d.note || null, loggedBy: req.user!.name };
-  // Editing a specific entry (id given): update that row in place, including moving it to another service.
+  // Editing a specific entry (id given): update that row in place, including moving it to another date or service.
   if (d.id) {
     const existing = await prisma.ownAdMetric.findUnique({ where: { id: d.id } });
     if (!existing) return res.status(404).json({ error: "Entry not found" });
-    if (existing.date.getTime() !== date.getTime()) return res.status(400).json({ error: "The date of an entry can't be changed — delete it and log the new date" });
-    if (existing.service !== service) {
+    if (existing.service !== service || existing.date.getTime() !== date.getTime()) {
       const clash = await prisma.ownAdMetric.findUnique({ where: { date_service: { date, service } } });
-      if (clash) return res.status(409).json({ error: `${service || "A general (no service)"} entry already exists for this date — edit that one instead` });
+      if (clash) return res.status(409).json({ error: `${service || "A general (no service)"} entry already exists for that date — edit that one instead` });
     }
-    const updated = await prisma.ownAdMetric.update({ where: { id: existing.id }, data: { ...data, service } });
+    const updated = await prisma.ownAdMetric.update({ where: { id: existing.id }, data: { ...data, date, service } });
     await recordAudit({ userId: req.user!.sub, action: "CONTENT_OWN_AD_METRIC_UPDATE", entityType: "OwnAdMetric", entityId: updated.id, beforeData: serialize(existing), afterData: serialize(updated) });
     return res.json({ metric: serialize(updated) });
   }

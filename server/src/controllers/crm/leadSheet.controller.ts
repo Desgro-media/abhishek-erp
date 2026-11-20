@@ -17,7 +17,7 @@ const saveSchema = z.object({
   sheetUrl: z.string().trim().min(1).optional(),
   autoSync: z.boolean().optional(),
   importFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-  tabs: z.array(z.object({ gid: z.string(), service: z.string().trim().min(1).max(60).nullable() })).optional(),
+  tabs: z.array(z.object({ gid: z.string(), service: z.string().trim().min(1).max(60).nullable(), department: z.enum(SERVICE_DEPARTMENTS as [string, ...string[]]).nullable().optional() })).optional(),
 });
 
 export const getLeadSheetSettings: RequestHandler = asyncHandler(async (req, res) => {
@@ -48,7 +48,7 @@ export const saveLeadSheetSettings: RequestHandler = asyncHandler(async (req, re
     create: { id: 1, sheetId, autoSync: d.autoSync ?? true, importFrom },
     update: { sheetId, ...(d.autoSync !== undefined ? { autoSync: d.autoSync } : {}), importFrom },
   });
-  for (const t of d.tabs ?? []) await prisma.leadSheetTab.updateMany({ where: { gid: t.gid }, data: { service: t.service } });
+  for (const t of d.tabs ?? []) await prisma.leadSheetTab.updateMany({ where: { gid: t.gid }, data: { service: t.service, ...(t.department !== undefined ? { department: t.department } : {}) } });
   await recordAudit({ userId: req.user!.sub, action: "LEAD_SHEET_SETTINGS", entityType: "LeadSheetConfig", entityId: "1", beforeData: before ? { sheetId: before.sheetId, autoSync: before.autoSync, importFrom: before.importFrom } : undefined, afterData: { sheetId, autoSync: d.autoSync, importFrom: d.importFrom, tabs: d.tabs }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.json({ ...(await getLeadSheet()), services: SERVICE_DEPARTMENTS });
 });

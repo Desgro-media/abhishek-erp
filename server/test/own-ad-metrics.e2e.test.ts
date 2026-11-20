@@ -131,8 +131,16 @@ test("service-wise: one date can hold several services; same date + service upda
     assert.equal(moved.body.metric.id, none.body.metric.id);
     const clash = await call("POST", "/content/own-ad-metrics", tok.content, { id: moved.body.metric.id, date: D3, service: "Web Development", spend: 10, leads: 1, purchases: 0, revenue: 0 });
     assert.equal(clash.status, 409);
-    const wrongDate = await call("POST", "/content/own-ad-metrics", tok.content, { id: moved.body.metric.id, date: D2, service: "Production", spend: 10, leads: 1, purchases: 0, revenue: 0 });
-    assert.equal(wrongDate.status, 400);
+    // Editing can move an entry to another date too — refused only when that date already has the same service.
+    const D4 = "2001-03-07";
+    await prisma.ownAdMetric.deleteMany({ where: { date: new Date(`${D4}T00:00:00Z`) } });
+    const toD4 = await call("POST", "/content/own-ad-metrics", tok.content, { id: moved.body.metric.id, date: D4, service: "Production", spend: 12, leads: 1, purchases: 0, revenue: 0 });
+    assert.equal(toD4.status, 200);
+    assert.equal(toD4.body.metric.date, D4);
+    assert.equal(toD4.body.metric.spend, 12);
+    await call("POST", "/content/own-ad-metrics", tok.content, { date: D3, service: "Production", spend: 5, leads: 0, purchases: 0, revenue: 0 });
+    assert.equal((await call("POST", "/content/own-ad-metrics", tok.content, { id: toD4.body.metric.id, date: D3, service: "Production", spend: 12, leads: 1, purchases: 0, revenue: 0 })).status, 409);
+    await prisma.ownAdMetric.deleteMany({ where: { id: toD4.body.metric.id } });
     const list = (await call("GET", "/content/own-ad-metrics", tok.content)).body;
     assert.ok(list.services.includes("Web Development") && list.services.includes("Performance Marketing"));
     assert.equal(list.metrics.filter((m: { date: string }) => m.date === D3).length, 3);
