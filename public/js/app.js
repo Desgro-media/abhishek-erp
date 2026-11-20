@@ -8194,6 +8194,20 @@ function setMetaSvcRange(v){ metaSvcRange = v; render(); }
 function setMetaSvcView(v){ metaSvcView = v; if(v==="month" && ["Today","Yesterday","Last7","Last30","ThisMonth"].includes(metaSvcRange)) metaSvcRange = "All"; render(); }
 function toggleMetaSvc(i){ const k = (window._metaSvcKeys||[])[i]; if(k==null) return; metaSvcOpen[k] = !metaSvcOpen[k]; render(); }
 // "+" on an opened row with no spend yet: the form opens on that row's date and service.
+// The spend records behind one department/month row, each with edit and delete.
+function openOwnSpendList(i){
+  const x = (window._metaRecIds||[])[i]; if(!x) return;
+  const recs = x.ids.map(id=>ownAdMetrics.find(m=>m.id===id)).filter(Boolean).sort((a,b)=>b.date.localeCompare(a.date) || (a.service||'').localeCompare(b.service||''));
+  const ico = id => `<svg class="icon" style="width:12px;height:12px"><use href="#i-${id}"/></svg>`;
+  showModal(`
+    <div class="modal-head"><h3>Spend records · ${esc(x.title)}</h3><button class="modal-close" onclick="closeModal()">${ico('x')}</button></div>
+    <div class="modal-body"><div class="table-wrap"><table class="data"><thead><tr><th>Date</th><th>Service</th><th class="num">Amount</th><th style="width:80px;"></th></tr></thead><tbody>
+      ${recs.map(m=>`<tr><td>${fmtDateShort(m.date)}</td><td>${m.service?esc(m.service):`<span class="faint">${NO_SERVICE_LABEL}</span>`}${m.note?`<div class="subtext" style="white-space:normal;">${esc(m.note)}</div>`:''}</td><td class="num mono">${inr(m.spend)}</td>
+        <td><div style="display:flex;gap:4px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openLogOwnAdMetric('${esc(m.id)}')" title="Edit spend">${ico('edit')}</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('ownAdMetric','${esc(m.id)}')" title="Delete spend">${ico('x')}</button></div></td></tr>`).join('')}
+      <tr style="font-weight:800;"><td colspan="2">Total</td><td class="num mono">${inr(recs.reduce((t,m)=>t+m.spend,0))}</td><td></td></tr>
+    </tbody></table></div></div>
+    <div class="modal-foot"><div></div><button type="button" class="btn ghost" onclick="closeModal()">Close</button></div>`, true);
+}
 function addMetaRowSpend(i){ const x = (window._metaAddKeys||[])[i]; if(x) openLogOwnAdMetric(null, x.service, x.date); }
 function ownAdsByServiceHTML(){
   const inRange = d => metaSvcRange==="Custom"
@@ -8206,9 +8220,9 @@ function ownAdsByServiceHTML(){
   const keys = (day, sv) => byDay ? [day, sv] : byDept ? [deptOf(sv), sv] : byMonth ? [day.slice(0,7), deptOf(sv)] : [sv, day];
   const groups = {};
   const grp = k => groups[k] || (groups[k] = {key:k, leads:0, spend:0, subs:{}});
-  const sub = (g, k) => g.subs[k] || (g.subs[k] = {key:k, leads:0, spend:0, entry:null});
+  const sub = (g, k) => g.subs[k] || (g.subs[k] = {key:k, leads:0, spend:0, entry:null, ids:[]});
   ownSheetLeads.filter(r=>inRange(r.day)).forEach(r=>{ const [gk, sk] = keys(r.day, r.service); const g = grp(gk); g.leads += r.n; sub(g, sk).leads += r.n; });
-  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ const [gk, sk] = keys(m.date, m.service||""); const g = grp(gk); g.spend += m.spend; const x = sub(g, sk); x.spend += m.spend; if(!byDept && !byMonth) x.entry = m; });
+  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ const [gk, sk] = keys(m.date, m.service||""); const g = grp(gk); g.spend += m.spend; const x = sub(g, sk); x.spend += m.spend; x.ids.push(m.id); if(!byDept && !byMonth) x.entry = m; });
   const list = Object.values(groups).sort(byDay || byMonth ? (a,b)=>b.key.localeCompare(a.key) : byDept ? (a,b)=>(!a.key)-(!b.key) || b.spend-a.spend || b.leads-a.leads : (a,b)=>b.leads-a.leads || b.spend-a.spend);
   window._metaSvcKeys = list.map(g=>g.key);   // row index -> key, so onclick never has to quote a service name
   const tot = list.reduce((t,g)=>({leads:t.leads+g.leads, spend:t.spend+g.spend}), {leads:0, spend:0});
@@ -8223,12 +8237,24 @@ function ownAdsByServiceHTML(){
   const subLabel = k => byMonth ? deptName(k) : byDay || byDept ? svcName(k) + deptTag(k) : dayName(k);
   const ico = id => `<svg class="icon" style="width:12px;height:12px"><use href="#i-${id}"/></svg>`;
   window._metaAddKeys = [];
+  // A department / month row adds up many records: one record → edit/delete it right there; several → a list of
+  // them to edit/delete; none (department view) → "+" logs spend for that service.
+  window._metaRecIds = [];
+  const sumActions = (s, gk) => {
+    if(s.ids.length===1) return actions(ownAdMetrics.find(m=>m.id===s.ids[0]));
+    if(s.ids.length>1){
+      const title = byMonth ? `${s.key ? s.key : 'No department set'} · ${monthLabel(gk)}` : (s.key || NO_SERVICE_LABEL);
+      const i = window._metaRecIds.push({ids:s.ids, title})-1;
+      return `<div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openOwnSpendList(${i})" title="Edit or delete these records">${ico('edit')}${s.ids.length} records</button></div>`;
+    }
+    return byDept ? actions(null, undefined, s.key) : '';
+  };
   const actions = (m, date, service) => m
     ? `<div style="display:flex;gap:4px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openLogOwnAdMetric('${esc(m.id)}')" title="Edit spend">${ico('edit')}</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('ownAdMetric','${esc(m.id)}')" title="Delete spend">${ico('x')}</button></div>`
     : `<div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="addMetaRowSpend(${window._metaAddKeys.push({date, service})-1})" title="Add spend for this day">${ico('plus')}</button></div>`;
   const subRows = g => Object.values(g.subs).sort(byDay ? (a,b)=>b.leads-a.leads : byDept || byMonth ? (a,b)=>(!a.key)-(!b.key) || b.spend-a.spend || b.leads-a.leads : (a,b)=>b.key.localeCompare(a.key)).map(s=>`<tr style="background:var(--surface-sunk);">
       <td style="padding-left:32px;">${subLabel(s.key)}${s.entry&&s.entry.note?`<div class="subtext" style="max-width:280px;white-space:normal;">${esc(s.entry.note)}</div>`:''}</td>
-      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.spend)}</td><td class="num mono">${cpl(s.spend, s.leads)}</td><td>${byDept || byMonth ? '' : actions(s.entry, byDay?g.key:s.key, byDay?s.key:g.key)}</td></tr>`).join('');
+      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.spend)}</td><td class="num mono">${cpl(s.spend, s.leads)}</td><td>${byDept || byMonth ? sumActions(s, g.key) : actions(s.entry, byDay?g.key:s.key, byDay?s.key:g.key)}</td></tr>`).join('');
   const share = g => byDept && tot.spend>0 && g.spend>0 ? ` <span class="faint" style="font-weight:500;">${Math.round(g.spend/tot.spend*100)}%</span>` : '';
   const dates = [...ownSheetLeads.map(r=>r.day), ...ownAdMetrics.map(m=>m.date)];
   return `<div class="panel">
