@@ -8039,10 +8039,8 @@ function logAdMetricModal(forLabel, existing, save, currency, services, opts){
     <div class="modal-head"><h3>${existing?'Edit':'Log'} ad performance</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-log-ad-metric"><div class="modal-body">
       <div class="subtext" style="font-size:12px;margin-top:0;">${esc(forLabel)}</div>
-      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(v.date)}" max="${local}" required ${existing&&!opts.editableDate?'readonly':''}></div>
-      ${services?`<div><label class="field-label">${opts.groups?'Service or department':'Service'}</label><select class="field-input" name="service"><option value="">${NO_SERVICE_LABEL}</option>${opts.groups
-        ? opts.groups.map(g=>`<optgroup label="${esc(g.label)}">${g.items.map(it=>`<option value="${esc(it.value)}" ${it.value===v.service?'selected':''}>${esc(it.label)}</option>`).join('')}</optgroup>`).join('')
-        : services.map(sv=>`<option value="${esc(sv)}" ${sv===v.service?'selected':''}>${esc(sv)}</option>`).join('')}</select>${opts.groups?`<div class="subtext">Pick a sheet service, or a department itself for spend that isn't for one service.</div>`:''}</div>`:''}
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(v.date)}" max="${local}" required ${existing?'readonly':''}></div>
+      ${services?`<div><label class="field-label">Service</label><select class="field-input" name="service"><option value="">${NO_SERVICE_LABEL}</option>${services.map(sv=>`<option value="${esc(sv)}" ${sv===v.service?'selected':''}>${esc(sv)}</option>`).join('')}</select></div>`:''}
       ${existing?'':`<div class="subtext" style="font-size:12px;">Logging a date${services?' and service':''} that already has numbers replaces them.${services?' Log the same date again for another service.':''}</div>`}
       <div class="field-row">
         <div><label class="field-label">Spend${currency&&currency!=='INR'?` (${esc(currency)})`:''}</label><input class="field-input" type="number" step="0.01" min="0" name="spend" value="${esc(v.spend)}" required></div>
@@ -8064,21 +8062,126 @@ function logAdMetricModal(forLabel, existing, save, currency, services, opts){
     catch(err){ toast(err.message || "Couldn't save ad performance"); }
   });
 }
+// Our own Meta ad spend. Spend goes to a department — either the whole department or one of the Meta sheet services
+// filed under it. "Log spend" takes several lines for one date (each line is its own record) and adds up the total;
+// ✎ on a record edits that one record, date included.
+const OWN_SPEND_OTHER = "__other";   // department picker value for services with no department (and "no service")
+function ownSpendDeptOf(sv){ return SERVICE_DEPARTMENTS.includes(sv) ? sv : (ownAdServiceDepts[sv] || OWN_SPEND_OTHER); }
+function ownSpendServices(keep){
+  const list = ownAdServices.length ? ownAdServices : SERVICE_DEPARTMENTS;
+  // An older entry may sit under a name that's no longer offered — keep it pickable so an edit doesn't move it.
+  return keep && !list.includes(keep) ? [...list, keep] : list;
+}
+function ownSpendDeptOptions(dept){
+  const other = ownSpendServices().some(sv=>ownSpendDeptOf(sv)===OWN_SPEND_OTHER);
+  return SERVICE_DEPARTMENTS.map(dp=>`<option value="${esc(dp)}" ${dp===dept?'selected':''}>${esc(dp)}</option>`).join('')
+    + `<option value="${OWN_SPEND_OTHER}" ${dept===OWN_SPEND_OTHER?'selected':''}>${other?'No department set':'Not tied to a department'}</option>`;
+}
+function ownSpendServiceOptions(dept, service, keep){
+  const svcs = ownSpendServices(keep).filter(sv=>!SERVICE_DEPARTMENTS.includes(sv) && ownSpendDeptOf(sv)===dept);
+  const first = dept===OWN_SPEND_OTHER ? `<option value="">${NO_SERVICE_LABEL}</option>` : `<option value="${esc(dept)}">Whole department</option>`;
+  return first + svcs.map(sv=>`<option value="${esc(sv)}" ${sv===service?'selected':''}>${esc(sv)}</option>`).join('');
+}
 function openLogOwnAdMetric(id, service, date){
-  const existing = id ? ownAdMetrics.find(m=>m.id===id) : null;
-  const services = ownAdServices.length ? ownAdServices : SERVICE_DEPARTMENTS;
-  // An older entry may sit under a name that's no longer offered — keep it pickable so the edit doesn't move it.
-  const list = existing && existing.service && !services.includes(existing.service) ? [...services, existing.service] : services;
-  // The picker is grouped by department: the department itself first (spend for the whole department), then the
-  // sheet services filed under it. Services with no department yet sit in their own group at the end.
-  const groups = SERVICE_DEPARTMENTS.map(dp=>({ label: dp, items: [{value:dp, label:`${dp} — whole department`},
-    ...list.filter(sv=>sv!==dp && !SERVICE_DEPARTMENTS.includes(sv) && ownAdServiceDepts[sv]===dp).map(sv=>({value:sv, label:sv}))] }));
-  const loose = list.filter(sv=>!SERVICE_DEPARTMENTS.includes(sv) && !SERVICE_DEPARTMENTS.includes(ownAdServiceDepts[sv]));
-  if(loose.length) groups.push({ label: "No department set", items: loose.map(sv=>({value:sv, label:sv})) });
-  logAdMetricModal("DesGro Media — own Meta Ads · leads are counted automatically from the Meta sheet", existing, async payload=>{
-    await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-    await Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]);
-  }, undefined, list, { hideLeads:true, service, date, groups, editableDate:true });
+  if(id) return openEditOwnSpend(id);
+  const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  showModal(`
+    <div class="modal-head"><h3>Log spend</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-own-spend"><div class="modal-body">
+      <div class="subtext" style="font-size:12px;margin-top:0;">DesGro Media's own Meta Ads · leads are counted automatically from the Meta sheet</div>
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(date||local)}" max="${local}" required style="max-width:200px;" onchange="ownSpendRefresh()"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 120px 32px;gap:6px;align-items:end;">
+        <label class="field-label" style="margin:0;">Department</label><label class="field-label" style="margin:0;">Service</label><label class="field-label" style="margin:0;">Amount (₹)</label><span></span>
+      </div>
+      <div id="own-spend-lines" style="display:grid;gap:6px;"></div>
+      <div><button type="button" class="btn btn-sm ghost" onclick="ownSpendAddLine()"><svg class="icon" style="width:12px;height:12px"><use href="#i-plus"/></svg>Add line</button></div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;align-items:baseline;border-top:1px solid var(--line);padding-top:10px;">
+        <span class="field-label" style="margin:0;">Total</span><b class="mono" id="own-spend-total" style="font-size:17px;">₹0</b>
+      </div>
+      <div><label class="field-label">Note <span class="faint" style="font-weight:500;">(optional, saved on every line)</span></label><input class="field-input" name="note" maxlength="300" placeholder="e.g. Meta billing for the morning campaigns"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`, true);
+  ownSpendAddLine(service);
+  document.getElementById("f-own-spend").addEventListener("submit", saveOwnSpendLines);
+}
+function ownSpendAddLine(service){
+  const dept = service!=null && service!=='' ? ownSpendDeptOf(service) : (service==='' ? OWN_SPEND_OTHER : SERVICE_DEPARTMENTS[0]);
+  const row = document.createElement("div");
+  row.className = "own-spend-line";
+  row.style.cssText = "display:grid;grid-template-columns:1fr 1fr 120px 32px;gap:6px;align-items:center;";
+  row.innerHTML = `<select class="field-input osl-dept" onchange="this.parentNode.querySelector('.osl-svc').innerHTML=ownSpendServiceOptions(this.value);ownSpendRefresh()">${ownSpendDeptOptions(dept)}</select>
+    <select class="field-input osl-svc" onchange="ownSpendRefresh()">${ownSpendServiceOptions(dept, service, service)}</select>
+    <input class="field-input osl-amt mono" type="number" step="0.01" min="0" placeholder="0" oninput="ownSpendRefresh()">
+    <button type="button" class="btn btn-sm ghost" title="Remove line" onclick="this.parentNode.remove();ownSpendRefresh()"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>
+    <div class="osl-hint subtext" style="grid-column:1 / -1;margin:0;"></div>`;
+  document.getElementById("own-spend-lines").appendChild(row);
+  ownSpendRefresh();
+  const amt = row.querySelector(".osl-amt"); if(amt) amt.focus();
+}
+// Keeps the total up to date and warns on each line that would replace spend already logged (or repeats a line).
+function ownSpendRefresh(){
+  const form = document.getElementById("f-own-spend"); if(!form) return;
+  const date = form.elements.date.value, seen = {};
+  let total = 0;
+  document.querySelectorAll(".own-spend-line").forEach(row=>{
+    const sv = row.querySelector(".osl-svc").value, amt = Number(row.querySelector(".osl-amt").value) || 0;
+    total += amt;
+    const had = ownAdMetrics.find(m=>m.date===date && (m.service||"")===sv);
+    row.querySelector(".osl-hint").innerHTML = seen[sv] ? `<span class="neg">Already on another line — put it on one line.</span>`
+      : had ? `Already ${inr(had.spend)} logged for this on ${fmtDateShort(date)} — saving replaces it.` : '';
+    seen[sv] = true;
+  });
+  document.getElementById("own-spend-total").textContent = inr(total);
+}
+async function saveOwnSpendLines(e){
+  e.preventDefault();
+  const form = e.target, date = form.elements.date.value, note = form.elements.note.value.trim();
+  const lines = [...document.querySelectorAll(".own-spend-line")].map(r=>({ service: r.querySelector(".osl-svc").value, raw: r.querySelector(".osl-amt").value }));
+  const filled = lines.filter(l=>l.raw!=='');
+  if(!filled.length){ toast("Enter an amount on at least one line"); return; }
+  if(new Set(filled.map(l=>l.service)).size !== filled.length){ toast("The same service is on two lines — put it on one line"); return; }
+  const btn = form.querySelector("button[type=submit]"); btn.disabled = true;
+  let saved = 0;
+  try{
+    for(const l of filled){
+      const had = ownAdMetrics.find(m=>m.date===date && (m.service||"")===l.service);
+      await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
+        date, service: l.service, spend: Number(l.raw), leads: had?had.leads:0, purchases: had?had.purchases:0, revenue: had?had.revenue:0, note }) });
+      saved++;
+    }
+    toast(`${saved} spend line${saved===1?'':'s'} saved · ${inr(filled.reduce((t,l)=>t+Number(l.raw),0))}`); closeModal();
+  }catch(err){ toast(`${saved?`${saved} line${saved===1?'':'s'} saved, then: `:''}${err.message || "Couldn't save spend"}`); btn.disabled = false; }
+  await Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]);
+  render();
+}
+function openEditOwnSpend(id){
+  const m = ownAdMetrics.find(x=>x.id===id); if(!m) return;
+  const d = new Date(); const local = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  const dept = m.service ? ownSpendDeptOf(m.service) : OWN_SPEND_OTHER;
+  showModal(`
+    <div class="modal-head"><h3>Edit spend</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-own-spend-edit"><div class="modal-body">
+      <div><label class="field-label">Date</label><input class="field-input" type="date" name="date" value="${esc(m.date)}" max="${local}" required style="max-width:200px;"></div>
+      <div class="field-row">
+        <div><label class="field-label">Department</label><select class="field-input" name="dept" onchange="this.form.elements.service.innerHTML=ownSpendServiceOptions(this.value)">${ownSpendDeptOptions(dept)}</select></div>
+        <div><label class="field-label">Service</label><select class="field-input" name="service">${ownSpendServiceOptions(dept, m.service, m.service)}</select></div>
+      </div>
+      <div><label class="field-label">Amount (₹)</label><input class="field-input mono" type="number" step="0.01" min="0" name="spend" value="${esc(m.spend)}" required style="max-width:200px;"></div>
+      <div><label class="field-label">Note <span class="faint" style="font-weight:500;">(optional)</span></label><input class="field-input" name="note" maxlength="300" value="${esc(m.note||'')}"></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div>
+    </form>`);
+  document.getElementById("f-own-spend-edit").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const f = e.target.elements;
+    try{
+      await apiJson("/api/content/own-ad-metrics", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({
+        id: m.id, date: f.date.value, service: f.service.value, spend: Number(f.spend.value), leads: m.leads, purchases: m.purchases, revenue: m.revenue, note: f.note.value.trim() }) });
+      await Promise.all([loadOwnAdMetrics(), loadMetaScore(metaScoreData&&metaScoreData.month).catch(()=>{})]);
+      toast("Spend saved"); closeModal(); render();
+    }catch(err){ toast(err.message || "Couldn't save spend"); }
+  });
 }
 // Meta Ads > Leads by service / by day: leads counted automatically from the Meta lead sheet (by the day Meta received
 // them), next to the spend Performance Marketing logs. Spend only lines up with a service's leads when it's logged
