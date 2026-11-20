@@ -5,7 +5,7 @@ import { recordAudit } from "../../services/audit.service";
 import { ownAdMetricServiceSchema } from "../../validation/crm.schemas";
 import { SERVICE_DEPARTMENTS } from "../../services/departmentAccess";
 import { serializeAdMetric, parseMetricDate } from "../../services/adMetrics";
-import { sheetLeadsPerDay, sheetServices } from "../../services/leadSheet";
+import { sheetLeadsPerDay, sheetServices, serviceDepartments } from "../../services/leadSheet";
 
 // DesGro Media's own daily Meta ad numbers (our lead-gen spend) — not a client's, and not the
 // campaign-level totals in metaCampaigns.controller. Admin / Content only (router-level guard).
@@ -17,13 +17,14 @@ const serialize = (r: Parameters<typeof serializeAdMetric>[0] & { service: strin
 const allowedServices = async () => [...new Set([...(await sheetServices()), ...SERVICE_DEPARTMENTS])];
 
 export const listOwnAdMetrics: RequestHandler = asyncHandler(async (_req, res) => {
-  const [rows, services, sheetLeads] = await Promise.all([
+  const [rows, services, sheetLeads, departments] = await Promise.all([
     prisma.ownAdMetric.findMany({ orderBy: [{ date: "desc" }, { service: "asc" }] }),
     allowedServices(),
     // Counted automatically from the Meta lead sheet: per IST day per service, last ~13 months.
     sheetLeadsPerDay("400 days"),
+    serviceDepartments(),
   ]);
-  res.json({ metrics: rows.map(serialize), services, sheetLeads });
+  res.json({ metrics: rows.map(serialize), services, sheetLeads, departments });
 });
 
 // Logging a date + service that already has numbers replaces them ("fix yesterday's figure"). One row per date per

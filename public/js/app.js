@@ -650,10 +650,11 @@ async function loadMetaCampaigns(){ metaAdsCampaigns = (await apiJson("/api/cont
 // server (null when there's nothing to divide by) so every screen shows the same figures.
 let ownAdMetrics = [];
 let ownAdServices = [];   // services spend can be logged against: the Meta sheet's tab services first, then the ERP's
+let ownAdServiceDepts = {};   // service -> department (sheet tabs' chosen department; an ERP department maps to itself)
 let ownSheetLeads = [];   // [{day, service, n}] — leads the Meta sheet brought in, per IST day per service (automatic)
 async function loadOwnAdMetrics(){
   const d = await apiJson("/api/content/own-ad-metrics");
-  ownAdMetrics = d.metrics; ownAdServices = d.services || []; ownSheetLeads = d.sheetLeads || [];
+  ownAdMetrics = d.metrics; ownAdServices = d.services || []; ownSheetLeads = d.sheetLeads || []; ownAdServiceDepts = d.departments || {};
 }
 const NO_SERVICE_LABEL = "Not tied to a service";
 function adMetrics(c){
@@ -854,13 +855,14 @@ function renderLeadSheetModal(msg){
       ${msg?`<div class="banner muted"><div>${esc(msg)}</div></div>`:''}
       ${tabs.length?`
       <div>
-        <label class="field-label">Which service is each tab for?</label>
+        <label class="field-label">Which service and department is each tab for?</label>
         <datalist id="ls-services">${[...new Set([...st.services, ...tabs.map(t=>t.service).filter(Boolean)])].map(sv=>`<option value="${esc(sv)}">`).join('')}</datalist>
         <div style="display:grid;gap:6px;max-height:300px;overflow:auto;">
           ${tabs.map(t=>`<div style="display:flex;gap:8px;align-items:center;"><div style="flex:1;min-width:0;" class="${t.lastError?'neg':''}"><b>${esc(t.name)}</b>${t.lastRows?` <span class="subtext">· ${t.lastRows} imported</span>`:''}${t.lastError?`<div class="subtext neg">${esc(t.lastError)}</div>`:''}</div>
-            <input class="field-input ls-tab" list="ls-services" data-gid="${esc(t.gid)}" value="${esc(t.service||'')}" placeholder="Skip this tab" style="width:210px;"></div>`).join('')}
+            <input class="field-input ls-tab" list="ls-services" data-gid="${esc(t.gid)}" value="${esc(t.service||'')}" placeholder="Skip this tab" style="width:190px;">
+            <select class="field-input ls-dept" data-gid="${esc(t.gid)}" style="width:190px;" title="Department this tab's leads and spend count under"><option value="">Department…</option>${st.services.map(dp=>`<option value="${esc(dp)}" ${t.department===dp?'selected':''}>${esc(dp)}</option>`).join('')}</select></div>`).join('')}
         </div>
-        <div class="subtext">Every tab is filed under a service name. Pick one from the list or type a new one (e.g. Personal Branding). Clear the box to skip a tab.</div>
+        <div class="subtext">Every tab is filed under a service name. Pick one from the list or type a new one (e.g. Personal Branding). Clear the box to skip a tab. The department decides where the tab's leads and spend count in Meta Ads → Leads &amp; spend → By department.</div>
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
         <div><label class="field-label">Import leads created from</label><input class="field-input" type="date" id="ls-from" value="${c&&c.importFrom?String(c.importFrom).slice(0,10):''}"></div>
@@ -892,7 +894,7 @@ async function connectLeadSheet(){
 }
 function leadSheetFormBody(){
   return { autoSync: document.getElementById("ls-auto").checked, importFrom: document.getElementById("ls-from").value || null,
-    tabs: [...document.querySelectorAll(".ls-tab")].map(s=>({ gid:s.dataset.gid, service:s.value||null })) };
+    tabs: [...document.querySelectorAll(".ls-tab")].map(s=>{ const dp = document.querySelector(`.ls-dept[data-gid="${CSS.escape(s.dataset.gid)}"]`); return { gid:s.dataset.gid, service:s.value||null, department: dp ? (dp.value||null) : undefined }; }) };
 }
 async function saveLeadSheet(){
   try{ leadSheetState = await apiJson("/api/crm/lead-sheet", { method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(leadSheetFormBody()) }); toast("Saved"); renderLeadSheetModal(); }
@@ -8074,7 +8076,7 @@ function openLogOwnAdMetric(id, service, date){
 // them), next to the spend Performance Marketing logs. Spend only lines up with a service's leads when it's logged
 // under the same name as the sheet's tab service. Kept deliberately plain: Leads · Spend · Cost per lead.
 let metaSvcRange = "ThisMonth";
-let metaSvcView = "service";   // "service" | "day"
+let metaSvcView = "service";   // "service" | "day" | "dept" (department → its services; from each sheet tab's department)
 let metaSvcOpen = {};          // service or date -> true while its rows are shown
 function setMetaSvcRange(v){ metaSvcRange = v; render(); }
 function setMetaSvcView(v){ metaSvcView = v; render(); }
@@ -8085,47 +8087,52 @@ function ownAdsByServiceHTML(){
   const inRange = d => metaSvcRange==="Custom"
     ? (!customDateRange.from || d>=customDateRange.from) && (!customDateRange.to || d<=customDateRange.to)
     : matchesDateFilter(d, metaSvcRange);
-  const byDay = metaSvcView==="day";
-  // Group by service or by date; each group also keeps its sub-rows (dates of a service, services of a date).
+  const byDay = metaSvcView==="day", byDept = metaSvcView==="dept";
+  // Group by service, by date or by department; each group also keeps its sub-rows (dates of a service, services of
+  // a date, services of a department). A department's sub-rows add up the whole period, so they have no edit buttons.
+  const deptOf = sv => ownAdServiceDepts[sv] || "";
+  const keys = (day, sv) => byDay ? [day, sv] : byDept ? [deptOf(sv), sv] : [sv, day];
   const groups = {};
   const grp = k => groups[k] || (groups[k] = {key:k, leads:0, spend:0, subs:{}});
-  const sub = (g, k) => g.subs[k] || (g.subs[k] = {key:k, leads:0, entry:null});
-  ownSheetLeads.filter(r=>inRange(r.day)).forEach(r=>{ const g = grp(byDay?r.day:r.service); g.leads += r.n; sub(g, byDay?r.service:r.day).leads += r.n; });
-  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ const s = m.service||""; const g = grp(byDay?m.date:s); g.spend += m.spend; sub(g, byDay?s:m.date).entry = m; });
-  const list = Object.values(groups).sort(byDay ? (a,b)=>b.key.localeCompare(a.key) : (a,b)=>b.leads-a.leads || b.spend-a.spend);
+  const sub = (g, k) => g.subs[k] || (g.subs[k] = {key:k, leads:0, spend:0, entry:null});
+  ownSheetLeads.filter(r=>inRange(r.day)).forEach(r=>{ const [gk, sk] = keys(r.day, r.service); const g = grp(gk); g.leads += r.n; sub(g, sk).leads += r.n; });
+  ownAdMetrics.filter(m=>inRange(m.date)).forEach(m=>{ const [gk, sk] = keys(m.date, m.service||""); const g = grp(gk); g.spend += m.spend; const x = sub(g, sk); x.spend += m.spend; if(!byDept) x.entry = m; });
+  const list = Object.values(groups).sort(byDay ? (a,b)=>b.key.localeCompare(a.key) : byDept ? (a,b)=>(!a.key)-(!b.key) || b.spend-a.spend || b.leads-a.leads : (a,b)=>b.leads-a.leads || b.spend-a.spend);
   window._metaSvcKeys = list.map(g=>g.key);   // row index -> key, so onclick never has to quote a service name
   const tot = list.reduce((t,g)=>({leads:t.leads+g.leads, spend:t.spend+g.spend}), {leads:0, spend:0});
   const money = v => v>0 ? inr(v) : '<span class="faint">—</span>';
   const cpl = (spend, leads) => spend>0 && leads>0 ? inr(Math.round(spend/leads)) : '<span class="faint">—</span>';
   const svcName = s => s ? esc(s) : `<span class="faint">${NO_SERVICE_LABEL}</span>`;
   const dayName = d => `${fmtDateShort(d)} <span class="faint" style="font-weight:500;">${new Date(d+"T00:00:00").toLocaleDateString("en-IN",{weekday:"short"})}</span>`;
-  const label = k => byDay ? dayName(k) : svcName(k);
-  const subLabel = k => byDay ? svcName(k) : dayName(k);
+  const deptName = d => d ? esc(d) : `<span class="faint">No department set</span>`;
+  const label = k => byDay ? dayName(k) : byDept ? deptName(k) : svcName(k);
+  const subLabel = k => byDay || byDept ? svcName(k) : dayName(k);
   const ico = id => `<svg class="icon" style="width:12px;height:12px"><use href="#i-${id}"/></svg>`;
   window._metaAddKeys = [];
   const actions = (m, date, service) => m
     ? `<div style="display:flex;gap:4px;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="openLogOwnAdMetric('${esc(m.id)}')" title="Edit spend">${ico('edit')}</button><button class="btn btn-sm ghost" onclick="openConfirmDelete('ownAdMetric','${esc(m.id)}')" title="Delete spend">${ico('x')}</button></div>`
     : `<div style="display:flex;justify-content:flex-end;"><button class="btn btn-sm ghost" onclick="addMetaRowSpend(${window._metaAddKeys.push({date, service})-1})" title="Add spend for this day">${ico('plus')}</button></div>`;
-  const subRows = g => Object.values(g.subs).sort(byDay ? (a,b)=>b.leads-a.leads : (a,b)=>b.key.localeCompare(a.key)).map(s=>`<tr style="background:var(--surface-sunk);">
+  const subRows = g => Object.values(g.subs).sort(byDay ? (a,b)=>b.leads-a.leads : byDept ? (a,b)=>b.spend-a.spend || b.leads-a.leads : (a,b)=>b.key.localeCompare(a.key)).map(s=>`<tr style="background:var(--surface-sunk);">
       <td style="padding-left:32px;">${subLabel(s.key)}${s.entry&&s.entry.note?`<div class="subtext" style="max-width:280px;white-space:normal;">${esc(s.entry.note)}</div>`:''}</td>
-      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.entry?s.entry.spend:0)}</td><td class="num mono">${cpl(s.entry?s.entry.spend:0, s.leads)}</td><td>${actions(s.entry, byDay?g.key:s.key, byDay?s.key:g.key)}</td></tr>`).join('');
+      <td class="num mono">${s.leads}</td><td class="num mono">${money(s.spend)}</td><td class="num mono">${cpl(s.spend, s.leads)}</td><td>${byDept ? '' : actions(s.entry, byDay?g.key:s.key, byDay?s.key:g.key)}</td></tr>`).join('');
+  const share = g => byDept && tot.spend>0 && g.spend>0 ? ` <span class="faint" style="font-weight:500;">${Math.round(g.spend/tot.spend*100)}%</span>` : '';
   const dates = [...ownSheetLeads.map(r=>r.day), ...ownAdMetrics.map(m=>m.date)];
   return `<div class="panel">
     <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
-      <div><h3>Leads &amp; spend</h3><div class="sub">Leads come from the Meta sheet automatically · click a row to edit or delete spend</div></div>
+      <div><h3>Leads &amp; spend</h3><div class="sub">${byDept ? 'Where the ad budget goes, per department · click a department to see its services' : 'Leads come from the Meta sheet automatically · click a row to edit or delete spend'}</div></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-        ${[["service","By service"],["day","By day"]].map(([k,l])=>`<button class="chip ${metaSvcView===k?'active':''}" onclick="setMetaSvcView('${k}')">${l}</button>`).join('')}
+        ${[["service","By service"],["dept","By department"],["day","By day"]].map(([k,l])=>`<button class="chip ${metaSvcView===k?'active':''}" onclick="setMetaSvcView('${k}')">${l}</button>`).join('')}
         <select class="select-sm" onchange="setMetaSvcRange(this.value)">${dateFilterOptions(dates, metaSvcRange, {custom:true})}</select>${dateRangeInputs(metaSvcRange)}
         <button class="btn btn-sm primary" onclick="openLogOwnAdMetric()">${ico('plus')}Log spend</button>
       </div>
     </div>
-    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>${byDay?'Date':'Service'}</th><th class="num">Leads</th><th class="num">Spend</th><th class="num">Cost per lead</th><th style="width:80px;"></th></tr></thead>
+    ${list.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>${byDay?'Date':byDept?'Department':'Service'}</th><th class="num">Leads</th><th class="num">Spend</th><th class="num">Cost per lead</th><th style="width:80px;"></th></tr></thead>
       <tbody>${list.map((g,i)=>{ const open = !!metaSvcOpen[g.key]; return `<tr style="cursor:pointer;" onclick="toggleMetaSvc(${i})">
         <td style="font-weight:700;"><span class="faint" style="display:inline-block;width:16px;">${open?'▾':'▸'}</span>${label(g.key)}</td>
-        <td class="num mono" style="font-weight:700;">${g.leads}</td><td class="num mono">${money(g.spend)}</td><td class="num mono">${cpl(g.spend, g.leads)}</td><td></td></tr>
+        <td class="num mono" style="font-weight:700;">${g.leads}</td><td class="num mono">${money(g.spend)}${share(g)}</td><td class="num mono">${cpl(g.spend, g.leads)}</td><td></td></tr>
         ${open?subRows(g):''}`; }).join('')}
         <tr style="font-weight:800;"><td>Total</td><td class="num mono">${tot.leads}</td><td class="num mono">${money(tot.spend)}</td><td class="num mono">${cpl(tot.spend, tot.leads)}</td><td></td></tr>
-      </tbody></table></div>` : `<div class="panel-body"><div class="empty">No leads or spend in this period.</div></div>`}
+      </tbody></table></div>${byDept && groups[""] ? `<div class="panel-body" style="padding-top:8px;"><div class="subtext">“No department set” holds services whose Meta sheet tab has no department yet — set it in Marketing → Leads → Meta sheet.</div></div>` : ''}` : `<div class="panel-body"><div class="empty">No leads or spend in this period.</div></div>`}
   </div>`;
 }
 // Daily "ad numbers not logged" reminders (Admin only). Sending is automatic once the server has it switched on;

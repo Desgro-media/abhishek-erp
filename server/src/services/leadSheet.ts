@@ -132,6 +132,14 @@ export async function sheetLeadsInMonth(month: string): Promise<number | null> {
   return n;
 }
 
+// Which department each service belongs to: a sheet tab's chosen department, and an ERP department is its own.
+export async function serviceDepartments(): Promise<Record<string, string>> {
+  const map: Record<string, string> = Object.fromEntries(SERVICE_DEPARTMENTS.map((d) => [d, d]));
+  const tabs = await prisma.leadSheetTab.findMany({ where: { service: { not: null }, department: { not: null } }, orderBy: { position: "asc" }, select: { service: true, department: true } });
+  for (const t of tabs) map[t.service!] ??= t.department!;   // several tabs on one service: the first one decides
+  return map;
+}
+
 // The services the sheet's tabs are filed under (skipped tabs left out).
 export async function sheetServices() {
   const tabs = await prisma.leadSheetTab.findMany({ where: { service: { not: null } }, orderBy: { position: "asc" }, select: { service: true } });
@@ -172,7 +180,7 @@ export async function refreshTabs(sheetId: string, source: SheetSource = googleS
       const prev = existing.has(f.gid) ? undefined : goneByName.get(key(f.name));
       return prisma.leadSheetTab.upsert({
         where: { gid: f.gid },
-        create: { gid: f.gid, name: f.name, service: prev ? prev.service : guessService(f.name), position: i },
+        create: { gid: f.gid, name: f.name, service: prev ? prev.service : guessService(f.name), department: prev ? prev.department : null, position: i },
         update: { name: f.name, position: i },
       });
     }),

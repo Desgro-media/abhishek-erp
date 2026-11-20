@@ -1876,6 +1876,9 @@ model LeadSheetTab {
   gid       String  @unique
   name      String
   service   String?
+  // The ERP department this tab's service belongs to (Performance Marketing, Web Development…), so Meta Ads can
+  // show leads and spend per department. Null = not set yet.
+  department String?
   lastRows  Int     @default(0) @map("last_rows")
   lastError String? @map("last_error")
   position  Int     @default(0)
