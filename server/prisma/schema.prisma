@@ -240,6 +240,7 @@ model Employee {
   programAttendances HrProgramAttendee[]
   programFeedback    HrProgramFeedback[]
   pmClients          Client[]             @relation("PmOwner")
+  clientAssignments  ClientAssignment[]
   pmScoreAdjustments PmScoreAdjustment[]
 }
 
@@ -1053,6 +1054,26 @@ model Client {
   feedback      ClientFeedback[]
   feedbackLinks ClientFeedbackLink[]
   reportLink    ClientReportLink?
+  assignments   ClientAssignment[]
+}
+
+// Who handles a client in a service department (Marketing Consultation, Web Development, Production, Graphic Design). One
+// person per client per department, set by the department head or leadership. Performance Marketing keeps Client.pmOwnerId.
+// With no row here, the department page names the department member who has most of the client's tasks ("from tasks").
+model ClientAssignment {
+  id         String   @id @default(uuid())
+  clientId   String   @map("client_id")
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dept       String
+  employeeId String   @map("employee_id")
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  updatedBy  String   @map("updated_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientId, dept])
+  @@index([employeeId])
+  @@map("client_assignments")
 }
 
 enum LeadStatus {

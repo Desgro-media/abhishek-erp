@@ -4,6 +4,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { isLeadership, headedDepartments, ledDepartments } from "../../services/departmentAccess";
+import { handlersFor, revenueByClient, sumMoney, type Money } from "../../services/clientAssignments";
 
 /* Performance Marketing tracking: every client the team runs ads for (who runs it, budget, spend, leads, cost per lead
    against its target, campaign status, last meeting, days the numbers weren't logged) and a monthly score per person.
@@ -15,6 +16,12 @@ import { isLeadership, headedDepartments, ledDepartments } from "../../services/
      20% tasks on time         — tasks due this month (up to today) finished by their due date
    A part with nothing to measure is left out and the rest are re-weighted. The head (or leadership) can then add or take
    off up to 10 points with a reason; the final score stays within 0–100.
+
+   Who runs a client: Client.pmOwnerId when the head has set it, otherwise the Performance Marketing member with most of the
+   client's tasks (shown as "from tasks"); see services/clientAssignments.
+
+   Money (leadership and the head only): each client's share of invoices — billed and received this month, still outstanding —
+   totalled per person for the clients they run. Reviews: this month's Performance Marketing ratings, with who runs the client.
 
    Who sees what: leadership, the department head and team leads see everyone. Anyone else in the department sees only
    their own clients and their own score (My Workspace → My Score). Only leadership and the head change client settings
@@ -44,11 +51,11 @@ async function accessOf(u: Caller) {
     const e = await prisma.employee.findUnique({ where: { id: u.employeeId }, select: { dept: true } });
     member = e?.dept === PM || (await prisma.client.count({ where: { pmOwnerId: u.employeeId } })) > 0;
   }
-  return { leader, head, lead, member, seeAll: leader || head || lead, manage: leader || head };
+  return { leader, head, lead, member, seeAll: leader || head || lead, manage: leader || head, money: leader || head };
 }
 
 /** Everything the page shows for one month. `onlyEmployeeId` limits it to that person's clients and score. */
-export async function pmTracking(month: string, onlyEmployeeId: string | null) {
+export async function pmTracking(month: string, onlyEmployeeId: string | null, opts: { money?: boolean } = {}) {
   const today = istToday();
   const first = `${month}-01`, last = lastDayOf(month);
   const until = [addDays(today, -1), last].sort()[0]; // logging is judged up to yesterday; today is still open
@@ -58,8 +65,8 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null) {
   const workDays: string[] = [];
   for (let d = first; d <= until; d = addDays(d, 1)) if (new Date(`${d}T00:00:00Z`).getUTCDay() !== weeklyOff && !holidays.has(d)) workDays.push(d);
 
-  const clients = await prisma.client.findMany({
-    where: { services: { has: PM }, status: "ACTIVE", archivedAt: null, onboardedAt: { lte: new Date(`${last}T00:00:00Z`) }, ...(onlyEmployeeId ? { pmOwnerId: onlyEmployeeId } : {}) },
+  const all = await prisma.client.findMany({
+    where: { services: { has: PM }, status: "ACTIVE", archivedAt: null, onboardedAt: { lte: new Date(`${last}T00:00:00Z`) } },
     select: {
       id: true, name: true, accountManager: true, adCurrency: true, onboardedAt: true, pmOwnerId: true,
       pmOwner: { select: { id: true, name: true } },
@@ -67,13 +74,16 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null) {
       campaignBrief: { select: { budget: true, targetCpl: true, campaignStatus: true } },
       adMetrics: { where: { date: { gte: new Date(`${first}T00:00:00Z`), lte: new Date(`${last}T00:00:00Z`) } }, select: { date: true, spend: true, leads: true, createdAt: true } },
       meetings: { where: { status: "HELD", date: { lte: new Date(`${today}T00:00:00Z`) } }, orderBy: { date: "desc" }, take: 1, select: { date: true } },
-      feedback: { where: { dept: PM, month }, select: { rating: true } },
+      feedback: { where: { dept: PM, month }, select: { rating: true, comment: true, via: true, by: true, date: true } },
     },
     orderBy: { name: "asc" },
   });
+  const handlers = await handlersFor(PM, all.map((c) => c.id));
+  const clients = onlyEmployeeId ? all.filter((c) => handlers.get(c.id)?.id === onlyEmployeeId) : all;
+  const revenue = opts.money ? await revenueByClient(PM, month, clients.map((c) => c.id)) : null;
 
   const team = await prisma.employee.findMany({
-    where: onlyEmployeeId ? { id: onlyEmployeeId } : { OR: [{ dept: PM, employmentStatus: { not: "LEFT" } }, { pmClients: { some: { id: { in: clients.map((c) => c.id) } } } }] },
+    where: onlyEmployeeId ? { id: onlyEmployeeId } : { OR: [{ dept: PM, employmentStatus: { not: "LEFT" } }, { id: { in: [...handlers.values()].filter((h) => h).map((h) => h!.id) } }] },
     select: { id: true, employeeCode: true, name: true, role: true, dept: true },
     orderBy: { name: "asc" },
   });
@@ -99,14 +109,16 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null) {
     const tracked = c.adAccess?.status === "GRANTED";
     const onboarded = ymd(c.onboardedAt);
     const logged = new Map(c.adMetrics.map((m) => [ymd(m.date), m.createdAt]));
-    const due = tracked ? workDays.filter((d) => d >= onboarded && !onLeave(c.pmOwnerId, d)) : [];
+    const h = handlers.get(c.id) ?? null;
+    const due = tracked ? workDays.filter((d) => d >= onboarded && !onLeave(h?.id ?? null, d)) : [];
     const missing = due.filter((d) => !logged.has(d));
     // In by the end of the next day (IST): logged on the day itself or the morning after counts as on time.
     const onTime = due.filter((d) => { const at = logged.get(d); return at && istYmd(at) <= addDays(d, 1); });
     const rating = c.feedback.length ? round2(c.feedback.reduce((s, f) => s + f.rating, 0) / c.feedback.length) : null;
     return {
       id: c.id, name: c.name, currency: c.adCurrency, accountManager: c.accountManager ?? "",
-      owner: c.pmOwner ? { id: c.pmOwner.id, name: c.pmOwner.name } : null,
+      owner: h ? { id: h.id, name: h.name, auto: h.auto } : null,
+      revenue: revenue ? revenue.get(c.id) ?? { billed: 0, collected: 0, outstanding: 0 } : null,
       platform: c.adAccess?.platform ?? null, access: c.adAccess?.status ?? null,
       budget: c.campaignBrief?.budget ?? null, targetCpl: target, campaignStatus: c.campaignBrief?.campaignStatus ?? null,
       spend: round2(spend), leads, cpl: cpl == null ? null : round2(cpl), cplOk,
@@ -136,11 +148,20 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null) {
     return {
       employeeId: e.id, id: e.employeeCode, name: e.name, role: e.role, clients: mine.length,
       parts: Object.fromEntries(Object.entries(parts).map(([k, p]) => [k, p ? { pct: Math.round(p.value * 100), detail: p.detail } : null])),
+      revenue: revenue ? sumMoney(mine.map((r) => r.revenue as Money)) : null,
+      rating: ratings.length ? round2(ratings.reduce((s, x) => s + x, 0) / ratings.length) : null,
       auto, adjustment: adj ? { points: adj.points, reason: adj.reason, by: adj.updatedBy, at: ymd(adj.updatedAt) } : null, score,
     };
   });
 
-  return { month, workingDays: workDays.length, judgedUntil: until, clients: rows, scorecard };
+  const reviews = clients.flatMap((c) => c.feedback.map((f) => ({ clientId: c.id, client: c.name, handledBy: handlers.get(c.id)?.name ?? null, rating: f.rating, comment: f.comment, via: f.via, by: f.by, date: ymd(f.date) })))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const totals = {
+    revenue: revenue ? sumMoney(rows.map((r) => r.revenue as Money)) : null,
+    spend: round2(rows.reduce((s, r) => s + r.spend, 0)), leads: rows.reduce((s, r) => s + r.leads, 0),
+    rating: reviews.length ? round2(reviews.reduce((s, r) => s + r.rating, 0) / reviews.length) : null, reviews: reviews.length,
+  };
+  return { month, workingDays: workDays.length, judgedUntil: until, clients: rows, scorecard, reviews, totals };
 }
 
 // GET /api/departments/pm/tracking?month=YYYY-MM[&mine=1]
@@ -151,9 +172,9 @@ export const getPmTracking: RequestHandler = asyncHandler(async (req, res) => {
   const mineOnly = !a.seeAll || req.query.mine === "1";
   if (!a.seeAll && !a.member) return res.status(403).json({ error: "Forbidden — Performance Marketing only" });
   if (mineOnly && !req.user!.employeeId) return res.status(403).json({ error: "Your login isn't linked to an employee" });
-  const data = await pmTracking(month, mineOnly ? req.user!.employeeId : null);
+  const data = await pmTracking(month, mineOnly ? req.user!.employeeId : null, { money: a.money && !mineOnly });
   const team = mineOnly ? [] : await prisma.employee.findMany({ where: { dept: PM, employmentStatus: { not: "LEFT" } }, select: { id: true, name: true }, orderBy: { name: "asc" } });
-  res.json({ ...data, mine: mineOnly, canManage: a.manage && !mineOnly, me: req.user!.employeeId, team, statuses: CAMPAIGN_STATUSES, weights: WEIGHTS, adjustLimit: ADJUST_LIMIT });
+  res.json({ ...data, mine: mineOnly, canManage: a.manage && !mineOnly, canSeeMoney: a.money && !mineOnly, me: req.user!.employeeId, team, statuses: CAMPAIGN_STATUSES, weights: WEIGHTS, adjustLimit: ADJUST_LIMIT });
 });
 
 const clientBody = z.object({
@@ -207,4 +228,27 @@ export const setPmAdjustment: RequestHandler = asyncHandler(async (req, res) => 
   }
   await recordAudit({ userId: req.user!.sub, action: "PM_SCORE_ADJUST", entityType: "Employee", entityId: empId, beforeData: before ? { month, points: before.points, reason: before.reason } : { month, points: 0 }, afterData: { month, points, reason }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
   res.json({ ok: true });
+});
+
+// GET /api/departments/pm/overview?month=YYYY-MM — the six months up to `month`, one row each: clients, revenue (leadership and
+// the head only), ad spend and leads, client rating, and the team's average score. Same access as the full tracking page.
+export const getPmOverview: RequestHandler = asyncHandler(async (req, res) => {
+  const month = (req.query.month as string) || istToday().slice(0, 7);
+  if (!monthRe.test(month)) return res.status(400).json({ error: "month must be YYYY-MM" });
+  const a = await accessOf(req.user!);
+  if (!a.seeAll) return res.status(403).json({ error: "Forbidden — Performance Marketing head, team leads or leadership" });
+  const months: string[] = [];
+  for (let i = 5; i >= 0; i--) { const [y, m] = month.split("-").map(Number); months.push(new Date(Date.UTC(y, m - 1 - i, 1)).toISOString().slice(0, 7)); }
+  const out = [];
+  for (const m of months) {
+    const t = await pmTracking(m, null, { money: a.money });
+    const scored = t.scorecard.filter((s) => s.score != null);
+    out.push({
+      month: m, clients: t.clients.length, revenue: t.totals.revenue, spend: t.totals.spend, leads: t.totals.leads,
+      rating: t.totals.rating, reviews: t.totals.reviews,
+      teamScore: scored.length ? Math.round(scored.reduce((s, x) => s + (x.score as number), 0) / scored.length) : null,
+      people: t.scorecard.map((s) => ({ employeeId: s.employeeId, name: s.name, score: s.score, clients: s.clients, collected: s.revenue?.collected ?? null })),
+    });
+  }
+  res.json({ months: out, canSeeMoney: a.money });
 });

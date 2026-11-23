@@ -4,6 +4,7 @@ import { prisma } from "../../db/prisma";
 import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { DEPARTMENTS, SERVICE_DEPARTMENTS, isLeadership, headedDepartments, ledDepartments } from "../../services/departmentAccess";
+import { handlersFor, setHandler } from "../../services/clientAssignments";
 
 const isDept = (d: string) => (DEPARTMENTS as readonly string[]).includes(d);
 const monthRe = /^\d{4}-\d{2}$/;
@@ -140,14 +141,31 @@ export const departmentSummary: RequestHandler = asyncHandler(async (req, res) =
   const todayOf = new Map(marks.map((m) => [m.employee.employeeCode, m.status]));
   const byPerson = (name: string) => tasks.filter((t) => t.assignedTo === name);
   const openFor = (clientId: string) => tasks.filter((t) => t.clientId === clientId).length;
+  // Who handles each client (set by the head, else worked out from tasks) and, per person, this month's tasks due up to
+  // today and how many were finished by their due date.
+  const handlers = svc ? await handlersFor(dept, clients.map((c) => c.id)) : new Map();
+  const monthTasks = await prisma.clientTask.findMany({
+    where: { assignedTo: { in: team.map((e) => e.name) }, dueAt: { gte: monthStart(month), lte: monthEnd(month) } },
+    select: { assignedTo: true, dueAt: true, doneAt: true },
+  });
+  const ratingOf = (clientId: string) => fbNow.find((f) => f.clientId === clientId)?.rating ?? null;
   res.json({
     dept, month, head: headRow?.employee?.name ?? null, service: svc, canSeeMoney: money,
+    canAssign: svc && (leader || headed.includes(dept)),
     teamLeads: leadNames,
     team: team.map((e) => {
       const t = byPerson(e.name);
-      return { id: e.employeeCode, name: e.name, role: e.role, today: todayOf.get(e.employeeCode) ?? null, openTasks: t.length, overdue: t.filter((x) => x.dueAt.toISOString().slice(0, 10) < today).length, clients: new Set(t.map((x) => x.clientId)).size };
+      const mine = clients.filter((c) => handlers.get(c.id)?.id === e.id);
+      const rated = mine.map((c) => ratingOf(c.id)).filter((r): r is number => r != null);
+      const due = monthTasks.filter((x) => x.assignedTo === e.name && (x.doneAt || x.dueAt.toISOString().slice(0, 10) < today));
+      const onTime = due.filter((x) => x.doneAt && new Date(x.doneAt.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10) <= x.dueAt.toISOString().slice(0, 10)).length;
+      return {
+        id: e.employeeCode, employeeId: e.id, name: e.name, role: e.role, today: todayOf.get(e.employeeCode) ?? null, openTasks: t.length, overdue: t.filter((x) => x.dueAt.toISOString().slice(0, 10) < today).length,
+        clients: mine.length, clientNames: mine.map((c) => c.name),
+        tasksDue: due.length, tasksOnTime: onTime, rating: rated.length ? Math.round((rated.reduce((a, b) => a + b, 0) / rated.length) * 100) / 100 : null,
+      };
     }),
-    clients: clients.map((c) => ({ id: c.id, name: c.name, accountManager: c.accountManager ?? "", openTasks: openFor(c.id), rating: fbNow.find((f) => f.clientId === c.id)?.rating ?? null })),
+    clients: clients.map((c) => ({ id: c.id, name: c.name, accountManager: c.accountManager ?? "", openTasks: openFor(c.id), rating: ratingOf(c.id), handledBy: handlers.get(c.id) ?? null })),
     feedback: fbNow.map((f) => ({ id: f.id, client: f.client.name, clientId: f.clientId, rating: f.rating, comment: f.comment, via: f.via, by: f.by, date: f.date.toISOString().slice(0, 10) })),
     insights: {
       now: { clients: clients.length, team: team.length, rating: avgOf(fbNow), feedbacks: fbNow.length, ...(rev ? { paid: rev.collected } : {}) },
@@ -171,4 +189,24 @@ export const departmentsOverview: RequestHandler = asyncHandler(async (req, res)
     clients: SERVICE_DEPARTMENTS.includes(d) ? (await clientsFor(d, month)).length : null,
   })));
   res.json({ tiles });
+});
+
+// PUT /api/departments/:dept/clients/:clientId/handler { employeeId | null } — who handles this client in the department.
+// Null goes back to "from tasks". The department head or leadership only.
+export const setClientHandler: RequestHandler = asyncHandler(async (req, res) => {
+  const dept = req.params.dept;
+  if (!SERVICE_DEPARTMENTS.includes(dept)) return res.status(404).json({ error: "Not a service department" });
+  if (!(await isLeadership(req.user!)) && !(await headedDepartments(req.user!)).includes(dept)) return res.status(403).json({ error: "Only the department head or leadership can assign clients" });
+  const parsed = z.object({ employeeId: z.string().uuid().nullable() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+  const { employeeId } = parsed.data;
+  const client = await prisma.client.findUnique({ where: { id: req.params.clientId }, select: { id: true, services: true } });
+  if (!client || !client.services.includes(dept)) return res.status(404).json({ error: `This client doesn't take ${dept}` });
+  if (employeeId) {
+    const e = await prisma.employee.findUnique({ where: { id: employeeId }, select: { employmentStatus: true } });
+    if (!e || e.employmentStatus === "LEFT") return res.status(409).json({ error: "That person wasn't found or has left the company" });
+  }
+  const before = await setHandler(dept, client.id, employeeId, req.user!.name);
+  await recordAudit({ userId: req.user!.sub, action: "CLIENT_HANDLER_SET", entityType: "Client", entityId: client.id, beforeData: { dept, employeeId: before }, afterData: { dept, employeeId }, ipAddress: req.ip, userAgent: req.headers["user-agent"] ?? null });
+  res.json({ ok: true });
 });

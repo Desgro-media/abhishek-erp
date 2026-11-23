@@ -14,5 +14,7 @@ router.put("/:dept/team-leads", d.setTeamLeads); // leadership only (checked in 
 router.get("/pm/tracking", pm.getPmTracking);
 router.put("/pm/clients/:clientId", pm.setPmClient);
 router.put("/pm/adjustments/:employeeId", pm.setPmAdjustment);
+router.get("/pm/overview", pm.getPmOverview);
+router.put("/:dept/clients/:clientId/handler", d.setClientHandler); // that department's head or leadership
 router.get("/:dept/summary", d.departmentSummary); // leadership or that department's head
 export default router;
