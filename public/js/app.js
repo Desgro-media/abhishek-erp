@@ -2641,6 +2641,30 @@ function ptSwitch(v){ const w = window.__pt; const keep = v; if(!ptCollect()){ p
 function ptAddType(){ const w = window.__pt; if(!ptCollect()) return; let n = 'New type', i = 2; while(w.order.includes(n)) n = 'New type '+(i++); w.order.push(n); w.work[n] = [{name:'Brief',days:1}]; w.sel = n; ptRender(); }
 function ptRemoveType(){ const w = window.__pt; if(w.order.length<=1){ toast("Keep at least one project type"); return; } w.order = w.order.filter(k=>k!==w.sel); delete w.work[w.sel]; w.sel = w.order[0]; ptRender(); }
 function ptAddRow(){ document.getElementById('pt-rows').insertAdjacentHTML('beforeend', ptRowHTML({name:'',days:1})); }
+// "Handled by" cell: the person set by the head, or (faint) the one worked out from tasks.
+function handledByHTML(h){
+  if(!h) return '<span class="neg" style="font-size:12px;font-weight:700;">Not assigned</span>';
+  const note = !h.auto ? '' : h.from==='am' ? '<div class="subtext" title="No one is set for this client, so its account manager handles it">account manager</div>' : '<div class="subtext" title="No one is set for this client, so this is whoever has most of its tasks in the department">from tasks</div>';
+  return `<span style="font-weight:700;font-size:12.5px;">${esc(h.name)}</span>${note}`;
+}
+function openAssignClientHandler(d, clientId){
+  const s = deptSummaries[d], c = s && s.clients.find(x=>x.id===clientId); if(!c || !s.canAssign) return;
+  const cur = c.handledBy && !c.handledBy.auto ? c.handledBy.id : "";
+  showModal(`
+    <div class="modal-head"><h3>Who handles ${esc(c.name)}?</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
+    <form id="f-client-handler"><div class="modal-body">
+      <div><label class="field-label" for="ch-emp">${esc(d)}</label><select class="field-input" id="ch-emp" name="emp"><option value="">Automatic — whoever has most of its tasks</option>${s.team.map(e=>`<option value="${e.employeeId}" ${cur===e.employeeId?'selected':''}>${esc(e.name)}</option>`).join('')}</select>
+      <div class="subtext">This client counts toward that person's clients, rating and score on this page.</div></div>
+    </div>
+    <div class="modal-foot"><div></div><div style="display:flex;gap:8px;"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button type="submit" class="btn primary">Save</button></div></div></form>`);
+  document.getElementById("f-client-handler").addEventListener("submit", async e=>{
+    e.preventDefault();
+    try{
+      await apiJson(`/api/departments/${encodeURIComponent(d)}/clients/${clientId}/handler`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({employeeId:new FormData(e.target).get("emp")||null})});
+      await Promise.all([loadDeptSummary(d), d===PM_DEPT?loadPmTracking():null]); closeModal(); toast("Saved"); render();
+    }catch(err){ toast(err.message || "Couldn't save"); }
+  });
+}
 function deptPage(d){
   if(!d || !canSeeDeptPage(d)) return `<div class="empty">You don't have access to this department.</div>`;
   const s = deptSummaries[d];
@@ -2664,20 +2688,24 @@ function deptPage(d){
   </div>`;
   const insights = `<div class="panel"><div class="panel-head"><div><h3>${esc(d)} · ${monthLabel(s.month)}</h3><div class="sub">This month against last month</div></div></div><div class="panel-body">${deptInsightsHTML(s)}</div></div>`;
   const teamPanel = `<div class="panel">
-    <div class="panel-head"><div><h3>Team</h3><div class="sub">${s.team.length} people · open client work${showToday?" and today's attendance":""}</div></div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Person</th>${showToday?'<th>Today</th>':''}<th class="num">Open tasks</th><th class="num">Overdue</th>${s.service?'<th class="num">Clients</th>':''}</tr></thead><tbody>${s.team.map(e=>{ const st = attLabel(e.id); return `<tr>
+    <div class="panel-head"><div><h3>Team</h3><div class="sub">${s.team.length} people · ${s.service?'the clients each person handles, ':''}open client work, tasks due in ${M} finished on time${showToday?" and today's attendance":""}</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Person</th>${showToday?'<th>Today</th>':''}${s.service?'<th>Clients handled</th>':''}<th class="num">Open tasks</th><th class="num">Overdue</th><th class="num">Tasks on time · ${M}</th>${s.service?`<th class="num">Client rating · ${M}</th>`:''}</tr></thead><tbody>${s.team.map(e=>{ const st = attLabel(e.id); const pct = e.tasksDue ? Math.round(100*e.tasksOnTime/e.tasksDue) : null; return `<tr>
       <td>${personCell(e)}${e.name===head?' '+pill('Head','blue'):''}${(s.teamLeads||[]).includes(e.name)?' '+pill('Team lead','neutral'):''}</td>
       ${showToday?`<td>${st?pill(st, statusKind(st)):pill('Not marked','neutral')}</td>`:''}
-      <td class="num mono">${e.openTasks||'—'}</td><td class="num mono ${e.overdue?'neg':'faint'}">${e.overdue||'—'}</td>${s.service?`<td class="num mono">${e.clients||'—'}</td>`:''}
-    </tr>`; }).join('') || `<tr><td colspan="5"><div class="empty">No one in this department.</div></td></tr>`}</tbody></table></div>
+      ${s.service?`<td style="font-size:12.5px;max-width:260px;">${(e.clientNames||[]).length?`<b class="mono">${e.clients}</b> <span class="faint">· ${(e.clientNames).map(esc).join(', ')}</span>`:'<span class="faint">—</span>'}</td>`:''}
+      <td class="num mono">${e.openTasks||'—'}</td><td class="num mono ${e.overdue?'neg':'faint'}">${e.overdue||'—'}</td>
+      <td class="num">${pct==null?'<span class="faint">—</span>':`<b class="mono ${pct>=80?'pos':pct>=60?'':'neg'}">${pct}%</b><div class="subtext">${e.tasksOnTime} of ${e.tasksDue}</div>`}</td>
+      ${s.service?`<td class="num" style="white-space:nowrap;">${e.rating!=null?`${starBarHTML(e.rating, 11)} <b class="mono">${e.rating}</b>`:'<span class="faint">—</span>'}</td>`:''}
+    </tr>`; }).join('') || `<tr><td colspan="7"><div class="empty">No one in this department.</div></td></tr>`}</tbody></table></div>
   </div>`;
   const clientsPanel = s.service ? `<div class="panel">
-    <div class="panel-head"><div><h3>Clients</h3><div class="sub">${s.clients.length} active client${s.clients.length===1?'':'s'} taking ${esc(d.toLowerCase())}</div></div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Rating · ${M}</th><th class="num">Open tasks</th><th></th></tr></thead><tbody>${s.clients.map(c=>`<tr class="row-click" ${(clientById(c.id)?`onclick="goToClient('${c.id}')"`:'')}>
+    <div class="panel-head"><div><h3>Clients</h3><div class="sub">${s.clients.length} active client${s.clients.length===1?'':'s'} taking ${esc(d.toLowerCase())} · who handles each</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Client</th><th>Handled by</th><th>Rating · ${M}</th><th class="num">Open tasks</th><th></th></tr></thead><tbody>${s.clients.map(c=>`<tr class="row-click" ${(clientById(c.id)?`onclick="goToClient('${c.id}')"`:'')}>
       <td><div style="font-weight:700;">${esc(c.name)}</div><div class="subtext">${esc(c.accountManager||'')}</div></td>
+      <td><div style="display:flex;align-items:center;gap:6px;white-space:nowrap;"><div>${handledByHTML(c.handledBy)}</div>${s.canAssign?`<button class="btn btn-sm ghost" style="padding:2px 6px;" title="Change who handles this client" onclick="event.stopPropagation();openAssignClientHandler('${esc(d)}','${c.id}')"><svg class="icon" style="width:11px;height:11px"><use href="#i-edit"/></svg></button>`:''}</div></td>
       <td style="white-space:nowrap;">${c.rating!=null?`${starBarHTML(c.rating, 11)} <b class="mono">${c.rating}</b>`:'<span class="faint" style="font-size:11.5px;">not rated</span>'}</td>
       <td class="num mono">${c.openTasks||'—'}</td>
-      <td class="num">${c.rating==null?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Ask</button>`:''}</td></tr>`).join('') || `<tr><td colspan="4"><div class="empty">No active clients.</div></td></tr>`}</tbody></table></div>
+      <td class="num">${c.rating==null?`<button class="btn btn-sm ghost" onclick="event.stopPropagation();openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Ask</button>`:''}</td></tr>`).join('') || `<tr><td colspan="5"><div class="empty">No active clients.</div></td></tr>`}</tbody></table></div>
   </div>` : '';
   const feedbackPanel = s.service ? `<div class="panel">
     <div class="panel-head"><div><h3>Client feedback · ${M}</h3><div class="sub">${s.feedback.length} rating${s.feedback.length===1?'':'s'}</div></div></div>
@@ -2691,7 +2719,7 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${deptScorePanel(d)}${insights}${d===PM_DEPT?pmDeptPanelsHTML():''}${revenuePanel}${s.service?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
+  return `${header}${d===PM_DEPT?pmScorecardPanelHTML():''}${deptScorePanel(d)}${insights}${d===PM_DEPT?pmDeptPanelsHTML():''}${revenuePanel}${s.service && d!==PM_DEPT?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
 }
 
 /* ===================== PERFORMANCE MARKETING TRACKING =====================
@@ -2701,12 +2729,13 @@ function deptPage(d){
    with a reason. Each team member sees only their own clients and score, under My Workspace → My Score. */
 const PM_DEPT = "Performance Marketing";
 const PM_PARTS = [["logging","Logged on time"],["cpl","Cost per lead on target"],["rating","Client rating"],["tasks","Tasks on time"]];
-let pmTrack = null, pmMine = null, pmMonth = TODAY.slice(0,7);
+let pmTrack = null, pmMine = null, pmOverview = null, pmMonth = TODAY.slice(0,7);
 async function loadPmTracking(){ pmTrack = await apiJson(`/api/departments/pm/tracking?month=${pmMonth}`); }
+async function loadPmOverview(){ pmOverview = await apiJson(`/api/departments/pm/overview?month=${pmMonth}`); }
 async function loadPmMine(){ pmMine = await apiJson(`/api/departments/pm/tracking?month=${pmMonth}&mine=1`); }
 function isPmMember(u){ return !!u && !u.isClient && (u.dept===PM_DEPT || headDeptOf(u.name)===PM_DEPT); }
 function pmMonthOptions(){ const out = []; let m = TODAY.slice(0,7); for(let i=0;i<6;i++){ out.push(m); m = prevMonth(m); } return out; }
-function pmSetMonth(m, mine){ pmMonth = m; (mine ? loadPmMine() : loadPmTracking()).then(render).catch(err=>toast(err.message||"Couldn't load")); }
+function pmSetMonth(m, mine){ pmMonth = m; (mine ? loadPmMine() : Promise.all([loadPmTracking(), loadPmOverview().catch(()=>{ pmOverview = null; })])).then(render).catch(err=>toast(err.message||"Couldn't load")); }
 function pmMonthSelect(mine){ return `<select class="field-input" style="width:auto;padding:5px 8px;font-size:12px;" onchange="pmSetMonth(this.value, ${mine?'true':'false'})">${pmMonthOptions().map(m=>`<option value="${m}" ${m===pmMonth?'selected':''}>${monthLabel(m)}</option>`).join('')}</select>`; }
 function pmScoreKind(s){ return s==null ? "neutral" : s>=80 ? "pos" : s>=60 ? "warn" : "neg"; }
 const PM_STATUS_KIND = {Running:"pos", Learning:"blue", Paused:"warn", Stopped:"neg"};
@@ -2715,7 +2744,7 @@ function pmClientsTableHTML(t, opts){
   opts = opts || {};
   const rows = t.clients;
   if(!rows.length) return `<div class="empty">${opts.mine?'No clients assigned to you yet.':'No active Performance Marketing clients.'}</div>`;
-  return `<div class="table-wrap"><table class="data"><thead><tr><th>Client</th>${opts.mine?'':'<th>Handled by</th>'}<th>Budget</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Cost per lead</th><th>Campaign</th><th>Last meeting</th><th>Numbers</th>${opts.manage?'<th></th>':''}</tr></thead><tbody>${rows.map(c=>{
+  return `<div class="table-wrap"><table class="data"><thead><tr><th>Client</th>${opts.mine?'':'<th>Handled by</th>'}${t.canSeeMoney?'<th class="num">Revenue</th>':''}<th>Budget</th><th class="num">Spend</th><th class="num">Leads</th><th class="num">Cost per lead</th><th>Campaign</th><th>Rating</th><th>Last meeting</th><th>Numbers</th>${opts.manage?'<th></th>':''}</tr></thead><tbody>${rows.map(c=>{
     const cur = c.currency, miss = c.missingDays.length;
     const cplCell = c.cpl==null ? '<span class="faint">—</span>' : `<span class="${c.cplOk===false?'neg':c.cplOk?'pos':''}" style="font-weight:700;">${adMoney(c.cpl, cur)}</span>`;
     const numbers = c.access!=="GRANTED" ? `<span class="faint" style="font-size:11.5px;">No ad access${c.access?' ('+esc(c.access.toLowerCase())+')':''}</span>`
@@ -2724,12 +2753,14 @@ function pmClientsTableHTML(t, opts){
       : pill(c.daysOnTime===c.daysDue?'All logged':'Logged, '+(c.daysDue-c.daysOnTime)+' late', c.daysOnTime===c.daysDue?'pos':'warn');
     return `<tr class="row-click" ${clientById(c.id)?`onclick="goToClient('${c.id}')"`:''}>
       <td><div style="font-weight:700;">${esc(c.name)}</div><div class="subtext">${c.platform?esc(c.platform):''}${c.accountManager?(c.platform?' · ':'')+'AM '+esc(c.accountManager):''}</div></td>
-      ${opts.mine?'':`<td>${c.owner?esc(c.owner.name):'<span class="neg" style="font-size:12px;font-weight:700;">Not assigned</span>'}</td>`}
+      ${opts.mine?'':`<td style="white-space:nowrap;">${handledByHTML(c.owner)}</td>`}
+      ${t.canSeeMoney?`<td class="num" style="white-space:nowrap;">${pmRevenueCell(c.revenue)}</td>`:''}
       <td style="font-size:12.5px;">${c.budget?esc(c.budget):'<span class="faint">—</span>'}</td>
       <td class="num mono">${c.spend?adMoney(c.spend, cur):'—'}</td>
       <td class="num mono">${c.leads||'—'}</td>
       <td class="num mono" style="white-space:nowrap;">${cplCell}<div class="subtext">${c.targetCpl!=null?'target '+adMoney(c.targetCpl, cur):'no target'}</div></td>
       <td>${c.campaignStatus?pill(c.campaignStatus, PM_STATUS_KIND[c.campaignStatus]||'neutral'):'<span class="faint">—</span>'}</td>
+      <td style="white-space:nowrap;">${c.rating!=null?`${starBarHTML(c.rating, 10)} <b class="mono" style="font-size:12px;">${c.rating}</b>`:'<span class="faint" style="font-size:11.5px;">not rated</span>'}</td>
       <td style="white-space:nowrap;font-size:12.5px;">${c.lastMeeting?fmtDateShort(c.lastMeeting):'<span class="faint">None</span>'}</td>
       <td>${numbers}</td>
       ${opts.manage?`<td class="num"><button class="btn btn-sm ghost" onclick="event.stopPropagation();openPmClient('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button></td>`:''}
@@ -2751,24 +2782,113 @@ function pmScoreRowsHTML(t, opts){
 
 const PM_SCORE_HELP = t => `Logged on time: working days up to ${fmtDateShort(t.judgedUntil)} whose ad numbers were in by the end of the next day (clients with ad access only, leave days skipped). Cost per lead: clients with a target and spend this month at or under it. Rating: client ratings this month, 5★ = 100%. Tasks: tasks due this month finished by their due date. A part with nothing to measure is left out. The head can add or take off up to ${t.adjustLimit} points with a reason.`;
 
+function pmRevenueCell(r){
+  if(!r) return '<span class="faint">—</span>';
+  if(!r.collected && !r.billed && !r.outstanding) return '<span class="faint">—</span>';
+  return `${r.collected?`<b class="mono" style="color:var(--pos);">${inr(r.collected)}</b>`:'<span class="mono faint">₹0</span>'}<div class="subtext">${r.billed?'billed '+inr(r.billed):''}${r.billed&&r.outstanding?' · ':''}${r.outstanding?`<span class="neg">${inr(r.outstanding)} due</span>`:''}</div>`;
+}
+
+// Six months up to the selected one: revenue, ad results, client rating and team score, plus each person's score per month.
+function pmOverviewHTML(){
+  const o = pmOverview; if(!o || !o.months) return '';
+  const ms = o.months, cur = ms[ms.length-1], prev = ms[ms.length-2];
+  const money = o.canSeeMoney;
+  const maxRev = Math.max(1, ...ms.map(m=>m.revenue?m.revenue.collected:0));
+  const bar = (v, max, color) => `<div style="height:6px;border-radius:3px;background:var(--surface-sunk);margin-top:4px;"><div style="height:6px;border-radius:3px;width:${Math.round(100*(v||0)/max)}%;background:var(--${color});"></div></div>`;
+  const kpi = (label, now, was, fmt, sub, opts) => `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value mono">${now==null?'—':fmt(now)}</div><div class="kpi-sub">${now!=null&&was!=null?deltaHTML(now, was, opts||{})+' <span class="faint">vs '+monthLabel(prev.month).split(' ')[0]+'</span>':esc(sub||'')}</div></div>`;
+  const people = [...new Map(ms.flatMap(m=>m.people).map(p=>[p.employeeId, p.name])).entries()];
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Performance overview</h3><div class="sub">Revenue, client satisfaction and team performance — the last six months up to ${monthLabel(cur.month)}</div></div></div>
+    <div class="panel-body" style="padding-bottom:0;"><div class="kpi-grid" style="margin:0;">
+      ${money?kpi("Revenue received", cur.revenue.collected, prev.revenue.collected, inr):''}
+      ${money?`<div class="kpi-card"><div class="kpi-label">Still to collect</div><div class="kpi-value mono" ${cur.revenue.outstanding?'style="color:var(--neg);"':''}>${inr(cur.revenue.outstanding)}</div><div class="kpi-sub">across Performance Marketing invoices</div></div>`:''}
+      ${kpi("Client rating", cur.rating, prev.rating, v=>v+' ★', cur.reviews+' review'+(cur.reviews===1?'':'s'))}
+      ${kpi("Team score", cur.teamScore, prev.teamScore, v=>v, 'no one scored yet')}
+      ${kpi("Leads", cur.leads||null, prev.leads||null, v=>v, 'none logged')}
+    </div></div>
+    <div class="table-wrap" style="margin-top:12px;"><table class="data"><thead><tr><th>Month</th><th class="num">Clients</th>${money?'<th style="min-width:150px;">Revenue received</th><th class="num">Billed</th>':''}<th class="num">Leads</th><th class="num">Client rating</th><th class="num">Team score</th></tr></thead><tbody>${ms.slice().reverse().map(m=>`<tr ${m.month===cur.month?'style="font-weight:700;"':''}>
+      <td>${monthLabel(m.month)}</td><td class="num mono">${m.clients}</td>
+      ${money?`<td><span class="mono">${inr(m.revenue.collected)}</span>${bar(m.revenue.collected, maxRev, 'pos')}</td><td class="num mono">${m.revenue.billed?inr(m.revenue.billed):'—'}</td>`:''}
+      <td class="num mono">${m.leads||'—'}</td>
+      <td class="num">${m.rating!=null?`<b class="mono">${m.rating}</b> <span class="faint" style="font-size:11px;">(${m.reviews})</span>`:'<span class="faint">—</span>'}</td>
+      <td class="num">${m.teamScore!=null?`<span class="pill ${pmScoreKind(m.teamScore)}">${m.teamScore}</span>`:'<span class="faint">—</span>'}</td>
+    </tr>`).join('')}</tbody></table></div>
+    ${people.length?`<div class="table-wrap"><table class="data"><thead><tr><th>Score by person</th>${ms.map(m=>`<th class="num">${monthLabel(m.month).split(' ')[0]}</th>`).join('')}</tr></thead><tbody>${people.map(([id,name])=>`<tr><td style="font-weight:700;">${esc(name)}</td>${ms.map(m=>{ const p = m.people.find(x=>x.employeeId===id); return `<td class="num">${p&&p.score!=null?`<span class="pill ${pmScoreKind(p.score)}">${p.score}</span>`:'<span class="faint">—</span>'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`:''}
+  </div>`;
+}
+
+// Each person and, under them, every client they run: what the client brought in and how its ads and ratings went.
+function pmByPersonHTML(t){
+  const groups = t.scorecard.map(p=>({p, rows:t.clients.filter(c=>c.owner&&c.owner.id===p.employeeId)}));
+  const none = t.clients.filter(c=>!c.owner);
+  const money = t.canSeeMoney;
+  const clientRow = c => { const miss = c.missingDays.length; return `<tr class="row-click" ${clientById(c.id)?`onclick="goToClient('${c.id}')"`:''}>
+    <td style="padding-left:26px;"><span style="font-weight:600;">${esc(c.name)}</span>${c.owner&&c.owner.auto?` <span class="faint" style="font-size:11px;">· ${c.owner.from==='am'?'account manager':'from tasks'}</span>`:''}</td>
+    ${money?`<td class="num" style="white-space:nowrap;">${pmRevenueCell(c.revenue)}</td>`:''}
+    <td class="num mono">${c.spend?adMoney(c.spend, c.currency):'—'}</td><td class="num mono">${c.leads||'—'}</td>
+    <td class="num mono">${c.cpl==null?'<span class="faint">—</span>':`<span class="${c.cplOk===false?'neg':c.cplOk?'pos':''}">${adMoney(c.cpl, c.currency)}</span>`}</td>
+    <td class="num">${c.access!=="GRANTED"?'<span class="faint" style="font-size:11px;">no access</span>':c.daysDue?`<span class="mono ${miss?'neg':''}">${c.daysOnTime}/${c.daysDue}</span>`:'<span class="faint">—</span>'}</td>
+    <td class="num" style="white-space:nowrap;">${c.rating!=null?`${starBarHTML(c.rating, 10)} <b class="mono" style="font-size:12px;">${c.rating}</b>`:'<span class="faint" style="font-size:11px;">not rated</span>'}</td>
+    <td></td></tr>`; };
+  const cols = 7 + (money?1:0);
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Work by person · ${monthLabel(t.month)}</h3><div class="sub">Each person's clients — ${money?'revenue, ':''}ad results, numbers logged on time and client rating — totalled on their row</div></div></div>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Person / client</th>${money?'<th class="num">Revenue</th>':''}<th class="num">Spend</th><th class="num">Leads</th><th class="num">Cost per lead</th><th class="num">Days logged on time</th><th class="num">Rating</th><th class="num">Score</th></tr></thead><tbody>
+    ${groups.map(({p, rows})=>{ const due = rows.reduce((a,c)=>a+c.daysDue,0), ok = rows.reduce((a,c)=>a+c.daysOnTime,0), leads = rows.reduce((a,c)=>a+c.leads,0);
+      return `<tr style="background:var(--surface-sunk);">
+        <td><b>${esc(p.name)}</b> <span class="faint" style="font-size:11.5px;">· ${rows.length} client${rows.length===1?'':'s'}</span></td>
+        ${money?`<td class="num" style="white-space:nowrap;">${pmRevenueCell(p.revenue)}</td>`:''}
+        <td class="num faint">—</td><td class="num mono"><b>${leads||'—'}</b></td><td class="num faint">—</td>
+        <td class="num mono">${due?`<b>${Math.round(100*ok/due)}%</b>`:'<span class="faint">—</span>'}</td>
+        <td class="num">${p.rating!=null?`<b class="mono">${p.rating} ★</b>`:'<span class="faint">—</span>'}</td>
+        <td class="num">${p.score!=null?`<span class="pill ${pmScoreKind(p.score)}">${p.score}</span>`:'<span class="faint" style="font-size:11px;">No data</span>'}</td></tr>
+        ${rows.map(clientRow).join('') || `<tr><td colspan="${cols}" style="padding-left:26px;"><span class="faint" style="font-size:12px;">No clients</span></td></tr>`}`; }).join('')}
+    ${none.length?`<tr style="background:var(--surface-sunk);"><td colspan="${cols}"><b class="neg">Not assigned</b> <span class="faint" style="font-size:11.5px;">· ${none.length} client${none.length===1?'':'s'} — no one set, no account manager on staff and no tasks to go by</span></td></tr>${none.map(clientRow).join('')}`:''}
+    </tbody></table></div>
+  </div>`;
+}
+
+// This month's Performance Marketing reviews, and the clients still to be asked.
+function pmReviewsHTML(t){
+  const rated = new Set(t.reviews.map(r=>r.clientId)), pending = t.clients.filter(c=>!rated.has(c.id));
+  return `<div class="panel">
+    <div class="panel-head"><div><h3>Client reviews · ${monthLabel(t.month)}</h3><div class="sub">${t.reviews.length} review${t.reviews.length===1?'':'s'}${t.totals.rating!=null?` · average ${t.totals.rating} ★`:''} · ${pending.length} client${pending.length===1?'':'s'} not rated yet</div></div></div>
+    <div class="panel-body" style="display:flex;flex-direction:column;gap:10px;">
+      ${t.reviews.map(f=>`<div style="padding:10px 12px;border-radius:10px;background:var(--surface-sunk);"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><b style="font-size:12.5px;">${esc(f.client)}${f.handledBy?` <span class="faint" style="font-weight:600;">· handled by ${esc(f.handledBy)}</span>`:''}</b>${starBarHTML(f.rating, 11)}</div>${f.comment?`<div style="font-size:12.5px;margin-top:4px;line-height:1.5;">“${esc(f.comment)}”</div>`:''}<div class="subtext" style="margin-top:4px;">${fmtDateShort(f.date)} · ${esc(f.via)}${f.by&&!/^Logged by/.test(f.via)?' · '+esc(f.by):''}</div></div>`).join('') || '<div class="empty">No reviews this month yet.</div>'}
+      ${pending.length && t.month===TODAY.slice(0,7)?`<div><div class="kpi-label" style="margin:4px 0 8px;">Not rated yet</div><div style="display:flex;flex-direction:column;gap:6px;">${pending.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;"><span style="font-size:12.5px;"><b>${esc(c.name)}</b>${c.owner?` <span class="faint">· ${esc(c.owner.name)}</span>`:''}</span><span style="display:flex;gap:6px;"><button class="btn btn-sm ghost" onclick="pmLogReview('${c.id}')">Log review</button><button class="btn btn-sm ghost" onclick="openClientFeedbackLink('${c.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Ask</button></span></div>`).join('')}</div></div>`:''}
+    </div>
+  </div>`;
+}
+async function pmLogReview(clientId){
+  try{ await loadClientFeedback(clientId); }catch(err){ toast(err.message || "Couldn't load"); return; }
+  const d = clientFeedbackData[clientId];
+  if(!d || !d.canLog){ toast("Only the client's account manager or leadership can log a review — send them the link instead"); return; }
+  openClientFeedback(clientId);
+}
+
 function pmDeptPanelsHTML(){
   const t = pmTrack;
   if(!t) return `<div class="panel"><div class="panel-body"><div class="empty">Loading Performance Marketing tracking…</div></div></div>`;
   const unassigned = t.clients.filter(c=>!c.owner).length, missing = t.clients.filter(c=>c.missingDays.length).length, offTarget = t.clients.filter(c=>c.cplOk===false).length;
-  const scored = t.scorecard.filter(s=>s.score!=null), avg = scored.length ? Math.round(scored.reduce((a,s)=>a+s.score,0)/scored.length) : null;
   const kpi = (label, val, sub, kind) => `<div class="kpi-card"><div class="kpi-label">${label}</div><div class="kpi-value mono" ${kind?`style="color:var(--${kind});"`:''}>${val}</div><div class="kpi-sub">${sub}</div></div>`;
-  return `<div class="panel">
-    <div class="panel-head"><div><h3>Performance Marketing clients · ${monthLabel(t.month)}</h3><div class="sub">Who runs each client's ads, spend and leads this month, and whether the daily numbers are in</div></div>${pmMonthSelect(false)}</div>
+  return `${pmOverviewHTML()}<div class="panel">
+    <div class="panel-head"><div><h3>Performance Marketing clients · ${monthLabel(t.month)}</h3><div class="sub">Who runs each client's ads, ${t.canSeeMoney?'what the client paid this month, ':''}spend and leads, rating, and whether the daily numbers are in</div></div>${pmMonthSelect(false)}</div>
     <div class="panel-body" style="padding-bottom:0;"><div class="kpi-grid" style="margin:0;">
       ${kpi("Clients", t.clients.length, "active this month")}
       ${kpi("Not assigned", unassigned, "no one running their ads", unassigned?'neg':null)}
       ${kpi("Numbers missing", missing, "clients with days not logged", missing?'neg':null)}
       ${kpi("Over target", offTarget, "cost per lead above target", offTarget?'warn':null)}
-      ${kpi("Team score", avg==null?'—':avg, scored.length+" of "+t.scorecard.length+" scored")}
     </div></div>
     ${pmClientsTableHTML(t, {manage:t.canManage})}
   </div>
-  <div class="panel">
+  ${pmByPersonHTML(t)}
+  ${pmReviewsHTML(t)}`;
+}
+// Shown first on the Performance Marketing page, straight under the header.
+function pmScorecardPanelHTML(){
+  const t = pmTrack;
+  if(!t) return '';
+  return `<div class="panel">
     <div class="panel-head"><div><h3>Team scorecard · ${monthLabel(t.month)}</h3><div class="sub">Worked out from each person's clients and tasks. Hover a column for its weight.</div></div></div>
     ${pmScoreRowsHTML(t, {manage:t.canManage})}
     <div class="panel-body" style="padding-top:8px;"><div class="subtext">${esc(PM_SCORE_HELP(t))}</div></div>
@@ -2795,7 +2915,7 @@ function openPmClient(id){
   showModal(`
     <div class="modal-head"><h3>${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-pm-client"><div class="modal-body">
-      <div><label class="field-label" for="pm-owner">Handled by</label><select class="field-input" id="pm-owner" name="owner"><option value="">Not assigned</option>${t.team.concat(c.owner && !t.team.some(e=>e.id===c.owner.id)?[c.owner]:[]).map(e=>`<option value="${e.id}" ${c.owner&&c.owner.id===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><div class="subtext">The person who runs this client's ads. Their score counts this client.</div></div>
+      <div><label class="field-label" for="pm-owner">Handled by</label><select class="field-input" id="pm-owner" name="owner"><option value="">Automatic — the account manager${c.owner&&c.owner.auto?' (now '+esc(c.owner.name)+')':''}</option>${t.team.concat(c.owner && !c.owner.auto && !t.team.some(e=>e.id===c.owner.id)?[c.owner]:[]).map(e=>`<option value="${e.id}" ${c.owner&&!c.owner.auto&&c.owner.id===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><div class="subtext">The person who runs this client's ads. Their score counts this client.</div></div>
       <div><label class="field-label" for="pm-target">Target cost per lead (${esc(c.currency)})</label><input class="field-input mono" id="pm-target" name="target" type="number" min="0" step="0.01" value="${c.targetCpl!=null?c.targetCpl:''}" placeholder="Leave empty for no target"></div>
       <div><label class="field-label" for="pm-status">Campaign status</label><select class="field-input" id="pm-status" name="status"><option value="">Not set</option>${t.statuses.map(s2=>`<option ${c.campaignStatus===s2?'selected':''}>${s2}</option>`).join('')}</select></div>
       <div class="subtext">Budget comes from the client's campaign brief (client page).</div>
@@ -2807,7 +2927,7 @@ function openPmClient(id){
     if(target && !(Number(target)>0)){ toast("Target must be more than 0"); return; }
     try{
       await apiJson(`/api/departments/pm/clients/${id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ownerId:f.get("owner")||null, targetCpl:target?Number(target):null, campaignStatus:f.get("status")||null})});
-      await loadPmTracking(); closeModal(); toast("Saved"); render();
+      await Promise.all([loadPmTracking(), loadPmOverview().catch(()=>{}), loadDeptSummary(PM_DEPT).catch(()=>{})]); closeModal(); toast("Saved"); render();
     }catch(err){ toast(err.message || "Couldn't save"); }
   });
 }
@@ -4038,7 +4158,7 @@ const TAB_REFRESH = {
 function canLoadQuotes(){ return !!(currentUser && (currentUser.isAdmin || (currentUser.roles||[]).some(r=>r==='SALES'||r==='SALES_HEAD'))); }
 function refreshTab(mid, sid){
   let jobs = TAB_REFRESH[mid+"/"+sid];
-  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid)), ...(deptFromSlug(sid)===PM_DEPT?[()=>loadPmTracking().catch(()=>{})]:[])] : null);
+  if(!jobs && mid==="departments") jobs = sid==="overview" ? [loadDeptHeads, loadDeptOverview, ()=>loadDeptScores().catch(()=>{})] : (deptFromSlug(sid) ? [loadDeptHeads, ()=>loadActionPlans().catch(()=>{}), ()=>loadDeptScores().catch(()=>{}), ()=>loadDeptSummary(deptFromSlug(sid)), ...(deptFromSlug(sid)===PM_DEPT?[()=>loadPmTracking().catch(()=>{}), ()=>loadPmOverview().catch(()=>{ pmOverview = null; })]:[])] : null);
   if(!jobs) return;
   Promise.all(jobs.map(j=>j())).then(()=>{ if(nav.module===mid && nav.sub[mid]===sid && !nav.detail) render(); }).catch(err=>console.error("Couldn't refresh "+mid+"/"+sid, err));
 }
