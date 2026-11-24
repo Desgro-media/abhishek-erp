@@ -2719,7 +2719,7 @@ function deptPage(d){
       <div class="kpi-card"><div class="kpi-label">Received</div><div class="kpi-value mono" style="color:var(--pos);">${inr(rev.collected)}</div><div class="kpi-sub">payments this month</div></div>
       <div class="kpi-card hero"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${inr(rev.outstanding)}</div><div class="kpi-sub">still to collect</div></div>
     </div></div></div>` : '';
-  return `${header}${deptScorePanel(d)}${insights}${d===PM_DEPT?pmDeptPanelsHTML():''}${revenuePanel}${s.service && d!==PM_DEPT?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
+  return `${header}${d===PM_DEPT?pmScorecardPanelHTML():''}${deptScorePanel(d)}${insights}${d===PM_DEPT?pmDeptPanelsHTML():''}${revenuePanel}${s.service && d!==PM_DEPT?`<div class="grid-2" style="align-items:start;">${clientsPanel}${feedbackPanel}</div>`:''}${SERVICE_BOARDS[d]?deptBoardPanelHTML(d):''}${teamPanel}`;
 }
 
 /* ===================== PERFORMANCE MARKETING TRACKING =====================
@@ -2882,8 +2882,13 @@ function pmDeptPanelsHTML(){
     ${pmClientsTableHTML(t, {manage:t.canManage})}
   </div>
   ${pmByPersonHTML(t)}
-  ${pmReviewsHTML(t)}
-  <div class="panel">
+  ${pmReviewsHTML(t)}`;
+}
+// Shown first on the Performance Marketing page, straight under the header.
+function pmScorecardPanelHTML(){
+  const t = pmTrack;
+  if(!t) return '';
+  return `<div class="panel">
     <div class="panel-head"><div><h3>Team scorecard · ${monthLabel(t.month)}</h3><div class="sub">Worked out from each person's clients and tasks. Hover a column for its weight.</div></div></div>
     ${pmScoreRowsHTML(t, {manage:t.canManage})}
     <div class="panel-body" style="padding-top:8px;"><div class="subtext">${esc(PM_SCORE_HELP(t))}</div></div>
