@@ -2644,7 +2644,8 @@ function ptAddRow(){ document.getElementById('pt-rows').insertAdjacentHTML('befo
 // "Handled by" cell: the person set by the head, or (faint) the one worked out from tasks.
 function handledByHTML(h){
   if(!h) return '<span class="neg" style="font-size:12px;font-weight:700;">Not assigned</span>';
-  return `<span style="font-weight:700;font-size:12.5px;">${esc(h.name)}</span>${h.auto?'<div class="subtext" title="No one is set for this client, so this is whoever has most of its tasks in the department">from tasks</div>':''}`;
+  const note = !h.auto ? '' : h.from==='am' ? '<div class="subtext" title="No one is set for this client, so its account manager handles it">account manager</div>' : '<div class="subtext" title="No one is set for this client, so this is whoever has most of its tasks in the department">from tasks</div>';
+  return `<span style="font-weight:700;font-size:12.5px;">${esc(h.name)}</span>${note}`;
 }
 function openAssignClientHandler(d, clientId){
   const s = deptSummaries[d], c = s && s.clients.find(x=>x.id===clientId); if(!c || !s.canAssign) return;
@@ -2822,7 +2823,7 @@ function pmByPersonHTML(t){
   const none = t.clients.filter(c=>!c.owner);
   const money = t.canSeeMoney;
   const clientRow = c => { const miss = c.missingDays.length; return `<tr class="row-click" ${clientById(c.id)?`onclick="goToClient('${c.id}')"`:''}>
-    <td style="padding-left:26px;"><span style="font-weight:600;">${esc(c.name)}</span>${c.owner&&c.owner.auto?' <span class="faint" style="font-size:11px;">· from tasks</span>':''}</td>
+    <td style="padding-left:26px;"><span style="font-weight:600;">${esc(c.name)}</span>${c.owner&&c.owner.auto?` <span class="faint" style="font-size:11px;">· ${c.owner.from==='am'?'account manager':'from tasks'}</span>`:''}</td>
     ${money?`<td class="num" style="white-space:nowrap;">${pmRevenueCell(c.revenue)}</td>`:''}
     <td class="num mono">${c.spend?adMoney(c.spend, c.currency):'—'}</td><td class="num mono">${c.leads||'—'}</td>
     <td class="num mono">${c.cpl==null?'<span class="faint">—</span>':`<span class="${c.cplOk===false?'neg':c.cplOk?'pos':''}">${adMoney(c.cpl, c.currency)}</span>`}</td>
@@ -2842,7 +2843,7 @@ function pmByPersonHTML(t){
         <td class="num">${p.rating!=null?`<b class="mono">${p.rating} ★</b>`:'<span class="faint">—</span>'}</td>
         <td class="num">${p.score!=null?`<span class="pill ${pmScoreKind(p.score)}">${p.score}</span>`:'<span class="faint" style="font-size:11px;">No data</span>'}</td></tr>
         ${rows.map(clientRow).join('') || `<tr><td colspan="${cols}" style="padding-left:26px;"><span class="faint" style="font-size:12px;">No clients</span></td></tr>`}`; }).join('')}
-    ${none.length?`<tr style="background:var(--surface-sunk);"><td colspan="${cols}"><b class="neg">Not assigned</b> <span class="faint" style="font-size:11.5px;">· ${none.length} client${none.length===1?'':'s'} — no one set and no tasks to go by</span></td></tr>${none.map(clientRow).join('')}`:''}
+    ${none.length?`<tr style="background:var(--surface-sunk);"><td colspan="${cols}"><b class="neg">Not assigned</b> <span class="faint" style="font-size:11.5px;">· ${none.length} client${none.length===1?'':'s'} — no one set, no account manager on staff and no tasks to go by</span></td></tr>${none.map(clientRow).join('')}`:''}
     </tbody></table></div>
   </div>`;
 }
@@ -2909,7 +2910,7 @@ function openPmClient(id){
   showModal(`
     <div class="modal-head"><h3>${esc(c.name)}</h3><button class="modal-close" onclick="closeModal()"><svg class="icon" style="width:14px;height:14px"><use href="#i-x"/></svg></button></div>
     <form id="f-pm-client"><div class="modal-body">
-      <div><label class="field-label" for="pm-owner">Handled by</label><select class="field-input" id="pm-owner" name="owner"><option value="">Automatic — whoever has most of its tasks${c.owner&&c.owner.auto?' (now '+esc(c.owner.name)+')':''}</option>${t.team.concat(c.owner && !c.owner.auto && !t.team.some(e=>e.id===c.owner.id)?[c.owner]:[]).map(e=>`<option value="${e.id}" ${c.owner&&!c.owner.auto&&c.owner.id===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><div class="subtext">The person who runs this client's ads. Their score counts this client.</div></div>
+      <div><label class="field-label" for="pm-owner">Handled by</label><select class="field-input" id="pm-owner" name="owner"><option value="">Automatic — the account manager${c.owner&&c.owner.auto?' (now '+esc(c.owner.name)+')':''}</option>${t.team.concat(c.owner && !c.owner.auto && !t.team.some(e=>e.id===c.owner.id)?[c.owner]:[]).map(e=>`<option value="${e.id}" ${c.owner&&!c.owner.auto&&c.owner.id===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><div class="subtext">The person who runs this client's ads. Their score counts this client.</div></div>
       <div><label class="field-label" for="pm-target">Target cost per lead (${esc(c.currency)})</label><input class="field-input mono" id="pm-target" name="target" type="number" min="0" step="0.01" value="${c.targetCpl!=null?c.targetCpl:''}" placeholder="Leave empty for no target"></div>
       <div><label class="field-label" for="pm-status">Campaign status</label><select class="field-input" id="pm-status" name="status"><option value="">Not set</option>${t.statuses.map(s2=>`<option ${c.campaignStatus===s2?'selected':''}>${s2}</option>`).join('')}</select></div>
       <div class="subtext">Budget comes from the client's campaign brief (client page).</div>

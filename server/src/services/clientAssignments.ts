@@ -3,12 +3,13 @@ import { prisma } from "../db/prisma";
 /* Who handles a client in a service department.
 
    Set by hand: Performance Marketing uses Client.pmOwnerId (its scorecard was built on it); every other service department
-   uses a ClientAssignment row. Not set (or the person set has left): the department member who has most of the client's
+   uses a ClientAssignment row. Performance Marketing not set by hand: the client's account manager (matched to a current
+   employee by name), marked `from: "am"`. Still nobody (or the person set has left): the department member who has most of the client's
    tasks in that department — tasks on its service board, or ordinary tasks given to someone in the department — with the
    most recent task breaking a tie. That one is marked `auto` so the page can say "from tasks". Nobody either way = null. */
 
 export const PM_DEPT = "Performance Marketing";
-export type Handler = { id: string; name: string; auto: boolean };
+export type Handler = { id: string; name: string; auto: boolean; from?: "am" | "tasks" };
 
 export async function handlersFor(dept: string, clientIds: string[]): Promise<Map<string, Handler | null>> {
   const out = new Map<string, Handler | null>(clientIds.map((id) => [id, null]));
@@ -16,8 +17,16 @@ export async function handlersFor(dept: string, clientIds: string[]): Promise<Ma
 
   const live = (e: { employmentStatus: string } | null | undefined) => !!e && e.employmentStatus !== "LEFT";
   if (dept === PM_DEPT) {
-    const rows = await prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, pmOwner: { select: { id: true, name: true, employmentStatus: true } } } });
+    const rows = await prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, accountManager: true, pmOwner: { select: { id: true, name: true, employmentStatus: true } } } });
     rows.forEach((r) => { if (live(r.pmOwner)) out.set(r.id, { id: r.pmOwner!.id, name: r.pmOwner!.name, auto: false }); });
+    // Not set by hand: the account manager handles it.
+    const amName = (n: string | null) => (n ?? "").trim().toLowerCase();
+    const wanted = [...new Set(rows.filter((r) => !out.get(r.id) && amName(r.accountManager)).map((r) => r.accountManager!.trim()))];
+    if (wanted.length) {
+      const ams = await prisma.employee.findMany({ where: { employmentStatus: { not: "LEFT" }, name: { in: wanted, mode: "insensitive" } }, select: { id: true, name: true } });
+      const byAm = new Map(ams.map((e) => [amName(e.name), e]));
+      rows.forEach((r) => { const e = !out.get(r.id) && byAm.get(amName(r.accountManager)); if (e) out.set(r.id, { id: e.id, name: e.name, auto: true, from: "am" }); });
+    }
   } else {
     const rows = await prisma.clientAssignment.findMany({ where: { dept, clientId: { in: clientIds } }, select: { clientId: true, employee: { select: { id: true, name: true, employmentStatus: true } } } });
     rows.forEach((r) => { if (live(r.employee)) out.set(r.clientId, { id: r.employee.id, name: r.employee.name, auto: false }); });
@@ -39,7 +48,7 @@ export async function handlersFor(dept: string, clientIds: string[]): Promise<Ma
     });
     const best = [...tally.entries()].sort((a, b) => b[1].n - a[1].n || b[1].last - a[1].last)[0];
     const m = best && byName.get(best[0]);
-    if (m) out.set(id, { id: m.id, name: m.name, auto: true });
+    if (m) out.set(id, { id: m.id, name: m.name, auto: true, from: "tasks" });
   }
   return out;
 }

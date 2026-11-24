@@ -117,7 +117,7 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null, o
     const rating = c.feedback.length ? round2(c.feedback.reduce((s, f) => s + f.rating, 0) / c.feedback.length) : null;
     return {
       id: c.id, name: c.name, currency: c.adCurrency, accountManager: c.accountManager ?? "",
-      owner: h ? { id: h.id, name: h.name, auto: h.auto } : null,
+      owner: h ? { id: h.id, name: h.name, auto: h.auto, from: h.from ?? null } : null,
       revenue: revenue ? revenue.get(c.id) ?? { billed: 0, collected: 0, outstanding: 0 } : null,
       platform: c.adAccess?.platform ?? null, access: c.adAccess?.status ?? null,
       budget: c.campaignBrief?.budget ?? null, targetCpl: target, campaignStatus: c.campaignBrief?.campaignStatus ?? null,
