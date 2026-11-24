@@ -3562,11 +3562,12 @@ async function toggleFeedbackLinkDept(clientId, dept, on){
 }
 
 /* ===================== HR PROGRAMS — team building, upskilling, training =====================
-   HR plans each month's programs under HR → Programs. A month is "covered" when it has at least one of each type.
+   HR plans each month's programs under HR → Programs. A month is "covered" when it has PROGRAMS_PER_MONTH programs, of any type.
    Once a program has happened HR closes it out with who attended, what it cost and what came of it. Attendees (and
    only they) are then asked to rate it — anonymously, once, for 14 days — in their My Workspace or from a link HR
    shares. Staff see what they're invited to under "Coming up at DesGro"; programs also show on the Calendar. */
 const PROGRAM_TYPES = ["Team Building","Upskilling","Training"];
+const PROGRAMS_PER_MONTH = 3; // any mix of types counts
 const PROGRAM_TYPE_KIND = {"Team Building":"pos","Upskilling":"blue","Training":"warn"};
 const PROGRAM_TYPE_HINT = {"Team Building":"bonding, offsites, celebrations","Upskilling":"new skills for the market — tools, platforms, trends","Training":"how we do things here — process, quality, conduct"};
 const PROGRAM_STATUSES = ["Planned","Confirmed","Completed","Cancelled"];
@@ -3627,10 +3628,10 @@ function hrProgramsView(){
     <div class="kpi-card"><div class="kpi-label">Feedback</div><div class="kpi-value mono">${avgRating==null?'—':avgRating.toFixed(1)}<span style="font-size:13px;color:var(--ink-soft);font-family:Manrope;"> / 5</span></div><div class="kpi-sub">from ${respAll} response${respAll===1?'':'s'}${attAll?' · '+Math.round(respAll/attAll*100)+'% replied':''}</div></div>
     <div class="kpi-card hero"><div class="kpi-label">Budget</div><div class="kpi-value mono" style="font-size:19px;">${inr(budget)}</div><div class="kpi-sub">${inr(spent)} spent so far</div></div>
   </div>
-  <div class="banner ${covered.every(c=>c.n)?'muted':''}" style="align-items:center;flex-wrap:wrap;">
+  <div class="banner ${live.length>=PROGRAMS_PER_MONTH?'muted':''}" style="align-items:center;flex-wrap:wrap;">
     <svg class="icon" style="width:15px;height:15px"><use href="#i-target"/></svg>
-    <div style="flex:1;"><b>${monthLabel(month)} plan:</b> ${covered.every(c=>c.n)?'covers all three — team building, upskilling and training.':'missing '+covered.filter(c=>!c.n).map(c=>c.t.toLowerCase()).join(' and ')+'.'}</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;">${covered.map(c=>`<span class="pill ${c.n?PROGRAM_TYPE_KIND[c.t]:'neg'}">${c.t} · ${c.n}</span>`).join('')}</div>
+    <div style="flex:1;"><b>${monthLabel(month)} plan:</b> ${live.length>=PROGRAMS_PER_MONTH?`${live.length} programs — covered.`:`${live.length} of ${PROGRAMS_PER_MONTH} programs — add ${PROGRAMS_PER_MONTH-live.length} more, any type.`}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">${covered.map(c=>`<span class="pill ${c.n?PROGRAM_TYPE_KIND[c.t]:'neutral'}">${c.t} · ${c.n}</span>`).join('')}</div>
   </div>
   <div class="panel">
     <div class="panel-head"><div><h3>${monthLabel(month)} programs</h3><div class="sub">${list.length?'In date order':'Nothing planned yet'}</div></div></div>
@@ -3644,16 +3645,16 @@ function hrProgramsView(){
         <td>${pill(p.status, PROGRAM_STATUS_KIND[p.status])}</td>
         <td class="num">${manage?`<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${p.status!=='Completed'&&p.status!=='Cancelled'&&p.date<=TODAY?`<button class="btn btn-sm primary" onclick="openCompleteProgram('${p.id}')">Close out</button>`:''}${p.status==='Completed'?`<button class="btn btn-sm ${feedbackIsOpen(p)?'':'ghost'}" onclick="openProgramFeedbackLink('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-link"/></svg>Feedback link</button>`:''}<button class="btn btn-sm ghost" onclick="openProgram('${p.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg></button></div>`:''}</td>
       </tr>`; }).join('')}
-    </tbody></table></div>` : `<div class="empty">No programs planned for ${monthLabel(month)}.${manage?' Plan at least one team building, one upskilling and one training session.':''}</div>`}
+    </tbody></table></div>` : `<div class="empty">No programs planned for ${monthLabel(month)}.${manage?' Plan ${PROGRAMS_PER_MONTH} programs — team building, upskilling or training, any mix.':''}</div>`}
   </div>
   <div class="panel">
     <div class="panel-head"><div><h3>Plan ahead</h3><div class="sub">Programs by month — click a month to open it</div></div></div>
     <div class="table-wrap"><table class="data"><thead><tr><th>Month</th>${PROGRAM_TYPES.map(t=>`<th class="num">${t}</th>`).join('')}<th class="num">Budget</th><th>Covered</th></tr></thead><tbody>
-      ${months.map(mm=>{ const l = programsInMonth(mm).filter(p=>p.status!=="Cancelled"); const counts = PROGRAM_TYPES.map(t=>l.filter(p=>p.type===t).length); const ok = counts.every(n=>n>0); const b = l.reduce((s,p)=>s+(p.budget||0),0); return `<tr class="row-click" style="${mm===month?'background:var(--surface-sunk);':''}" onclick="hrProgramMonth='${mm}';render();">
+      ${months.map(mm=>{ const l = programsInMonth(mm).filter(p=>p.status!=="Cancelled"); const counts = PROGRAM_TYPES.map(t=>l.filter(p=>p.type===t).length); const ok = l.length>=PROGRAMS_PER_MONTH; const b = l.reduce((s,p)=>s+(p.budget||0),0); return `<tr class="row-click" style="${mm===month?'background:var(--surface-sunk);':''}" onclick="hrProgramMonth='${mm}';render();">
         <td style="font-weight:700;">${monthLabel(mm)}${mm===TODAY.slice(0,7)?' <span class="faint" style="font-weight:600;">· this month</span>':''}</td>
         ${counts.map(n=>`<td class="num mono" style="${n?'':'color:var(--ink-faint);'}">${n||'—'}</td>`).join('')}
         <td class="num mono">${b?inr(b):'—'}</td>
-        <td>${ok?pill('All three','pos'):pill(counts.filter(n=>n).length+' of 3','warn')}</td>
+        <td>${ok?pill('Covered','pos'):pill(l.length+' of '+PROGRAMS_PER_MONTH,'warn')}</td>
       </tr>`; }).join('')}
     </tbody></table></div>
   </div>`;
