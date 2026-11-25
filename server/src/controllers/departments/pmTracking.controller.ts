@@ -5,15 +5,18 @@ import { asyncHandler } from "../../utils/asyncHandler";
 import { recordAudit } from "../../services/audit.service";
 import { isLeadership, headedDepartments, ledDepartments } from "../../services/departmentAccess";
 import { handlersFor, revenueByClient, sumMoney, type Money } from "../../services/clientAssignments";
+import { getTargets, elapsedShare } from "../../services/scores";
 
 /* Performance Marketing tracking: every client the team runs ads for (who runs it, budget, spend, leads, cost per lead
    against its target, campaign status, last meeting, days the numbers weren't logged) and a monthly score per person.
 
-   Score (out of 100), from the clients a person runs (Client.pmOwnerId) and the tasks assigned to them:
-     30% numbers logged on time — working days whose ad numbers were in by the end of the next day
-     30% cost per lead on target — clients with a target and spend this month whose cost per lead is at or under it
-     20% client rating        — average Performance Marketing rating from their clients this month (5★ = 100%)
-     20% tasks on time         — tasks due this month (up to today) finished by their due date
+   Score (out of 100), from the clients a person runs:
+     40% revenue        — money received this month from their clients (the Performance Marketing share of each invoice)
+                          against their share of the department's revenue target (Score targets): target × their clients ÷
+                          all the department's clients, paced by how much of the month has gone; capped at 100%
+     40% client rating  — average Performance Marketing rating from their clients this month (5★ = 100%)
+     20% clients rated  — how many of their clients gave a rating this month
+   Days logged, cost per lead and tasks are still shown on the client table but no longer count toward the score.
    A part with nothing to measure is left out and the rest are re-weighted. The head (or leadership) can then add or take
    off up to 10 points with a reason; the final score stays within 0–100.
 
@@ -29,7 +32,7 @@ import { handlersFor, revenueByClient, sumMoney, type Money } from "../../servic
 
 export const PM = "Performance Marketing";
 export const CAMPAIGN_STATUSES = ["Running", "Learning", "Paused", "Stopped"] as const;
-export const WEIGHTS = { logging: 30, cpl: 30, rating: 20, tasks: 20 } as const;
+export const WEIGHTS = { revenue: 40, rating: 40, rated: 20 } as const;
 export const ADJUST_LIMIT = 10;
 
 const DAY = 86400_000;
@@ -80,7 +83,9 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null, o
   });
   const handlers = await handlersFor(PM, all.map((c) => c.id));
   const clients = onlyEmployeeId ? all.filter((c) => handlers.get(c.id)?.id === onlyEmployeeId) : all;
-  const revenue = opts.money ? await revenueByClient(PM, month, clients.map((c) => c.id)) : null;
+  // Revenue always counts toward the score; the amounts themselves only go out to leadership and the head.
+  const revenueAll = await revenueByClient(PM, month, clients.map((c) => c.id));
+  const revenue = opts.money ? revenueAll : null;
 
   const team = await prisma.employee.findMany({
     where: onlyEmployeeId ? { id: onlyEmployeeId } : { OR: [{ dept: PM, employmentStatus: { not: "LEFT" } }, { id: { in: [...handlers.values()].filter((h) => h).map((h) => h!.id) } }] },
@@ -94,10 +99,9 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null, o
   });
   const onLeave = (empId: string | null, d: string) => !!empId && leaves.some((l) => l.employeeId === empId && ymd(l.fromDate) <= d && d <= ymd(l.toDate));
   const adjustments = await prisma.pmScoreAdjustment.findMany({ where: { employeeId: { in: ids }, month } });
-  const tasks = await prisma.clientTask.findMany({
-    where: { assignedTo: { in: team.map((e) => e.name) }, dueAt: { gte: new Date(`${first}T00:00:00Z`), lte: new Date(`${last}T00:00:00Z`) } },
-    select: { assignedTo: true, dueAt: true, doneAt: true, status: true },
-  });
+  // The department's revenue target (Score targets), shared out by clients handled and paced through the current month.
+  const deptTarget = (await getTargets()).deptRevenue[PM] ?? 0, paced = elapsedShare(month);
+  const inr = (n: number) => "₹" + Math.round(n).toLocaleString("en-IN");
 
   const rows = clients.map((c) => {
     const spend = c.adMetrics.reduce((s, m) => s + Number(m.spend), 0);
@@ -129,16 +133,14 @@ export async function pmTracking(month: string, onlyEmployeeId: string | null, o
 
   const scorecard = team.map((e) => {
     const mine = rows.filter((r) => r.owner?.id === e.id);
-    const due = mine.reduce((s, r) => s + r.daysDue, 0), onTime = mine.reduce((s, r) => s + r.daysOnTime, 0);
-    const withTarget = mine.filter((r) => r.cplOk != null), hit = withTarget.filter((r) => r.cplOk).length;
     const ratings = mine.filter((r) => r.rating != null).map((r) => r.rating as number);
-    const myTasks = tasks.filter((t) => t.assignedTo === e.name && (t.doneAt || ymd(t.dueAt) < today));
-    const tasksOnTime = myTasks.filter((t) => t.doneAt && istYmd(t.doneAt) <= ymd(t.dueAt)).length;
+    const avg = ratings.length ? ratings.reduce((s, x) => s + x, 0) / ratings.length : null;
+    const target = all.length ? (deptTarget * mine.length) / all.length : 0, due = target * paced;
+    const got = mine.reduce((s, r) => s + (revenueAll.get(r.id)?.collected ?? 0), 0);
     const parts = {
-      logging: due ? { value: onTime / due, detail: `${onTime} of ${due} days` } : null,
-      cpl: withTarget.length ? { value: hit / withTarget.length, detail: `${hit} of ${withTarget.length} clients` } : null,
-      rating: ratings.length ? { value: ratings.reduce((s, x) => s + x, 0) / ratings.length / 5, detail: `${round2(ratings.reduce((s, x) => s + x, 0) / ratings.length)} ★ from ${ratings.length}` } : null,
-      tasks: myTasks.length ? { value: tasksOnTime / myTasks.length, detail: `${tasksOnTime} of ${myTasks.length} tasks` } : null,
+      revenue: due > 0 ? { value: Math.min(1, got / due), detail: opts.money ? `${inr(got)} of ${inr(target)}${paced < 1 ? " · paced" : ""}` : `${Math.round((100 * got) / due)}% of target` } : null,
+      rating: avg != null ? { value: avg / 5, detail: `${round2(avg)} ★ average` } : null,
+      rated: mine.length ? { value: ratings.length / mine.length, detail: `${ratings.length} of ${mine.length} client${mine.length === 1 ? "" : "s"}` } : null,
     };
     let wsum = 0, vsum = 0;
     (Object.keys(WEIGHTS) as (keyof typeof WEIGHTS)[]).forEach((k) => { const p = parts[k]; if (p) { wsum += WEIGHTS[k]; vsum += WEIGHTS[k] * p.value; } });

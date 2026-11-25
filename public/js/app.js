@@ -2728,7 +2728,7 @@ function deptPage(d){
    person. The server works the score out (/api/departments/pm/tracking); the head can add or take off up to 10 points
    with a reason. Each team member sees only their own clients and score, under My Workspace → My Score. */
 const PM_DEPT = "Performance Marketing";
-const PM_PARTS = [["logging","Logged on time"],["cpl","Cost per lead on target"],["rating","Client rating"],["tasks","Tasks on time"]];
+const PM_PARTS = [["revenue","Revenue vs target"],["rating","Client satisfaction"],["rated","Clients who rated"]];
 let pmTrack = null, pmMine = null, pmOverview = null, pmMonth = TODAY.slice(0,7);
 async function loadPmTracking(){ pmTrack = await apiJson(`/api/departments/pm/tracking?month=${pmMonth}`); }
 async function loadPmOverview(){ pmOverview = await apiJson(`/api/departments/pm/overview?month=${pmMonth}`); }
@@ -2780,7 +2780,7 @@ function pmScoreRowsHTML(t, opts){
   </tr>`).join('')}</tbody></table></div>`;
 }
 
-const PM_SCORE_HELP = t => `Logged on time: working days up to ${fmtDateShort(t.judgedUntil)} whose ad numbers were in by the end of the next day (clients with ad access only, leave days skipped). Cost per lead: clients with a target and spend this month at or under it. Rating: client ratings this month, 5★ = 100%. Tasks: tasks due this month finished by their due date. A part with nothing to measure is left out. The head can add or take off up to ${t.adjustLimit} points with a reason.`;
+const PM_SCORE_HELP = t => `Revenue: money received this month from the person's clients (the Performance Marketing share of each invoice) against their share of the department revenue target in Score targets — target × their clients ÷ all clients, paced through the current month, up to 100%. Client satisfaction: the average client rating this month, 5★ = 100%. Clients who rated: how many of their clients gave a rating this month. A part with nothing to measure is left out. The head can add or take off up to ${t.adjustLimit} points with a reason.`;
 
 function pmRevenueCell(r){
   if(!r) return '<span class="faint">—</span>';
@@ -2889,7 +2889,7 @@ function pmScorecardPanelHTML(){
   const t = pmTrack;
   if(!t) return '';
   return `<div class="panel">
-    <div class="panel-head"><div><h3>Team scorecard · ${monthLabel(t.month)}</h3><div class="sub">Worked out from each person's clients and tasks. Hover a column for its weight.</div></div></div>
+    <div class="panel-head"><div><h3>Team scorecard · ${monthLabel(t.month)}</h3><div class="sub">Worked out from each person's clients: revenue, client satisfaction and how many rated. Hover a column for its weight.</div></div></div>
     ${pmScoreRowsHTML(t, {manage:t.canManage})}
     <div class="panel-body" style="padding-top:8px;"><div class="subtext">${esc(PM_SCORE_HELP(t))}</div></div>
   </div>`;
