@@ -43,10 +43,11 @@ export const globalSearch: RequestHandler = asyncHandler(async (req, res) => {
 
   if (isCrmUser(roles)) {
     const admin = seesWholeSalesTeam(roles);
+    // Every CRM user sees every lead (same as listLeads); quotes stay scoped to their creator below.
     jobs.push(
       prisma.lead
         .findMany({
-          where: { AND: [{ OR: [{ name: insensitive }, { leadCode: insensitive }, { phone: insensitive }, { email: insensitive }] }, admin ? {} : { OR: [{ leadOwner: name }, { leadOwner: null }] }] },
+          where: { OR: [{ name: insensitive }, { leadCode: insensitive }, { phone: insensitive }, { email: insensitive }] },
           take: RESULTS_PER_TYPE,
           orderBy: { createdAt: "desc" },
         })

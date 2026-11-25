@@ -485,6 +485,9 @@ function setLeadsMonthFilter(v){ leadsMonthFilter = v; render(); }
 // Leads page: narrow everything (KPIs, open queue, flow, list) to one service / department.
 let leadsServiceFilter = "All";
 function setLeadsServiceFilter(v){ leadsServiceFilter = v; render(); }
+// Whose leads the flow/list shows: "All", "Me", or one owner's name. Everyone sees the whole pipeline for tracking.
+let leadsOwnerFilter = "All";
+function setLeadsOwnerFilter(v){ leadsOwnerFilter = v; render(); }
 let quotesMonthFilter = "All";
 function setQuotesMonthFilter(v){ quotesMonthFilter = v; render(); }
 let clientsMonthFilter = "All";
@@ -8460,15 +8463,16 @@ function mktPerformance(){
   </div>`;
 }
 function mktLeads(){
-  // A sales person's own pipeline is just that — theirs (the server already
-  // scopes marketingLeads for a Sales caller to their own + Open — see
-  // listLeads). They still see the shared Open leads queue below to claim
-  // from. Anyone else (Leadership, Marketing/Staff, Admin) sees everyone's.
-  const isSalesViewer = isSalesRepRole(currentUser);
-  const ownLeads = isSalesViewer ? marketingLeads.filter(l=>l.leadOwner===currentUser.name) : marketingLeads;
+  // Everyone — Sales reps included — sees the whole pipeline so the team can track it (the server hands
+  // every CRM caller every lead — see listLeads). Working a lead stays with its owner: canWorkLead() hides
+  // the controls on someone else's, and the server refuses them. The Owner filter narrows the view.
+  const ownerNames = [...new Set(marketingLeads.map(l=>l.leadOwner).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  if(leadsOwnerFilter!=="All" && leadsOwnerFilter!=="Me" && !ownerNames.includes(leadsOwnerFilter)) leadsOwnerFilter = "All";
+  const meName = currentUser && currentUser.name;
+  const isSalesViewer = leadsOwnerFilter==="Me";
+  const ownLeads = leadsOwnerFilter==="All" ? marketingLeads : marketingLeads.filter(l=>l.leadOwner===(leadsOwnerFilter==="Me"?meName:leadsOwnerFilter));
   // Service filter: the ERP's services first, then any other label that came in from the Meta sheet (Personal Branding…).
-  const svcCounts = {}; ownLeads.concat(marketingLeads.filter(l=>!l.leadOwner)).forEach(l=>{ svcCounts[l.serviceInterested] = (svcCounts[l.serviceInterested]||0); });
-  ownLeads.forEach(l=>{ svcCounts[l.serviceInterested] = (svcCounts[l.serviceInterested]||0)+1; });
+  const svcCounts = {}; ownLeads.forEach(l=>{ svcCounts[l.serviceInterested] = (svcCounts[l.serviceInterested]||0)+1; });
   leadSheetServices.forEach(d=>{ if(svcCounts[d]==null) svcCounts[d]=0; });
   const svcList = leadSheetServices.length ? [...leadSheetServices, ...Object.keys(svcCounts).filter(d=>!leadSheetServices.includes(d) && svcCounts[d]>0).sort()] : [...SERVICE_DEPARTMENTS.filter(d=>svcCounts[d]!=null), ...Object.keys(svcCounts).filter(d=>!SERVICE_DEPARTMENTS.includes(d)).sort()];
   if(leadsServiceFilter!=="All" && !svcList.includes(leadsServiceFilter)) leadsServiceFilter = "All";
@@ -8493,7 +8497,7 @@ function mktLeads(){
   const winRate = (wonCount+lostCount) ? Math.round(wonCount/(wonCount+lostCount)*100) : null;
   const paidWaiting = filtered.filter(l=>!l.convertedClientId && l.paidTotal>0);
   return `
-  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter, {custom:true})}</select>${dateRangeInputs(leadsMonthFilter)}<span class="filter-label" style="margin-left:14px;">Service</span><select class="select-sm" onchange="setLeadsServiceFilter(this.value)"><option value="All" ${leadsServiceFilter==='All'?'selected':''}>All services</option>${svcList.map(sv=>`<option value="${esc(sv)}" ${leadsServiceFilter===sv?'selected':''}>${esc(sv)} (${svcCounts[sv]})</option>`).join('')}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
+  <div class="toolbar"><div class="filter-group"><span class="filter-label">Show</span><select class="select-sm" onchange="setLeadsMonthFilter(this.value)">${dateFilterOptions(pipelineSource.map(l=>l.createdDate), leadsMonthFilter, {custom:true})}</select>${dateRangeInputs(leadsMonthFilter)}<span class="filter-label" style="margin-left:14px;">Owner</span><select class="select-sm" onchange="setLeadsOwnerFilter(this.value)"><option value="All" ${leadsOwnerFilter==='All'?'selected':''}>Everyone</option>${meName?`<option value="Me" ${leadsOwnerFilter==='Me'?'selected':''}>My leads</option>`:''}${ownerNames.filter(n=>n!==meName).map(n=>`<option value="${esc(n)}" ${leadsOwnerFilter===n?'selected':''}>${esc(n)}</option>`).join('')}</select><span class="filter-label" style="margin-left:14px;">Service</span><select class="select-sm" onchange="setLeadsServiceFilter(this.value)"><option value="All" ${leadsServiceFilter==='All'?'selected':''}>All services</option>${svcList.map(sv=>`<option value="${esc(sv)}" ${leadsServiceFilter===sv?'selected':''}>${esc(sv)} (${svcCounts[sv]})</option>`).join('')}</select></div><div style="display:flex;gap:6px;"><button class="btn btn-sm ${leadsView==='board'?'primary':'ghost'}" onclick="setLeadsView('board')"><svg class="icon" style="width:12px;height:12px"><use href="#i-board"/></svg>Flow</button><button class="btn btn-sm ${leadsView==='list'?'primary':'ghost'}" onclick="setLeadsView('list')">List</button></div><button class="btn primary" onclick="openAddLead()"><svg class="icon" style="width:13px;height:13px"><use href="#i-plus"/></svg>New lead</button></div>
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">In Pipeline</div><div class="kpi-value mono">${activeCount}</div><div class="kpi-sub">not yet won or lost</div></div>
     <div class="kpi-card"><div class="kpi-label">Converted to Client</div><div class="kpi-value mono pos">${wonCount}</div></div>
@@ -8521,8 +8525,8 @@ function mktLeads(){
   ` : `
   <div class="panel" id="leads-pipeline">
     <div class="panel-head"><h3>${isSalesViewer?'My leads':'Lead pipeline'}</h3><div class="sub">${filtered.length} of ${pipelineSource.length}${dateFilterSuffix(leadsMonthFilter)}</div></div>
-    <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th><th>Stage</th>${isSalesViewer?'':'<th>Lead Owner</th>'}<th>Created</th><th></th></tr></thead>
-      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td>${leadStageControl(l)}${leadStage(l)==='Lost'&&l.lostReason?`<div class="subtext">${esc(l.lostReason)}</div>`:''}</td>${isSalesViewer?'':`<td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td>`}<td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="${isSalesViewer?7:8}"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Lead</th><th>Phone</th><th>Service Interested</th><th>Source</th><th>Stage</th><th>Lead Owner</th><th>Created</th><th></th></tr></thead>
+      <tbody>${sorted.map(l=>`<tr><td><div style="font-weight:700;font-size:13px;">${esc(l.name)}</div>${l.email?`<div class="subtext">${esc(l.email)}</div>`:''}${l.notes?`<div class="subtext" style="white-space:normal;max-width:320px;">“${esc(l.notes)}”</div>`:''}</td><td class="muted mono" style="font-size:12px;white-space:nowrap;">${l.phone?`<a href="tel:${esc(l.phone)}" style="color:inherit;text-decoration:none;">${esc(l.phone)}</a>`:"—"}</td><td class="muted">${esc(l.serviceInterested)}</td><td class="muted">${esc(l.source)}</td><td>${leadStageControl(l)}${leadStage(l)==='Lost'&&l.lostReason?`<div class="subtext">${esc(l.lostReason)}</div>`:''}</td><td>${l.leadOwner ? `<span class="muted">${esc(l.leadOwner)}</span>` : pill("Open","warn")}</td><td class="muted">${fmtDate(l.createdDate)}</td><td>${leadOwnerActionsCell(l)}</td></tr>`).join("") || `<tr><td colspan="8"><div class="empty">${isSalesViewer?'No leads assigned to you yet — claim one above.':'No leads match this filter.'}</div></td></tr>`}</tbody>
     </table></div>
   </div>
   `}`;
@@ -8540,7 +8544,7 @@ function leadOwnerActionsCell(l){
   const delBtn = canDelete ? `<button class="btn btn-sm ghost" onclick="openConfirmDelete('lead','${l.id}')" title="Delete lead"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></button>` : '';
   const flowBtns = (!l.convertedClientId && canWorkLead(l)) ? `${leadStage(l)!=='Lost'?`<button class="btn btn-sm ghost" onclick="openRecordLeadPayment('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-coins"/></svg>Payment</button>`:''}<button class="btn btn-sm primary" onclick="openConvertLead('${l.id}')">Convert</button>` : '';
   const clientBtn = l.convertedClientId ? `<button class="btn btn-sm ghost" onclick="goToClient('${l.convertedClientId}')">Open client</button>` : '';
-  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignPick}${assignBtn}${flowBtns}${clientBtn}<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>${delBtn}</div>`;
+  return `<div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${assignPick}${assignBtn}${flowBtns}${clientBtn}${(!l.leadOwner || canWorkLead(l)) ? `<button class="btn btn-sm ghost" onclick="openEditLead('${l.id}')"><svg class="icon" style="width:12px;height:12px"><use href="#i-edit"/></svg>Edit</button>` : ''}${delBtn}</div>`;
 }
 async function assignLeadToMe(id){
   if(!currentUser) return;
