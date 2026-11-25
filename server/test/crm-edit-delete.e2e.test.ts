@@ -81,6 +81,18 @@ test("leads: a rep edits/deletes only their own; Open leads can be claimed but n
   assert.equal((await call("DELETE", `/crm/leads/${open.id}`, tok.admin)).status, 404);
 });
 
+test("leads: every rep sees every lead (for tracking) but still can't work someone else's", async () => {
+  const theirs = await newLead(tok.a, "tracked", names.a);
+  const listed = (await call("GET", "/crm/leads", tok.b)).body.leads.find((l: any) => l.id === theirs.id);
+  assert.ok(listed, "rep B sees rep A's lead in the list");
+  assert.equal(listed.leadOwner, names.a);
+  const found = (await call("GET", `/search?q=${encodeURIComponent(`tracked ${run}`)}`, tok.b)).body;
+  assert.ok(JSON.stringify(found).includes(theirs.id), "and finds it in search");
+  assert.equal((await call("PATCH", `/crm/leads/${theirs.id}`, tok.b, { phone: "1" })).status, 403);
+  assert.equal((await call("PATCH", `/crm/leads/${theirs.id}/stage`, tok.b, { stage: "NEW" })).status, 403);
+  assert.equal((await call("DELETE", `/crm/leads/${theirs.id}`, tok.a)).status, 204);
+});
+
 test("leads: can't delete a lead that has quotes until they're gone", async () => {
   const lead = await newLead(tok.a, "quoted", names.a);
   const q = await newQuote(tok.a, lead.id, "LQ");

@@ -14,14 +14,12 @@ async function nextLeadCode(): Promise<string> {
   return nextSequentialCode("MLD-", (await prisma.lead.findMany({ select: { leadCode: true } })).map((l) => l.leadCode));
 }
 
-// A plain Sales caller sees their own claimed leads plus the shared Open
-// (unclaimed) queue they can claim from — same "narrow self-service slice"
-// listClients/listQuotes already give a non-admin caller; ADMIN and the Sales Head see
-// everyone's, same as those.
+// Every CRM caller (Sales included) sees every lead, so the team can track the whole pipeline. Working a
+// lead — editing, moving its stage, payments, converting, deleting — stays with its owner (or Admin / the
+// Sales Head); those checks live on each write below.
 export const listLeads: RequestHandler = asyncHandler(async (req, res) => {
-  const admin = seesWholeSalesTeam(req.user?.roles);
   const leads = await prisma.lead.findMany({
-    where: { status: req.query.status as any, ...(admin ? {} : { OR: [{ leadOwner: req.user!.name }, { leadOwner: null }] }) },
+    where: { status: req.query.status as any },
     orderBy: { createdAt: "desc" },
   });
   // What each lead has paid so far (recorded advances) — drives the "paid" figure and the auto-convert hint.
