@@ -1581,14 +1581,17 @@ function openDocumentPrint(bodyHtml, title){
     .page{max-width:760px;margin:16px auto 40px;background:#fff;padding:50px 54px;box-shadow:0 2px 16px rgba(0,0,0,.10);}
     table{border-collapse:collapse;}
     .mono{font-variant-numeric:tabular-nums;}
-    @media print{ .print-bar{display:none;} body{background:#fff;} .page{box-shadow:none;margin:0;padding:0;max-width:none;} @page{size:A4;margin:14mm;} }
+    @media print{ .print-bar{display:none;} body{background:#fff;} .page{box-shadow:none;margin:0;padding:14mm;max-width:none;} @page{size:A4;margin:0;} }
   </style></head><body>
   <div class="print-bar"><button onclick="window.print()">Print / Save as PDF</button></div>
   <div class="page">${bodyHtml}</div>
   </body></html>`);
   w.document.close();
 }
-function desgroHeaderHTML(docTitle){
+// `who` overrides the company block on the right — the salary slip uses DesGro Media's HR contact.
+const DESGRO_BILLING_CONTACT = { company:"DESGRO INTERNATIONAL LLP", email:"hi@desgrocreatives.com", website:"https://desgrocreatives.com/" };
+const DESGRO_HR_CONTACT = { company:"DESGRO MEDIA", email:"hr@desgromedia.com", website:"www.desgromedia.com" };
+function desgroHeaderHTML(docTitle, who = DESGRO_BILLING_CONTACT){
   return `
   <div style="display:flex;justify-content:space-between;align-items:flex-start;">
     <div>
@@ -1597,12 +1600,12 @@ function desgroHeaderHTML(docTitle){
       <div style="font-size:10.5px;letter-spacing:3.5px;color:#666;margin-top:4px;">MEDIA</div>
     </div>
     <div style="text-align:right;font-size:12px;line-height:1.65;color:#444;">
-      <div style="font-weight:700;color:#111;">DESGRO INTERNATIONAL LLP</div>
+      <div style="font-weight:700;color:#111;">${esc(who.company)}</div>
       <div>CALICUT Kerala 673582</div>
       <div>India</div>
       <div>7736328234</div>
-      <div>hi@desgrocreatives.com</div>
-      <div>https://desgrocreatives.com/</div>
+      <div>${esc(who.email)}</div>
+      <div>${esc(who.website)}</div>
     </div>
   </div>
   <div style="border-top:1px solid #e2e2e2;margin:22px 0 20px;"></div>
@@ -1788,7 +1791,7 @@ function payslipDocumentHTML(who, month, c){
   const totalDed = c.totalDeductions!=null ? c.totalDeductions : deductions.reduce((s,[,v])=>s+Number(v),0);
   const detail = (k,v) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid #f0f0f0;"><span style="color:#888;">${k}</span><b style="text-align:right;">${v}</b></div>`;
   const payments = c.payments || [];
-  return desgroHeaderHTML("SALARY SLIP") + `
+  return desgroHeaderHTML("SALARY SLIP", DESGRO_HR_CONTACT) + `
   <div style="font-size:12.5px;color:#555;margin:-14px 0 22px;text-align:center;">Pay period: <b style="color:#111;">${esc(label)}</b></div>
   <div style="display:flex;gap:24px;align-items:stretch;margin-bottom:24px;">
     <div style="flex:1.4;font-size:12.5px;">
